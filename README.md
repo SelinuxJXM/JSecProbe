@@ -22,6 +22,18 @@
 - **ORM**：Drizzle ORM
 - **构建**：Vite + Electron Builder
 
+## 📸 界面预览
+
+| 登录页 | 工作台 | 系统构成 |
+|:---:|:---:|:---:|
+| ![登录页](screenshots/login.png) | ![工作台](screenshots/dashboard.png) | ![系统构成](screenshots/system-composition.png) |
+
+| 现场核查 | AI智能辅助 | 系统设置 |
+|:---:|:---:|:---:|
+| ![现场核查](screenshots/assessment.png) | ![AI辅助](screenshots/ai-assistant.png) | ![系统设置](screenshots/settings.png) |
+
+> 📷 截图文件存放在 `screenshots/` 目录下，提交代码后会自动展示。
+
 ## 🚀 快速开始
 
 ### 环境要求
