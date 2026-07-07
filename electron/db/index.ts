@@ -155,7 +155,7 @@ async function ensureTablesExist(sqlite: Database.Database): Promise<void> {
       domain_count INTEGER NOT NULL DEFAULT 0,
       item_count INTEGER NOT NULL DEFAULT 0,
       is_default INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     );
     
     CREATE TABLE IF NOT EXISTS assessment_items (
@@ -165,7 +165,9 @@ async function ensureTablesExist(sqlite: Database.Database): Promise<void> {
       control_point TEXT NOT NULL,
       control_name TEXT NOT NULL,
       requirement TEXT NOT NULL,
-      level INTEGER NOT NULL,
+      min_level INTEGER NOT NULL DEFAULT 2,
+      max_level INTEGER NOT NULL DEFAULT 4,
+      extension_type TEXT NOT NULL DEFAULT 'general',
       is_high_risk INTEGER NOT NULL DEFAULT 0,
       sort_order INTEGER NOT NULL DEFAULT 0,
       parent_id TEXT
@@ -301,22 +303,6 @@ async function ensureTablesExist(sqlite: Database.Database): Promise<void> {
       ip_address TEXT,
       created_at TEXT NOT NULL
     );
-    
-    CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
-    CREATE INDEX IF NOT EXISTS idx_assets_project_id ON assets(project_id);
-    CREATE INDEX IF NOT EXISTS idx_assessment_items_standard_domain ON assessment_items(standard_id, domain);
-    CREATE INDEX IF NOT EXISTS idx_assessment_items_level ON assessment_items(min_level);
-    CREATE INDEX IF NOT EXISTS idx_assessment_items_extension ON assessment_items(extension_type);
-    CREATE INDEX IF NOT EXISTS idx_assessment_records_project_id ON assessment_records(project_id);
-    CREATE INDEX IF NOT EXISTS idx_assessment_records_item_id ON assessment_records(item_id);
-    CREATE INDEX IF NOT EXISTS idx_issues_project_id ON issues(project_id);
-    CREATE INDEX IF NOT EXISTS idx_issues_project_risk ON issues(project_id, risk_level);
-    CREATE INDEX IF NOT EXISTS idx_issues_project_status ON issues(project_id, status);
-    CREATE INDEX IF NOT EXISTS idx_issues_project_domain ON issues(project_id, security_domain);
-    CREATE INDEX IF NOT EXISTS idx_issues_asset_id ON issues(asset_id);
-    CREATE INDEX IF NOT EXISTS idx_issues_item_id ON issues(item_id);
-    CREATE INDEX IF NOT EXISTS idx_knowledge_documents_category ON knowledge_documents(category_id);
-    CREATE INDEX IF NOT EXISTS idx_knowledge_documents_title ON knowledge_documents(title);
   `);
   
   log.info('数据库表创建完成，开始升级旧表结构...');
@@ -336,6 +322,9 @@ async function ensureTablesExist(sqlite: Database.Database): Promise<void> {
     { table: 'assets', column: 'position', definition: 'TEXT' },
     { table: 'assets', column: 'db_system', definition: 'TEXT' },
     { table: 'assets', column: 'middleware', definition: 'TEXT' },
+    { table: 'assessment_items', column: 'min_level', definition: 'INTEGER NOT NULL DEFAULT 2' },
+    { table: 'assessment_items', column: 'max_level', definition: 'INTEGER NOT NULL DEFAULT 4' },
+    { table: 'assessment_items', column: 'extension_type', definition: "TEXT NOT NULL DEFAULT 'general'" },
     { table: 'assessment_items', column: 'control_point', definition: 'TEXT' },
     { table: 'assessment_items', column: 'control_name', definition: 'TEXT' },
     { table: 'assessment_items', column: 'is_high_risk', definition: 'INTEGER DEFAULT 0' },
@@ -370,6 +359,7 @@ async function ensureTablesExist(sqlite: Database.Database): Promise<void> {
     { table: 'system_settings', column: 'standard_data_version', definition: 'INTEGER NOT NULL DEFAULT 1' },
     { table: 'standards', column: 'grade', definition: 'INTEGER DEFAULT 3' },
     { table: 'standards', column: 'is_default', definition: 'INTEGER DEFAULT 0' },
+    { table: 'standards', column: 'created_at', definition: 'TEXT DEFAULT NULL' },
   ];
 
   for (const { table, column, definition } of alterStatements) {
@@ -388,6 +378,32 @@ async function ensureTablesExist(sqlite: Database.Database): Promise<void> {
   }
 
   log.info('数据库表结构升级完成');
+
+  createIndexes(sqlite);
+}
+
+function createIndexes(sqlite: Database.Database): void {
+  try {
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
+      CREATE INDEX IF NOT EXISTS idx_assets_project_id ON assets(project_id);
+      CREATE INDEX IF NOT EXISTS idx_assessment_items_standard_domain ON assessment_items(standard_id, domain);
+      CREATE INDEX IF NOT EXISTS idx_assessment_items_level ON assessment_items(min_level);
+      CREATE INDEX IF NOT EXISTS idx_assessment_items_extension ON assessment_items(extension_type);
+      CREATE INDEX IF NOT EXISTS idx_assessment_records_project_id ON assessment_records(project_id);
+      CREATE INDEX IF NOT EXISTS idx_assessment_records_item_id ON assessment_records(item_id);
+      CREATE INDEX IF NOT EXISTS idx_issues_project_id ON issues(project_id);
+      CREATE INDEX IF NOT EXISTS idx_issues_project_risk ON issues(project_id, risk_level);
+      CREATE INDEX IF NOT EXISTS idx_issues_project_status ON issues(project_id, status);
+      CREATE INDEX IF NOT EXISTS idx_issues_project_domain ON issues(project_id, security_domain);
+      CREATE INDEX IF NOT EXISTS idx_issues_asset_id ON issues(asset_id);
+      CREATE INDEX IF NOT EXISTS idx_issues_item_id ON issues(item_id);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_documents_category ON knowledge_documents(category_id);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_documents_title ON knowledge_documents(title);
+    `);
+  } catch (err) {
+    log.warn('创建索引失败（可能是旧数据库缺少列）:', err);
+  }
 }
 
 async function initDefaultData(): Promise<void> {
@@ -478,6 +494,20 @@ async function initStandardLibrary(): Promise<void> {
   
   // 检查表结构是否需要升级
   const needRebuild = hasSectionField || !hasMinLevelField || !hasExtensionTypeField;
+
+  // 检查 level 列是否有 NOT NULL 约束（旧数据库问题）
+  let levelNotNull = false;
+  try {
+    if (sqliteInstance) {
+      const colInfo = sqliteInstance.prepare("PRAGMA table_info(assessment_items)").all() as any[];
+      const levelCol = colInfo.find((c: any) => c.name === 'level');
+      if (levelCol && levelCol.notnull === 1) {
+        levelNotNull = true;
+      }
+    }
+  } catch (e) {
+    log.warn('检查level列失败:', e);
+  }
   if (needRebuild && itemCount > 0) {
     log.info('检测到表结构不兼容，备份并重建assessment_items表...');
     try {
@@ -490,7 +520,7 @@ async function initStandardLibrary(): Promise<void> {
     }
   }
   
-  if (needRebuild) {
+  if (needRebuild || levelNotNull) {
     try {
       log.info('重建assessment_items表...');
       sqliteInstance.exec('DROP TABLE IF EXISTS assessment_items');

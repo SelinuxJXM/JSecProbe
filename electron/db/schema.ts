@@ -11,7 +11,7 @@ export const users = sqliteTable('users', {
   isActive: integer('is_active').notNull().default(1),
   mustChangePassword: integer('must_change_password').notNull().default(1),
   lastLoginAt: text('last_login_at'),
-  createdAt: text('created_at').notNull(),
+  createdAt: text('created_at').notNull().default(new Date().toISOString()),
   updatedAt: text('updated_at').notNull(),
 });
 
@@ -81,7 +81,7 @@ export const standards = sqliteTable('standards', {
   domainCount: integer('domain_count').notNull().default(0),
   itemCount: integer('item_count').notNull().default(0),
   isDefault: integer('is_default').notNull().default(0),
-  createdAt: text('created_at').notNull(),
+  createdAt: text('created_at').notNull().default(new Date().toISOString()),
 });
 
 export const assessmentItems = sqliteTable('assessment_items', {
