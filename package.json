@@ -1,6 +1,6 @@
 {
   "name": "mlps-assessment-tool",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "JSecProbe - 等级保护现场测评系统",
   "main": "dist-electron/main/index.js",
   "author": "景景",
