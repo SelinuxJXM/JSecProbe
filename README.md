@@ -32,7 +32,7 @@
 |:---:|:---:|:---:|
 | ![现场核查](screenshots/05-现场核查.png) | ![AI辅助](screenshots/07-AI分析.png) | ![系统设置](screenshots/09-系统设置.png) |
 
-> 📷 截图文件存放在 `screenshots/` 目录下，提交代码后会自动展示。
+> 📷 截图文件存放在 `screenshots/` 目录下。
 
 ## 🚀 快速开始
 
