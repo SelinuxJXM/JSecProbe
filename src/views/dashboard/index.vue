@@ -2,7 +2,7 @@
   <div class="page-container">
     <div class="page-header">
       <div class="page-header-title">工作台</div>
-      <div class="page-header-desc">欢迎使用等级保护现场测评系统</div>
+      <div class="page-header-desc">欢迎使用 JSecProbe</div>
     </div>
     
     <el-row :gutter="16" class="stats-row">

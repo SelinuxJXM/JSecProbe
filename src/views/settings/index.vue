@@ -169,7 +169,7 @@
             <div class="settings-section-title">关于</div>
             <div class="about-content">
               <p>
-                <strong>网络安全等级保护现场测评系统</strong>
+                <strong>JSecProbe</strong>
               </p>
               <p>
                 本系统依据《GB/T 22239-2019 信息安全技术 网络安全等级保护基本要求》开发，

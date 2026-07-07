@@ -92,7 +92,7 @@ const router = createRouter({
 });
 
 router.beforeEach(async (to, _from, next) => {
-  document.title = `${to.meta.title || '等级保护测评系统'} - 等级保护现场测评系统`;
+  document.title = `${to.meta.title || 'JSecProbe'} - JSecProbe`;
 
   // 登录和修改密码页面不需要验证
   const publicPages = ['/login', '/change-password'];
