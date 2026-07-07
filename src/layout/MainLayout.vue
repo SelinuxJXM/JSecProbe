@@ -64,7 +64,7 @@
       
       <div class="sidebar-footer">
         <div class="version" v-if="!appStore.sidebarCollapsed">
-          v1.2.0
+          v1.2.1
         </div>
         <div class="copyright" v-if="!appStore.sidebarCollapsed">
           © 2025 景景
