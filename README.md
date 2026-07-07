@@ -26,11 +26,11 @@
 
 | 登录页 | 工作台 | 系统构成 |
 |:---:|:---:|:---:|
-| ![登录页](screenshots/login.png) | ![工作台](screenshots/dashboard.png) | ![系统构成](screenshots/system-composition.png) |
+| ![登录页](screenshots/01-登录页.png) | ![工作台](screenshots/02-主界面.png) | ![系统构成](screenshots/04-系统构成.png) |
 
 | 现场核查 | AI智能辅助 | 系统设置 |
 |:---:|:---:|:---:|
-| ![现场核查](screenshots/assessment.png) | ![AI辅助](screenshots/ai-assistant.png) | ![系统设置](screenshots/settings.png) |
+| ![现场核查](screenshots/05-现场核查.png) | ![AI辅助](screenshots/07-AI分析.png) | ![系统设置](screenshots/09-系统设置.png) |
 
 > 📷 截图文件存放在 `screenshots/` 目录下，提交代码后会自动展示。
 
