@@ -1,0 +1,273 @@
+@import './variables.css';
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-normal);
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+  &:hover {
+    color: var(--color-primary-hover);
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-base);
+  border-radius: var(--radius-full);
+  &:hover {
+    background: var(--color-text-tertiary);
+  }
+}
+
+.text-primary { color: var(--color-primary); }
+.text-success { color: var(--color-success); }
+.text-warning { color: var(--color-warning); }
+.text-danger { color: var(--color-danger); }
+.text-secondary { color: var(--color-text-secondary); }
+.text-tertiary { color: var(--color-text-tertiary); }
+
+.flex { display: flex; }
+.flex-1 { flex: 1; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.justify-center { justify-content: center; }
+.justify-between { justify-content: space-between; }
+.gap-sm { gap: var(--spacing-sm); }
+.gap-base { gap: var(--spacing-base); }
+.gap-md { gap: var(--spacing-md); }
+.gap-lg { gap: var(--spacing-lg); }
+
+.p-sm { padding: var(--spacing-sm); }
+.p-base { padding: var(--spacing-base); }
+.p-md { padding: var(--spacing-md); }
+.p-lg { padding: var(--spacing-lg); }
+
+.mt-sm { margin-top: var(--spacing-sm); }
+.mt-base { margin-top: var(--spacing-base); }
+.mt-md { margin-top: var(--spacing-md); }
+.mt-lg { margin-top: var(--spacing-lg); }
+.mb-sm { margin-bottom: var(--spacing-sm); }
+.mb-base { margin-bottom: var(--spacing-base); }
+.mb-md { margin-bottom: var(--spacing-md); }
+
+.page-container {
+  padding: var(--spacing-lg);
+  height: 100%;
+  overflow: auto;
+}
+
+.page-header {
+  margin-bottom: var(--spacing-lg);
+  &-title {
+    font-size: var(--font-size-xl);
+    font-weight: var(--font-weight-semibold);
+    color: var(--color-text-primary);
+  }
+  &-desc {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-tertiary);
+    margin-top: var(--spacing-xs);
+  }
+}
+
+.card {
+  background: var(--color-bg-card);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--color-border-light);
+}
+
+/* Dark mode overrides for Element Plus and common components */
+html.dark {
+  color-scheme: dark;
+
+  body {
+    background-color: var(--color-bg-base);
+    color: var(--color-text-primary);
+  }
+
+  .page-container {
+    background-color: var(--color-bg-page);
+  }
+
+  /* Element Plus table */
+  .el-table {
+    --el-table-bg-color: var(--color-bg-card);
+    --el-table-tr-bg-color: var(--color-bg-card);
+    --el-table-header-bg-color: var(--color-bg-hover);
+    --el-table-row-hover-bg-color: var(--color-bg-hover);
+    --el-table-border-color: var(--color-border-base);
+    --el-table-text-color: var(--color-text-primary);
+    --el-table-header-text-color: var(--color-text-primary);
+  }
+
+  .el-table th.el-table__cell,
+  .el-table tr,
+  .el-table__body-wrapper tr td.el-table__cell {
+    background-color: var(--color-bg-card);
+    color: var(--color-text-primary);
+  }
+
+  .el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+    background-color: var(--color-bg-base);
+  }
+
+  /* Element Plus form inputs */
+  .el-input__wrapper,
+  .el-textarea__inner,
+  .el-select .el-input__wrapper,
+  .el-date-editor .el-input__wrapper {
+    background-color: var(--color-bg-card) !important;
+    box-shadow: 0 0 0 1px var(--color-border-base) inset !important;
+  }
+
+  .el-input__inner,
+  .el-textarea__inner,
+  .el-select .el-input__inner {
+    color: var(--color-text-primary) !important;
+    background-color: transparent !important;
+  }
+
+  .el-input__inner::placeholder,
+  .el-textarea__inner::placeholder {
+    color: var(--color-text-placeholder);
+  }
+
+  /* Element Plus dialog / drawer */
+  .el-dialog,
+  .el-drawer {
+    --el-dialog-bg-color: var(--color-bg-card);
+    --el-drawer-bg-color: var(--color-bg-card);
+    background-color: var(--color-bg-card);
+  }
+
+  .el-dialog__title,
+  .el-drawer__header {
+    color: var(--color-text-primary);
+  }
+
+  .el-dialog__body,
+  .el-drawer__body {
+    color: var(--color-text-secondary);
+  }
+
+  /* Element Plus dropdown / popover */
+  .el-dropdown__popper.el-popper,
+  .el-popover.el-popper,
+  .el-select__popper.el-popper {
+    --el-bg-color-overlay: var(--color-bg-card);
+    background-color: var(--color-bg-card);
+    border-color: var(--color-border-base);
+  }
+
+  .el-dropdown-menu,
+  .el-select-dropdown {
+    background-color: var(--color-bg-card);
+  }
+
+  .el-dropdown-menu__item,
+  .el-select-dropdown__item {
+    color: var(--color-text-primary);
+  }
+
+  .el-dropdown-menu__item:hover,
+  .el-select-dropdown__item.hover,
+  .el-select-dropdown__item:hover {
+    background-color: var(--color-bg-hover);
+  }
+
+  /* Element Plus pagination */
+  .el-pagination {
+    --el-pagination-button-bg-color: var(--color-bg-card);
+    --el-pagination-hover-color: var(--color-primary);
+  }
+
+  .el-pagination .btn-prev,
+  .el-pagination .btn-next,
+  .el-pager li {
+    background-color: var(--color-bg-card);
+    color: var(--color-text-primary);
+  }
+
+  /* Element Plus tree */
+  .el-tree {
+    --el-tree-node-hover-bg-color: var(--color-bg-hover);
+    background-color: transparent;
+    color: var(--color-text-primary);
+  }
+
+  /* Element Plus tabs */
+  .el-tabs__item {
+    color: var(--color-text-secondary);
+  }
+
+  .el-tabs__item.is-active {
+    color: var(--color-primary);
+  }
+
+  .el-tabs__active-bar {
+    background-color: var(--color-primary);
+  }
+
+  /* Element Plus radio / checkbox / switch */
+  .el-radio,
+  .el-checkbox {
+    color: var(--color-text-primary);
+  }
+
+  .el-radio__input.is-checked + .el-radio__label,
+  .el-checkbox__input.is-checked + .el-checkbox__label {
+    color: var(--color-primary);
+  }
+
+  /* Element Plus divider */
+  .el-divider__text {
+    background-color: var(--color-bg-card);
+    color: var(--color-text-secondary);
+  }
+
+  /* Fix hardcoded white backgrounds */
+  .el-loading-mask {
+    background-color: rgba(15, 23, 42, 0.7);
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border-base);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-text-tertiary);
+  }
+}

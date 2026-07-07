@@ -1,0 +1,142 @@
+:root {
+  --color-primary: #1B5FD9;
+  --color-primary-hover: #2A71E8;
+  --color-primary-active: #154DB0;
+  --color-primary-light: #E8F0FD;
+  --color-primary-lighter: #F5F8FF;
+
+  --color-success: #18A957;
+  --color-success-light: #E7F8EE;
+  --color-warning: #D48806;
+  --color-warning-light: #FFF7E6;
+  --color-danger: #E53935;
+  --color-danger-light: #FDECEC;
+  --color-info: #5C6C8C;
+
+  --color-text-primary: #1A2332;
+  --color-text-secondary: #4A5568;
+  --color-text-tertiary: #8B95A7;
+  --color-text-placeholder: #B0B7C3;
+  --color-text-disabled: #C5CBD6;
+
+  --color-border-base: #E2E6ED;
+  --color-border-light: #EEF1F6;
+  --color-border-lighter: #F5F7FA;
+
+  --color-bg-base: #F5F7FA;
+  --color-bg-page: #EEF1F6;
+  --color-bg-card: #FFFFFF;
+  --color-bg-hover: #F0F4F9;
+  --color-bg-active: #E8F0FD;
+
+  --color-sidebar-bg: #1E2A3B;
+  --color-sidebar-bg-hover: #2A394F;
+  --color-sidebar-bg-active: #1B5FD9;
+  --color-sidebar-text: #A0AEC0;
+  --color-sidebar-text-active: #FFFFFF;
+  --color-sidebar-text-hover: #E2E8F0;
+
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-base: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-base: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-base: 12px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  --spacing-2xl: 48px;
+
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-base: 14px;
+  --font-size-md: 16px;
+  --font-size-lg: 18px;
+  --font-size-xl: 20px;
+  --font-size-2xl: 24px;
+  --font-size-3xl: 30px;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --sidebar-width: 240px;
+  --sidebar-width-collapsed: 64px;
+  --header-height: 56px;
+  --control-height: 32px;
+  --control-height-lg: 40px;
+  --control-height-sm: 28px;
+  --table-row-height: 44px;
+
+  /* Aliases for component compatibility */
+  --primary-color: var(--color-primary);
+  --text-primary: var(--color-text-primary);
+  --text-secondary: var(--color-text-secondary);
+  --text-placeholder: var(--color-text-placeholder);
+  --bg-card: var(--color-bg-card);
+  --bg-hover: var(--color-bg-hover);
+  --border-color: var(--color-border-base);
+}
+
+/* Dark mode */
+html[data-theme="dark"] {
+  --color-primary: #3B82F6;
+  --color-primary-hover: #60A5FA;
+  --color-primary-active: #2563EB;
+  --color-primary-light: rgba(59, 130, 246, 0.15);
+  --color-primary-lighter: rgba(59, 130, 246, 0.08);
+
+  --color-success-light: rgba(24, 169, 87, 0.15);
+  --color-warning-light: rgba(212, 136, 6, 0.15);
+  --color-danger-light: rgba(229, 57, 53, 0.15);
+
+  --color-text-primary: #E2E8F0;
+  --color-text-secondary: #94A3B8;
+  --color-text-tertiary: #64748B;
+  --color-text-placeholder: #475569;
+  --color-text-disabled: #334155;
+
+  --color-border-base: #334155;
+  --color-border-light: #1E293B;
+  --color-border-lighter: #0F172A;
+
+  --color-bg-base: #0F172A;
+  --color-bg-page: #0F172A;
+  --color-bg-card: #1E293B;
+  --color-bg-hover: #334155;
+  --color-bg-active: rgba(59, 130, 246, 0.15);
+
+  --color-sidebar-bg: #0F172A;
+  --color-sidebar-bg-hover: #1E293B;
+  --color-sidebar-bg-active: #2563EB;
+  --color-sidebar-text: #94A3B8;
+  --color-sidebar-text-active: #FFFFFF;
+  --color-sidebar-text-hover: #E2E8F0;
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+  --shadow-base: 0 1px 3px 0 rgba(0, 0, 0, 0.4), 0 1px 2px -1px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -4px rgba(0, 0, 0, 0.3);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+
+  /* Aliases for component compatibility */
+  --primary-color: var(--color-primary);
+  --text-primary: var(--color-text-primary);
+  --text-secondary: var(--color-text-secondary);
+  --text-placeholder: var(--color-text-placeholder);
+  --bg-card: var(--color-bg-card);
+  --bg-hover: var(--color-bg-hover);
+  --border-color: var(--color-border-base);
+}
