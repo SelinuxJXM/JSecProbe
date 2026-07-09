@@ -223,7 +223,7 @@ export function evaluateByRules(
     result: 'partial',
     confidence: 0.4,
     evidence: '无法通过规则引擎确定判定结果，请人工核查',
-    findings: '测评证据不足，建议补充更多信息或使用AI辅助分析',
+    findings: '建议补充更多信息或使用AI辅助分析',
   };
 }
 

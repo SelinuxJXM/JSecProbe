@@ -252,7 +252,6 @@
                     <option value="partial">部分符合</option>
                     <option value="nonconform">不符合</option>
                     <option value="na">不适用</option>
-                    <option value="insufficient">证据不足</option>
                   </select>
                 </td>
                 <td class="cell-evidence">
@@ -926,7 +925,6 @@ const complianceClass = computed(() => {
     '部分符合': 'partial',
     '不符合': 'nonconform',
     '不适用': 'na',
-    '证据不足': 'insufficient',
   };
   return map[aiAnalysisResult.value?.compliance] || '';
 });
@@ -1007,11 +1005,13 @@ function batchAiAnalyze() {
 
   (async () => {
     try {
-      const items = tableRows.value.map(row => ({
-        id: row.itemId,
-        controlPoint: row.controlPoint || '',
-        requirement: row.requirement || '',
-      }));
+      const items = tableRows.value
+        .filter(row => row.compliance !== 'na')
+        .map(row => ({
+          id: row.itemId,
+          controlPoint: row.controlPoint || '',
+          requirement: row.requirement || '',
+        }));
       const imagePaths = batchFiles.value.filter(f => f.fileType === 'image').map(s => s.path);
       const docFiles = batchFiles.value.filter(f => f.fileType === 'pdf' || f.fileType === 'word');
       let docContents: { name: string; content: string }[] = [];
@@ -1047,7 +1047,6 @@ function batchAiAnalyze() {
                 '部分符合': 'partial',
                 '不符合': 'nonconform',
                 '不适用': 'na',
-                '证据不足': 'insufficient',
               };
               const complianceValue = resultMap[result.compliance] || '';
               if (complianceValue) {
@@ -1800,7 +1799,6 @@ function applyAiResult() {
     '部分符合': 'partial',
     '不符合': 'nonconform',
     '不适用': 'na',
-    '证据不足': 'insufficient',
   };
 
   row.compliance = resultMap[result.compliance] || '';
@@ -3161,11 +3159,6 @@ onMounted(async () => {
       color: #6B7280;
       font-weight: 500;
     }
-
-    &.insufficient {
-      color: #2563EB;
-      font-weight: 600;
-    }
   }
 
   .action-btn {
@@ -3969,11 +3962,6 @@ onMounted(async () => {
     &.na {
       background: var(--color-bg-base);
       color: #6B7280;
-    }
-
-    &.insufficient {
-      background: var(--color-primary-light);
-      color: #2563EB;
     }
   }
 }
