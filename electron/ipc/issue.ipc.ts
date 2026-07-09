@@ -2,13 +2,56 @@ import { ipcMain, dialog } from 'electron';
 import log from 'electron-log';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, and, count, sql, like, or, desc, asc } from 'drizzle-orm';
+import { eq, and, count, sql, like, or, desc, asc, inArray } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import ExcelJS from 'exceljs';
 import * as path from 'path';
 import * as fs from 'fs';
 import { getRowMaxHeight } from '../utils/excel-helper';
 import { getAppDataPath } from '../main/paths';
+
+// 安全域ID到中文名称映射
+const DOMAIN_ID_TO_NAME: Record<string, string> = {
+  'secure_physical': '安全物理环境',
+  'secure_communication': '安全通信网络',
+  'secure_boundary': '安全区域边界',
+  'secure_computing': '安全计算环境',
+  'secure_management': '安全管理中心',
+  'security_management': '安全管理制度',
+  'security_organization': '安全管理机构',
+  'security_personnel': '安全管理人员',
+  'security_construction': '安全建设管理',
+  'security_maintenance': '安全运维管理',
+};
+
+// 安全域中文名称到ID映射（用于导入）
+const DOMAIN_NAME_TO_ID: Record<string, string> = {
+  '安全物理环境': 'secure_physical',
+  '安全通信网络': 'secure_communication',
+  '安全区域边界': 'secure_boundary',
+  '安全计算环境': 'secure_computing',
+  '安全管理中心': 'secure_management',
+  '安全管理制度': 'security_management',
+  '安全管理机构': 'security_organization',
+  '安全管理人员': 'security_personnel',
+  '安全建设管理': 'security_construction',
+  '安全运维管理': 'security_maintenance',
+};
+
+function getSecurityDomainName(domainId: string): string {
+  return DOMAIN_ID_TO_NAME[domainId] || domainId || '-';
+}
+
+function parseSecurityDomain(value: string): string {
+  if (!value) return '';
+  const trimmed = value.trim();
+  // 如果是中文，转换为ID
+  if (DOMAIN_NAME_TO_ID[trimmed]) return DOMAIN_NAME_TO_ID[trimmed];
+  // 如果已经是ID，直接返回
+  if (DOMAIN_ID_TO_NAME[trimmed]) return trimmed;
+  // 未知值，原样返回
+  return trimmed;
+}
 
 async function getAllowedBasePaths(): Promise<string[]> {
   const dataPath = await getAppDataPath();
@@ -101,11 +144,10 @@ export function registerIssueHandlers(): void {
       const sortFieldMap: Record<string, any> = {
         issueTitle: schema.issues.issueTitle,
         securityDomain: schema.issues.securityDomain,
+        assetName: schema.issues.assetId,
         controlPoint: schema.issues.controlPoint,
         riskLevel: schema.issues.riskLevel,
         status: schema.issues.status,
-        responsiblePerson: schema.issues.responsiblePerson,
-        rectificationDeadline: schema.issues.rectificationDeadline,
         createdAt: schema.issues.createdAt,
       };
 
@@ -127,6 +169,20 @@ export function registerIssueHandlers(): void {
           .offset((page - 1) * pageSize);
       }
 
+      // 获取资产名称映射
+      const assetIds = [...new Set(list.map((i: any) => i.assetId).filter(Boolean))];
+      const assetNameMap: Record<string, string> = {};
+      if (assetIds.length > 0) {
+        const assetRows = await db.select({ id: schema.assets.id, name: schema.assets.name }).from(schema.assets).where(inArray(schema.assets.id, assetIds));
+        assetRows.forEach((a: any) => { assetNameMap[a.id] = a.name; });
+      }
+
+      // 添加资产名称到结果
+      const listWithAssetName = list.map((item: any) => ({
+        ...item,
+        assetName: item.assetId ? (assetNameMap[item.assetId] || '-') : '-',
+      }));
+
       const riskStatsResult = await db
         .select({ riskLevel: schema.issues.riskLevel, count: count() })
         .from(schema.issues)
@@ -144,7 +200,7 @@ export function registerIssueHandlers(): void {
         { level: 'low', label: '低风险', count: riskCounts['low'] || 0, color: '#67c23a' },
       ];
 
-      return { list, total, riskStats };
+      return { list: listWithAssetName, total, riskStats };
     })
   );
 
@@ -192,11 +248,7 @@ export function registerIssueHandlers(): void {
   ipcMain.handle('issue:batchRemove', (_event, ids: string[]) =>
     wrap<void>(async () => {
       const db = getDb();
-      await db.transaction(async (tx) => {
-        for (const id of ids) {
-          await tx.delete(schema.issues).where(eq(schema.issues.id, id));
-        }
-      });
+      await db.delete(schema.issues).where(inArray(schema.issues.id, ids));
     })
   );
 
@@ -204,14 +256,10 @@ export function registerIssueHandlers(): void {
     wrap<void>(async () => {
       const db = getDb();
       const now = new Date().toISOString();
-      await db.transaction(async (tx) => {
-        for (const id of ids) {
-          await tx.update(schema.issues).set({
-            status,
-            updatedAt: now,
-          }).where(eq(schema.issues.id, id));
-        }
-      });
+      await db.update(schema.issues).set({
+        status,
+        updatedAt: now,
+      }).where(inArray(schema.issues.id, ids));
     })
   );
 
@@ -231,18 +279,19 @@ export function registerIssueHandlers(): void {
       const db = getDb();
       const now = new Date().toISOString();
 
-      const nonCompliantRecords = await db
+      // 查询不符合和部分符合的测评记录
+      const records = await db
         .select()
         .from(schema.assessmentRecords)
         .innerJoin(schema.assessmentItems, eq(schema.assessmentRecords.itemId, schema.assessmentItems.id))
         .where(and(
           eq(schema.assessmentRecords.projectId, projectId),
-          sql`result IN ('non_compliant', 'nonconform')`
+          sql`result IN ('non_compliant', 'nonconform', 'partial')`
         ));
 
       let count = 0;
 
-      for (const rec of nonCompliantRecords) {
+      for (const rec of records) {
         const record = rec.assessment_records as any;
         const item = rec.assessment_items as any;
 
@@ -257,6 +306,10 @@ export function registerIssueHandlers(): void {
 
         if (existing.length > 0) continue;
 
+        // 根据结果类型设置不同标题和风险等级
+        const isNonCompliant = record.result === 'non_compliant' || record.result === 'nonconform';
+        const riskLevel = isNonCompliant ? (item.isHighRisk ? 'high' : 'medium') : 'low';
+
         await db.insert(schema.issues).values({
           id: randomUUID(),
           projectId,
@@ -265,9 +318,9 @@ export function registerIssueHandlers(): void {
           securityDomain: item.domain,
           controlPoint: item.controlPoint,
           controlName: item.controlName,
-          issueTitle: `${item.controlName} - 不符合`,
-          issueDescription: record.findings || `经测评发现，${item.controlName}不符合要求。`,
-          riskLevel: item.isHighRisk ? 'high' : 'medium',
+          issueTitle: `${item.controlName} - ${isNonCompliant ? '不符合' : '部分符合'}`,
+          issueDescription: record.findings || `经测评发现，${item.controlName}${isNonCompliant ? '不符合' : '部分符合'}要求。`,
+          riskLevel,
           status: 'pending',
           rectificationSuggestion: `根据等保2.0标准要求，${item.requirement}`,
           createdAt: now,
@@ -368,6 +421,18 @@ export function registerIssueHandlers(): void {
         return (riskOrder[a.riskLevel] || 99) - (riskOrder[b.riskLevel] || 99);
       });
 
+      // 获取资产名称映射
+      const assetIds = [...new Set(issues.map((i: any) => i.assetId).filter(Boolean))];
+      const assetNameMap: Record<string, string> = {};
+      if (assetIds.length > 0) {
+        const assetRows = await db.select({ id: schema.assets.id, name: schema.assets.name }).from(schema.assets).where(inArray(schema.assets.id, assetIds));
+        assetRows.forEach((a: any) => { assetNameMap[a.id] = a.name; });
+      }
+      issues = issues.map((item: any) => ({
+        ...item,
+        assetName: item.assetId ? (assetNameMap[item.assetId] || '-') : '-',
+      }));
+
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet('问题清单');
 
@@ -375,13 +440,12 @@ export function registerIssueHandlers(): void {
         { header: '序号', key: 'index', width: 7 },
         { header: '风险等级', key: 'riskLevel', width: 10 },
         { header: '安全域', key: 'securityDomain', width: 16 },
+        { header: '测评对象', key: 'assetName', width: 18 },
         { header: '控制点', key: 'controlPoint', width: 16 },
         { header: '控制项', key: 'controlName', width: 20 },
         { header: '问题标题', key: 'issueTitle', width: 30 },
         { header: '问题描述', key: 'issueDescription', width: 40 },
         { header: '整改建议', key: 'rectificationSuggestion', width: 40 },
-        { header: '整改责任人', key: 'responsiblePerson', width: 12 },
-        { header: '整改截止日期', key: 'rectificationDeadline', width: 14 },
         { header: '整改日期', key: 'fixedDate', width: 14 },
         { header: '整改描述', key: 'fixedDescription', width: 30 },
         { header: '测评人', key: 'assessor', width: 12 },
@@ -413,14 +477,13 @@ export function registerIssueHandlers(): void {
         const row = worksheet.addRow({
           index: index + 1,
           riskLevel: riskMap[issue.riskLevel] || issue.riskLevel,
-          securityDomain: issue.securityDomain,
+          securityDomain: getSecurityDomainName(issue.securityDomain),
+          assetName: issue.assetName || '-',
           controlPoint: issue.controlPoint,
           controlName: issue.controlName,
           issueTitle: issue.issueTitle,
           issueDescription: issue.issueDescription,
           rectificationSuggestion: issue.rectificationSuggestion || '',
-          responsiblePerson: issue.responsiblePerson || '',
-          rectificationDeadline: issue.rectificationDeadline || '',
           fixedDate: issue.fixedDate || '',
           fixedDescription: issue.fixedDescription || '',
           assessor: issue.assessor || '',
@@ -529,14 +592,12 @@ export function registerIssueHandlers(): void {
           rowsToInsert.push({
             id: randomUUID(),
             projectId,
-            securityDomain: getCell('安全域'),
+            securityDomain: parseSecurityDomain(getCell('安全域')),
             controlPoint: getCell('控制点'),
             controlName: getCell('控制项'),
             issueTitle,
             issueDescription: getCell('问题描述'),
             rectificationSuggestion: getCell('整改建议'),
-            responsiblePerson: getCell('整改责任人'),
-            rectificationDeadline: getCell('整改截止日期'),
             fixedDate: getCell('整改日期'),
             fixedDescription: getCell('整改描述'),
             assessor: getCell('测评人'),
@@ -552,12 +613,8 @@ export function registerIssueHandlers(): void {
 
       let count = 0;
       if (rowsToInsert.length > 0) {
-        await db.transaction(async (tx) => {
-          for (const row of rowsToInsert) {
-            await tx.insert(schema.issues).values(row as any);
-            count++;
-          }
-        });
+        await db.insert(schema.issues).values(rowsToInsert as any);
+        count = rowsToInsert.length;
       }
 
       if (errors.length > 0) {

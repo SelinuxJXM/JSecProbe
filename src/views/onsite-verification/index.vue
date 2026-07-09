@@ -78,6 +78,21 @@
         </div>
       </div>
       <div class="toolbar-right">
+        <!-- 保存状态指示器 -->
+        <div class="save-status-indicator" :class="saveStatus" v-if="saveStatus !== 'idle'">
+          <span class="save-status-icon">
+            <svg v-if="saveStatus === 'saving'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+            <svg v-else-if="saveStatus === 'saved'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+            <svg v-else-if="saveStatus === 'error'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            <svg v-else-if="saveStatus === 'unsaved'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/></svg>
+          </span>
+          <span class="save-status-text">
+            {{ saveStatus === 'saving' ? '保存中...' : saveStatus === 'saved' ? '已自动保存' : saveStatus === 'error' ? '保存失败' : '未保存' }}
+          </span>
+          <span class="save-status-time" v-if="lastSavedTime && (saveStatus === 'saved')">
+            {{ formatSaveTime(lastSavedTime) }}
+          </span>
+        </div>
         <el-dropdown @command="handleExportCommand">
           <el-button class="toolbar-btn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
@@ -95,7 +110,7 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           <span>同步问题</span>
         </el-button>
-        <el-button type="primary" class="toolbar-btn primary" @click="handleSave" :loading="submitting">
+        <el-button type="primary" class="toolbar-btn primary" @click="triggerManualSave" :loading="saveStatus === 'saving'">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
           <span>保存</span>
         </el-button>
@@ -209,22 +224,20 @@
         </div>
 
         <!-- Excel表格 -->
-        <div class="table-container">
+        <div class="table-container" @click="handleTableContainerClick($event)">
           <table class="excel-table">
             <colgroup>
               <col style="width: 130px">
               <col style="width: 320px">
-              <col style="width: 70px">
-              <col style="width: 280px">
-              <col style="width: 80px">
               <col style="width: 400px">
+              <col style="width: 80px">
+              <col style="width: 280px">
               <col style="width: 50px">
             </colgroup>
             <thead>
               <tr>
                 <th>安全控制点</th>
                 <th>测评项（标准条款）</th>
-                <th>方法</th>
                 <th>测评结论</th>
                 <th>符合性</th>
                 <th>关键证据点</th>
@@ -233,20 +246,13 @@
             </thead>
             <tbody>
               <tr v-for="(row, index) in tableRows" :key="row.itemId || index" :class="{ active: currentRowIndex === index, 'extension-divider': isExtensionDivider(index) }" @click="currentRowIndex = index">
-                <td class="cell-control">{{ row.controlPoint }}</td>
+                <td v-if="!row.controlPointHidden" class="cell-control" :rowspan="row.controlPointRowSpan || 1">{{ row.controlPoint }}</td>
                 <td class="cell-requirement">{{ row.requirement }}</td>
-                <td class="cell-method">
-                  <select v-model="row.method" class="method-select" @change="debounceAutoSave(row)">
-                    <option value="核查">核查</option>
-                    <option value="访谈">访谈</option>
-                    <option value="测试">测试</option>
-                  </select>
+                <td class="cell-conclusion" :class="{ selected: isCellSelected(index, 'conclusion'), 'selection-anchor': isSelectionAnchor(index, 'conclusion') }" @click="handleCellClick($event, index, 'conclusion')">
+                  <textarea v-model="row.conclusion" class="cell-textarea conclusion-box" placeholder="填写测评结论..." @input="adjustConclusionHeight($event); debounceAutoSave(row)" @paste="handleConclusionPaste($event, index)" :class="{ 'cell-selected': isCellSelected(index, 'conclusion') }" />
                 </td>
-                <td class="cell-conclusion">
-                  <textarea v-model="row.conclusion" class="cell-textarea conclusion-box" placeholder="填写测评结论..." rows="3" @input="debounceAutoSave(row)" />
-                </td>
-                <td class="cell-compliance">
-                  <select v-model="row.compliance" class="compliance-select" :class="row.compliance" @change="debounceAutoSave(row)">
+                <td class="cell-compliance" :class="{ selected: isCellSelected(index, 'compliance'), 'selection-anchor': isSelectionAnchor(index, 'compliance') }" @click="handleCellClick($event, index, 'compliance')">
+                  <select v-model="row.compliance" class="compliance-select" :class="row.compliance" @change="debounceAutoSave(row)" @paste="handleCompliancePaste($event, index)">
                     <option value="">待判定</option>
                     <option value="conform">符合</option>
                     <option value="partial">部分符合</option>
@@ -254,8 +260,8 @@
                     <option value="na">不适用</option>
                   </select>
                 </td>
-                <td class="cell-evidence">
-                  <textarea v-model="row.evidence" class="cell-textarea evidence-box mono" placeholder="粘贴执行结果、截图，或填写关键证据点..." rows="4" @input="debounceAutoSave(row)" />
+                <td class="cell-evidence" :class="{ selected: isCellSelected(index, 'evidence'), 'selection-anchor': isSelectionAnchor(index, 'evidence') }" @click="handleCellClick($event, index, 'evidence')">
+                  <textarea v-model="row.evidence" class="cell-textarea evidence-box mono" placeholder="粘贴执行结果、截图，或填写关键证据点..." @input="adjustEvidenceHeight($event); debounceAutoSave(row)" :class="{ 'cell-selected': isCellSelected(index, 'evidence') }" />
                   <div class="screenshot-area" v-if="row.screenshots && row.screenshots.length > 0">
                     <div v-for="(shot, idx) in row.screenshots" :key="idx" class="screenshot-thumb" @click="previewScreenshot(row, shot)">
                       <template v-if="getFileType(shot) === 'image'">
@@ -634,7 +640,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUpdated, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import type { AssessmentRecord } from '../../../shared/types';
@@ -726,7 +732,6 @@ function getExtensionTypeCodes(extType: string | string[] | undefined): string[]
 const route = useRoute();
 const router = useRouter();
 
-const submitting = ref(false);
 const project = ref<any>(null);
 const treeSearch = ref('');
 const expandedDomains = ref<string[]>([]);
@@ -834,27 +839,309 @@ function isExtensionDivider(index: number): boolean {
   return prevRow?.extensionType === 'general' && currRow?.extensionType !== 'general';
 }
 
-// 防抖自动保存
-let autoSaveTimer: number | null = null;
-const autoSaving = ref(false);
-
-function debounceAutoSave(row: any) {
-  if (autoSaveTimer) {
-    clearTimeout(autoSaveTimer);
-  }
-  autoSaveTimer = window.setTimeout(() => {
-    saveSingleRow(row);
-  }, 1000);
+// 自动调整textarea高度
+function adjustHeight(el: HTMLTextAreaElement) {
+  el.style.height = 'auto';
+  el.style.height = el.scrollHeight + 2 + 'px';
 }
 
-async function saveSingleRow(row: any) {
-  if (!window.api || !row?.itemId) return;
-  
-  autoSaving.value = true;
+function adjustConclusionHeight(event: Event) {
+  const el = event.target as HTMLTextAreaElement;
+  el.style.overflowY = 'hidden';
+  adjustHeight(el);
+}
+
+function adjustEvidenceHeight(event: Event) {
+  const el = event.target as HTMLTextAreaElement;
+  el.style.overflowY = 'hidden';
+  adjustHeight(el);
+}
+
+// 处理测评结论批量粘贴（从Excel复制多行内容）
+// 从Excel表格HTML中提取单元格值
+function parseExcelTableHTML(html: string): string[] | null {
+  // 创建临时DOM解析HTML
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const table = doc.querySelector('table');
+  if (!table) return null;
+
+  const cells: string[] = [];
+  const rows = table.querySelectorAll('tr');
+  for (const row of rows) {
+    const tds = row.querySelectorAll('td, th');
+    for (const td of tds) {
+      // 获取单元格内容，替换 <br> 和 <br/> 为换行符，保留原始换行
+      const content = td.innerHTML
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<[^>]*>/g, '') // 移除其余HTML标签
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .trim();
+      cells.push(content);
+    }
+  }
+  return cells.length > 0 ? cells : null;
+}
+
+// 解析纯文本粘贴（非Excel场景）
+function parsePlainText(text: string): string[] {
+  return text.split(/\r\n|\r|\n/).filter(line => line.trim() !== '');
+}
+
+// 单元格多选功能
+const selectedCells = ref<Set<string>>(new Set());
+const selectionAnchor = ref<{ rowIndex: number; field: string } | null>(null);
+
+function cellKey(rowIndex: number, field: string): string {
+  return `${rowIndex}:${field}`;
+}
+
+function isCellSelected(rowIndex: number, field: string): boolean {
+  return selectedCells.value.has(cellKey(rowIndex, field));
+}
+
+function isSelectionAnchor(rowIndex: number, field: string): boolean {
+  return selectionAnchor.value?.rowIndex === rowIndex && selectionAnchor.value?.field === field;
+}
+
+function handleCellClick(event: MouseEvent, rowIndex: number, field: string) {
+  const key = cellKey(rowIndex, field);
+
+  if (event.ctrlKey || event.metaKey) {
+    // Ctrl+Click: 切换单个单元格选中
+    if (selectedCells.value.has(key)) {
+      selectedCells.value.delete(key);
+    } else {
+      selectedCells.value.add(key);
+    }
+    selectionAnchor.value = { rowIndex, field };
+  } else if (event.shiftKey && selectionAnchor.value) {
+    // Shift+Click: 范围选择
+    const startRow = selectionAnchor.value.rowIndex;
+    const endRow = rowIndex;
+    const minRow = Math.min(startRow, endRow);
+    const maxRow = Math.max(startRow, endRow);
+    const fields = ['conclusion', 'compliance', 'evidence'];
+    const anchorFieldIdx = fields.indexOf(selectionAnchor.value.field);
+    const currentFieldIdx = fields.indexOf(field);
+
+    for (let r = minRow; r <= maxRow; r++) {
+      // 如果锚点和当前点在同一列，只选该列
+      if (anchorFieldIdx === currentFieldIdx) {
+        selectedCells.value.add(cellKey(r, field));
+      } else {
+        // 跨列时选所有中间列
+        const minF = Math.min(anchorFieldIdx, currentFieldIdx);
+        const maxF = Math.max(anchorFieldIdx, currentFieldIdx);
+        for (let f = minF; f <= maxF; f++) {
+          selectedCells.value.add(cellKey(r, fields[f]));
+        }
+      }
+    }
+  } else {
+    // 普通点击：清除其他选中，只选当前单元格
+    selectedCells.value.clear();
+    selectedCells.value.add(key);
+    selectionAnchor.value = { rowIndex, field };
+  }
+}
+
+function clearSelectedCells() {
+  if (selectedCells.value.size === 0) return;
+
+  const fields: Record<string, (row: any) => any> = {
+    'conclusion': (row: any) => row.conclusion = '',
+    'compliance': (row: any) => row.compliance = '',
+    'evidence': (row: any) => row.evidence = '',
+  };
+
+  for (const key of selectedCells.value) {
+    const [rowIdxStr, field] = key.split(':');
+    const rowIdx = parseInt(rowIdxStr);
+    if (rowIdx >= 0 && rowIdx < tableRows.value.length && fields[field]) {
+      fields[field](tableRows.value[rowIdx]);
+    }
+  }
+
+  hasUnsavedChanges.value = true;
+  saveStatus.value = 'unsaved';
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+  autoSaveTimer = window.setTimeout(() => saveAllRows(), 1500);
+
+  const count = selectedCells.value.size;
+  selectedCells.value.clear();
+  selectionAnchor.value = null;
+  ElMessage.success(`已清空 ${count} 个单元格`);
+}
+
+// 点击空白处取消选中
+function handleTableContainerClick(event: MouseEvent) {
+  const target = event.target as HTMLElement;
+  if (!target.closest('td')) {
+    selectedCells.value.clear();
+    selectionAnchor.value = null;
+  }
+}
+
+function handleConclusionPaste(event: Event, rowIndex: number) {
+  const textarea = event.target as HTMLTextAreaElement;
+  const clipboardData = (event as ClipboardEvent).clipboardData;
+  if (!clipboardData) return;
+
+  let cells: string[] = [];
+
+  // 优先从HTML解析（Excel复制场景，能正确处理单元格内换行）
+  const htmlData = clipboardData.getData('text/html');
+  if (htmlData) {
+    const parsed = parseExcelTableHTML(htmlData);
+    if (parsed && parsed.length > 0) {
+      cells = parsed;
+    }
+  }
+
+  // HTML解析失败则回退到纯文本
+  if (cells.length === 0) {
+    const pastedText = clipboardData.getData('text');
+    if (!pastedText) return;
+    cells = parsePlainText(pastedText);
+  }
+
+  // 如果只有一行，正常粘贴不做处理
+  if (cells.length <= 1) return;
+
+  // 阻止默认粘贴行为
+  event.preventDefault();
+
+  // 获取表格行
+  const rows = document.querySelectorAll('tbody tr');
+  if (!rows || rows.length === 0) return;
+
+  // 从当前行开始，批量填充内容
+  for (let i = 0; i < cells.length; i++) {
+    const targetRowIndex = rowIndex + i;
+    if (targetRowIndex >= tableRows.value.length) break;
+
+    // 更新数据
+    tableRows.value[targetRowIndex].conclusion = cells[i];
+
+    // 调整对应textarea的高度
+    const targetTextarea = rows[targetRowIndex]?.querySelector('.conclusion-box') as HTMLTextAreaElement;
+    if (targetTextarea) {
+      // 使用 setTimeout 确保DOM更新后再计算高度
+      setTimeout(() => {
+        targetTextarea.style.height = 'auto';
+        targetTextarea.style.height = targetTextarea.scrollHeight + 2 + 'px';
+      }, 0);
+    }
+  }
+
+  // 标记有未保存的更改并触发自动保存
+  hasUnsavedChanges.value = true;
+  saveStatus.value = 'unsaved';
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+  autoSaveTimer = window.setTimeout(() => saveAllRows(), 1500);
+
+  // 显示提示
+  const pastedCount = Math.min(cells.length, tableRows.value.length - rowIndex);
+  ElMessage.success(`已批量填写 ${pastedCount} 条测评结论`);
+}
+
+// 符合性文本到值的映射
+const COMPLIANCE_TEXT_MAP: Record<string, string> = {
+  '符合': 'conform',
+  '部分符合': 'partial',
+  '部分': 'partial',
+  '不符合': 'nonconform',
+  '不合规': 'nonconform',
+  '不适用': 'na',
+  'n/a': 'na',
+  'na': 'na',
+  '待判定': '',
+  '': '',
+};
+
+// 解析符合性文本
+function parseComplianceText(text: string): string {
+  const trimmed = text.trim().toLowerCase();
+  for (const [key, value] of Object.entries(COMPLIANCE_TEXT_MAP)) {
+    if (trimmed === key.toLowerCase()) {
+      return value;
+    }
+  }
+  // 包含匹配
+  if (trimmed.includes('部分')) return 'partial';
+  if (trimmed.includes('不符合') || trimmed.includes('不合规')) return 'nonconform';
+  if (trimmed.includes('符合')) return 'conform';
+  if (trimmed.includes('不适用') || trimmed.includes('n/a') || trimmed.includes('na')) return 'na';
+  return '';
+}
+
+// 处理符合性批量粘贴（从Excel复制）
+function handleCompliancePaste(event: Event, rowIndex: number) {
+  const select = event.target as HTMLSelectElement;
+  const clipboardData = (event as ClipboardEvent).clipboardData;
+  if (!clipboardData) return;
+
+  const pastedText = clipboardData.getData('text');
+  if (!pastedText) return;
+
+  // 按换行符拆分
+  const lines = pastedText.split(/\r\n|\r|\n/).filter(l => l.trim() !== '');
+
+  // 如果只有一个值，直接设置当前行
+  if (lines.length <= 1) {
+    const value = parseComplianceText(pastedText);
+    tableRows.value[rowIndex].compliance = value;
+    hasUnsavedChanges.value = true;
+    saveStatus.value = 'unsaved';
+    if (autoSaveTimer) clearTimeout(autoSaveTimer);
+    autoSaveTimer = window.setTimeout(() => saveAllRows(), 1500);
+    return;
+  }
+
+  // 阻止默认粘贴
+  event.preventDefault();
+
+  // 批量填充
+  let successCount = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const targetRowIndex = rowIndex + i;
+    if (targetRowIndex >= tableRows.value.length) break;
+
+    const value = parseComplianceText(lines[i]);
+    tableRows.value[targetRowIndex].compliance = value;
+    successCount++;
+  }
+
+  hasUnsavedChanges.value = true;
+  saveStatus.value = 'unsaved';
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+  autoSaveTimer = window.setTimeout(() => saveAllRows(), 1500);
+
+  ElMessage.success(`已批量填写 ${successCount} 条符合性`);
+}
+
+// 保存状态管理
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'unsaved';
+const saveStatus = ref<SaveStatus>('idle');
+const hasUnsavedChanges = ref(false);
+const lastSavedTime = ref<Date | null>(null);
+let autoSaveTimer: number | null = null;
+let periodicSaveTimer: number | null = null;
+
+// 统一的保存逻辑：保存所有行
+async function saveAllRows(): Promise<boolean> {
+  if (!currentAsset.value && !currentDomainId.value) return false;
+  if (tableRows.value.length === 0) return false;
+
+  saveStatus.value = 'saving';
   try {
     const projectId = route.params.id as string;
     const assetId = currentAsset.value?.id || '';
-    
+
     const complianceMap: Record<string, string> = {
       'conform': 'compliant',
       'partial': 'partial',
@@ -862,43 +1149,97 @@ async function saveSingleRow(row: any) {
       'na': 'not_applicable',
       '': 'untested',
     };
-    
+
     const methodMap: Record<string, string> = {
       '核查': 'check',
       '访谈': 'interview',
       '测试': 'test',
     };
-    
-    const data: Partial<AssessmentRecord> = {
-      id: row.id || undefined,
-      projectId,
-      assetId: assetId || undefined,
-      itemId: row.itemId,
-      result: (complianceMap[row.compliance] || 'untested') as AssessmentRecord['result'],
-      method: (methodMap[row.method] || 'check') as AssessmentRecord['method'],
-      commandOutput: row.evidence || '',
-      evidence: row.evidence || '',
-      findings: row.conclusion || '',
-      screenshotPaths: row.screenshots && row.screenshots.length > 0 ? JSON.stringify(row.screenshots) : undefined,
-    };
-    
-    const res = await window.api.assessment.saveRecord(data);
-    if (res.success && res.data) {
-      row.id = res.data.id;
+
+    for (const row of tableRows.value) {
+      const data: Partial<AssessmentRecord> = {
+        id: row.id || undefined,
+        projectId,
+        assetId: assetId || undefined,
+        itemId: row.itemId,
+        result: (complianceMap[row.compliance] || 'untested') as AssessmentRecord['result'],
+        method: (methodMap[row.method] || 'check') as AssessmentRecord['method'],
+        commandOutput: row.evidence || '',
+        evidence: row.evidence || '',
+        findings: row.conclusion || '',
+        screenshotPaths: row.screenshots && row.screenshots.length > 0 ? JSON.stringify(row.screenshots) : undefined,
+      };
+
+      const res = await window.api.assessment.saveRecord(data);
+      if (res.success && res.data) {
+        row.id = res.data.id;
+      }
     }
-    
+
     if (assetId) {
       updateAssetProgress(assetId, tableRows.value);
     }
     await loadProgress();
+
+    saveStatus.value = 'saved';
+    hasUnsavedChanges.value = false;
+    lastSavedTime.value = new Date();
+    return true;
   } catch (error) {
-    console.error('自动保存失败:', error);
-  } finally {
-    autoSaving.value = false;
+    console.error('保存失败:', error);
+    saveStatus.value = 'error';
+    return false;
   }
 }
 
-// AI分析弹窗
+// 防抖自动保存（输入时触发）
+function debounceAutoSave(_row: any) {
+  hasUnsavedChanges.value = true;
+  saveStatus.value = 'unsaved';
+  if (autoSaveTimer) {
+    clearTimeout(autoSaveTimer);
+  }
+  autoSaveTimer = window.setTimeout(() => {
+    saveAllRows();
+  }, 1500);
+}
+
+// 启动周期性备份保存（每30秒）
+function startPeriodicSave() {
+  stopPeriodicSave();
+  periodicSaveTimer = window.setInterval(() => {
+    if (hasUnsavedChanges.value) {
+      saveAllRows();
+    }
+  }, 30000);
+}
+
+function stopPeriodicSave() {
+  if (periodicSaveTimer) {
+    clearInterval(periodicSaveTimer);
+    periodicSaveTimer = null;
+  }
+}
+
+// 手动保存
+async function triggerManualSave() {
+  const success = await saveAllRows();
+  if (success) {
+    ElMessage.success('保存成功');
+  } else {
+    ElMessage.error('保存失败，请重试');
+  }
+}
+
+// 格式化保存时间
+function formatSaveTime(date: Date): string {
+  const now = new Date();
+  const diff = Math.floor((now.getTime() - date.getTime()) / 1000);
+  if (diff < 5) return '刚刚';
+  if (diff < 60) return `${diff}秒前`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+}
 const aiDialogVisible = ref(false);
 const aiLoading = ref(false);
 const aiLoadingText = ref('');
@@ -1354,12 +1695,41 @@ async function selectGlobalDomain(domainId: string) {
         }
       }
     }
+
+    // 计算控制点单元格合并
+    calculateControlPointRowSpans();
   } catch (error) {
     console.error('加载全局测评项失败:', error);
   }
 }
 
-// 选择测评对象（资产）后，加载该资产在对应层面下的所有测评项
+// 根据 controlPoint 合并单元格
+function calculateControlPointRowSpans() {
+  const rows = tableRows.value;
+  if (!rows || rows.length === 0) return;
+
+  let i = 0;
+  while (i < rows.length) {
+    const cp = rows[i].controlPoint;
+    let j = i + 1;
+    while (j < rows.length && rows[j].controlPoint === cp) {
+      j++;
+    }
+    const span = j - i;
+    if (span > 1) {
+      rows[i].controlPointRowSpan = span;
+      rows[i].controlPointHidden = false;
+      for (let k = i + 1; k < j; k++) {
+        rows[k].controlPointRowSpan = 1;
+        rows[k].controlPointHidden = true;
+      }
+    } else {
+      rows[i].controlPointRowSpan = 1;
+      rows[i].controlPointHidden = false;
+    }
+    i = j;
+  }
+}
 async function selectAsset(asset: any) {
   currentAsset.value = asset;
 
@@ -1461,6 +1831,9 @@ async function selectAsset(asset: any) {
         }
       }
     }
+
+    // 计算控制点单元格合并
+    calculateControlPointRowSpans();
 
     updateAssetProgress(asset.id, tableRows.value);
   } catch (error) {
@@ -1872,9 +2245,15 @@ function setupGlobalPasteHandler() {
     const items = event.clipboardData?.items;
     if (!items || items.length === 0) return;
 
+    // 检查剪贴板是否包含文本（如Excel复制时会同时包含文本和图片）
+    const hasText = event.clipboardData?.getData('text/plain')?.trim();
+
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       if (item.type.startsWith('image/')) {
+        // 如果剪贴板包含文本，说明可能是Excel复制，不自动粘贴图片
+        if (hasText) continue;
+
         event.preventDefault();
         const blob = item.getAsFile();
         if (blob) {
@@ -1914,67 +2293,6 @@ function quoteCommand(cmd: any) {
     currentRow.evidence = cmdText;
   }
   ElMessage.success('已引用命令到关键证据点');
-}
-
-async function handleSave() {
-  if (!currentAsset.value && !currentDomainId.value) {
-    ElMessage.warning('请先选择测评对象或安全层面');
-    return;
-  }
-  if (tableRows.value.length === 0) {
-    ElMessage.warning('没有可保存的数据');
-    return;
-  }
-
-  submitting.value = true;
-  try {
-    const projectId = route.params.id as string;
-    const assetId = currentAsset.value?.id || '';
-
-    for (const row of tableRows.value) {
-      const complianceMap: Record<string, string> = {
-        'conform': 'compliant',
-        'partial': 'partial',
-        'nonconform': 'non_compliant',
-        'na': 'not_applicable',
-        '': 'untested',
-      };
-
-      const methodMap: Record<string, string> = {
-        '核查': 'check',
-        '访谈': 'interview',
-        '测试': 'test',
-      };
-
-      const data: Partial<AssessmentRecord> = {
-        id: row.id || undefined,
-        projectId,
-        assetId: assetId || undefined,
-        itemId: row.itemId,
-        result: (complianceMap[row.compliance] || 'untested') as AssessmentRecord['result'],
-        method: (methodMap[row.method] || 'check') as AssessmentRecord['method'],
-        commandOutput: row.evidence || '',
-        evidence: row.evidence || '',
-        findings: row.conclusion || '',
-        screenshotPaths: row.screenshots && row.screenshots.length > 0 ? JSON.stringify(row.screenshots) : undefined,
-      };
-
-      const res = await window.api.assessment.saveRecord(data);
-      if (res.success && res.data) {
-        row.id = res.data.id;
-      }
-    }
-
-    ElMessage.success('保存成功');
-    if (assetId) {
-      updateAssetProgress(assetId, tableRows.value);
-    }
-    await loadProgress();
-  } catch (error) {
-    ElMessage.error('保存失败');
-  } finally {
-    submitting.value = false;
-  }
 }
 
 async function loadProgress() {
@@ -2166,15 +2484,15 @@ async function confirmExport() {
 async function syncIssues() {
   const projectId = route.params.id as string;
   if (!projectId || !window.api) return;
-  
+
   try {
     const res = await window.api.issue.generateFromRecords(projectId);
     if (res.success) {
       const count = res.data?.count || 0;
       if (count > 0) {
-        ElMessage.success(`已同步 ${count} 个不符合项到问题清单`);
+        ElMessage.success(`已同步 ${count} 个问题到问题清单（含不符合项和部分符合项）`);
       } else {
-        ElMessage.info('没有新的不符合项需要同步');
+        ElMessage.info('没有新的问题需要同步');
       }
     } else {
       ElMessage.error(res.error?.message || '同步失败');
@@ -2275,6 +2593,59 @@ onMounted(async () => {
       }
       setTimeout(() => { batchAiProgress.value.visible = false; }, 800);
     }
+  });
+
+  // 启动周期性备份保存
+  startPeriodicSave();
+
+  // Ctrl+S 快捷键
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+      e.preventDefault();
+      triggerManualSave();
+    }
+    // Delete/Backspace 清空选中单元格
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedCells.value.size > 0) {
+      // 如果焦点在input/textarea内且内容不为空，不处理（让用户正常编辑）
+      const activeEl = document.activeElement;
+      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT')) {
+        const inputEl = activeEl as HTMLInputElement | HTMLTextAreaElement;
+        if (inputEl.value && inputEl.value.length > 0) return;
+      }
+      e.preventDefault();
+      clearSelectedCells();
+    }
+    // Escape 取消选中
+    if (e.key === 'Escape' && selectedCells.value.size > 0) {
+      selectedCells.value.clear();
+      selectionAnchor.value = null;
+    }
+  };
+  document.addEventListener('keydown', handleKeyDown);
+
+  // 关闭页面前未保存警告
+  const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+    if (hasUnsavedChanges.value) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  };
+  window.addEventListener('beforeunload', handleBeforeUnload);
+
+  // 清理函数
+  onBeforeUnmount(() => {
+    stopPeriodicSave();
+    document.removeEventListener('keydown', handleKeyDown);
+    window.removeEventListener('beforeunload', handleBeforeUnload);
+  });
+});
+
+onUpdated(() => {
+  // 自动调整所有textarea高度以适应内容
+  const textareas = document.querySelectorAll('.cell-textarea');
+  textareas.forEach((ta: any) => {
+    ta.style.height = 'auto';
+    ta.style.height = ta.scrollHeight + 2 + 'px';
   });
 });
 </script>
@@ -2402,6 +2773,51 @@ onMounted(async () => {
     gap: 10px;
   }
 
+  .save-status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    transition: all 0.3s ease;
+    background: var(--color-bg-base, #F9FAFB);
+    border: 1px solid transparent;
+
+    &.saving {
+      color: #2563EB;
+      background: #EFF6FF;
+      border-color: #BFDBFE;
+    }
+    &.saved {
+      color: #059669;
+      background: #ECFDF5;
+      border-color: #A7F3D0;
+    }
+    &.error {
+      color: #DC2626;
+      background: #FEF2F2;
+      border-color: #FECACA;
+    }
+    &.unsaved {
+      color: #D97706;
+      background: #FFFBEB;
+      border-color: #FDE68A;
+    }
+
+    .save-status-icon svg.spin {
+      animation: spin 1s linear infinite;
+    }
+    .save-status-text {
+      font-weight: 500;
+    }
+    .save-status-time {
+      font-size: 11px;
+      opacity: 0.7;
+      margin-left: 2px;
+    }
+  }
+
   .toolbar-center {
     flex: 1;
     display: flex;
@@ -2466,6 +2882,12 @@ onMounted(async () => {
     &.primary {
       border: none;
       background: var(--color-primary, #1B5FD9);
+      color: #fff;
+    }
+
+    &.danger {
+      border: none;
+      background: #DC2626;
       color: #fff;
     }
   }
@@ -2891,8 +3313,8 @@ onMounted(async () => {
         font-size: 12px;
         color: var(--color-text-primary, #111827);
         text-align: center;
-        border: 1px solid #E5E7EB;
-        border-bottom: 2px solid #D1D5DB;
+        border: 1px solid #D1D5DB;
+        border-bottom: 2px solid #9CA3AF;
         white-space: nowrap;
         background: transparent;
       }
@@ -2927,7 +3349,7 @@ onMounted(async () => {
 
       td {
         padding: 6px 10px;
-        border: 1px solid #E5E7EB;
+        border: 1px solid #D1D5DB;
         vertical-align: top;
       }
 
@@ -2936,6 +3358,8 @@ onMounted(async () => {
         color: var(--color-text-secondary, #4B5563);
         font-size: 11px;
         font-weight: 500;
+        text-align: center;
+        vertical-align: middle;
       }
 
       .cell-requirement {
@@ -2944,16 +3368,30 @@ onMounted(async () => {
         line-height: 1.5;
       }
 
-      .cell-method {
-        text-align: center;
-      }
-
       .cell-command, .cell-result {
         font-family: var(--font-family-mono, monospace);
       }
 
       .cell-compliance {
         text-align: center;
+        vertical-align: middle;
+      }
+
+      // 单元格多选样式
+      td.selected {
+        background: rgba(37, 99, 235, 0.03) !important;
+        outline: 1px solid rgba(37, 99, 235, 0.25);
+        outline-offset: -1px;
+
+        &.selection-anchor {
+          outline: 1px solid rgba(37, 99, 235, 0.4);
+          background: rgba(37, 99, 235, 0.05) !important;
+        }
+
+        .cell-textarea.cell-selected,
+        .compliance-select.cell-selected {
+          background: transparent;
+        }
       }
 
       .cell-actions {
@@ -3013,13 +3451,15 @@ onMounted(async () => {
     }
 
     &.conclusion-box {
-      min-height: 72px;
+      min-height: 60px;
       padding: 4px 6px;
+      overflow-y: hidden;
     }
 
     &.evidence-box {
-      min-height: 48px;
-      padding: 4px 6px;
+      min-height: 80px;
+      padding: 6px 8px;
+      overflow-y: hidden;
     }
   }
 
