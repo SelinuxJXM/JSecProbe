@@ -28,12 +28,17 @@ process.on('unhandledRejection', (reason) => {
 });
 
 function createWindow() {
+  const iconPath = app.isPackaged
+    ? join(process.resourcesPath, 'icon.ico')
+    : join(__dirname, '../../build/icon.ico');
+
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 1280,
     minHeight: 720,
     title: 'JSecProbe - 等级保护现场测评系统',
+    icon: iconPath,
     backgroundColor: '#f5f7fa',
     autoHideMenuBar: true,
     show: false,

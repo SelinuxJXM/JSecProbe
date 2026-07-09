@@ -134,6 +134,9 @@ async function importAssetPresetRecords(asset: any): Promise<number> {
       path.join(process.cwd(), templateFileName),
       path.join(app.getAppPath(), templateFileName),
       path.join(path.dirname(app.getAppPath()), templateFileName),
+      path.join(path.dirname(app.getAppPath()), 'resources', templateFileName),
+      path.join(process.resourcesPath || '', templateFileName),
+      path.join(process.resourcesPath || '', 'resources', templateFileName),
     ];
     
     let templatePath = '';

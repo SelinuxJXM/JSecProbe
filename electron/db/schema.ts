@@ -201,7 +201,7 @@ export const systemSettings = sqliteTable('system_settings', {
   autoBackupEnabled: integer('auto_backup_enabled').notNull().default(1),
   autoBackupDays: integer('auto_backup_days').notNull().default(7),
   dataPath: text('data_path'),
-  defaultStandard: text('default_standard').default('gb-t-22239-2019'),
+  defaultStandard: text('default_standard').default('gb-t-22239-2019-l3'),
   standardDataVersion: integer('standard_data_version').notNull().default(1),
   updatedAt: text('updated_at').notNull(),
 });

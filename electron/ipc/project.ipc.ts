@@ -153,7 +153,7 @@ export function registerProjectHandlers(): void {
       if (!level) level = 3; // 默认三级
 
       // 根据等级选择对应的标准库
-      const standardId = data.standardId || (level === 2 ? 'gb-t-22239-2019-l2' : 'gb-t-22239-2019');
+      const standardId = data.standardId || (level === 2 ? 'gb-t-22239-2019-l2' : 'gb-t-22239-2019-l3');
 
       // 自动生成项目编号 DJCP-XXX
       let projectNo = data.projectNo;
@@ -238,11 +238,21 @@ export function registerProjectHandlers(): void {
         path.join(process.cwd(), templateFileName),
         path.join(app.getAppPath(), templateFileName),
         path.join(path.dirname(app.getAppPath()), templateFileName),
+        path.join(path.dirname(app.getAppPath()), 'resources', templateFileName),
+        path.join(process.resourcesPath || '', templateFileName),
+        path.join(process.resourcesPath || '', 'resources', templateFileName),
       ];
+      
+      log.info(`开始查找模板文件: ${templateFileName}`);
+      log.info(`process.cwd(): ${process.cwd()}`);
+      log.info(`app.getAppPath(): ${app.getAppPath()}`);
+      log.info(`process.resourcesPath: ${process.resourcesPath}`);
       
       let templatePath = '';
       for (const p of possiblePaths) {
-        if (fs.existsSync(p)) {
+        const exists = fs.existsSync(p);
+        log.info(`  检查路径: ${p} -> ${exists ? '存在' : '不存在'}`);
+        if (exists) {
           templatePath = p;
           break;
         }
@@ -253,7 +263,10 @@ export function registerProjectHandlers(): void {
         return;
       }
       
+      log.info(`找到模板文件: ${templatePath}`);
+      
       const workbook = XLSX.readFile(templatePath);
+      log.info(`Excel文件包含 ${workbook.SheetNames.length} 个工作表: ${workbook.SheetNames.join(', ')}`);
       
       const SHEET_TO_DOMAIN: Record<string, string> = {
         '安全物理环境': 'secure_physical',
@@ -286,15 +299,17 @@ export function registerProjectHandlers(): void {
       
       // 获取该项目的标准库测评项并建立索引
       const projectRecord = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
-      const projectStandardId = projectRecord?.standardId || 'gb-t-22239-2019';
+      const projectStandardId = projectRecord?.standardId || 'gb-t-22239-2019-l3';
       const allItems = await db.query.assessmentItems.findMany({
         where: eq(schema.assessmentItems.standardId, projectStandardId)
       });
+      log.info(`获取到 ${allItems.length} 条测评项，标准库ID: ${projectStandardId}`);
       const itemMap = new Map<string, any>();
       for (const item of allItems) {
         const key = `${item.domain}||${item.controlPoint}||${item.requirement}`;
         itemMap.set(key, item);
       }
+      log.info(`已构建测评项索引，共 ${itemMap.size} 条`);
       
       const now = new Date().toISOString();
       let importedCount = 0;
@@ -339,7 +354,10 @@ export function registerProjectHandlers(): void {
             }
           }
           
-          if (!item) continue;
+          if (!item) {
+            log.debug(`未找到匹配的测评项: domain=${domainKey}, controlPoint=${controlPoint}, requirement前20字符=${requirement.substring(0, 20)}`);
+            continue;
+          }
           
           // 检查是否已存在记录
           const existing = await db.query.assessmentRecords.findFirst({
@@ -586,7 +604,7 @@ export function registerProjectHandlers(): void {
             levelCombo: row.getCell(6).text || undefined,
             standardSystem: row.getCell(7).text || undefined,
             extensionType: row.getCell(8).text || undefined,
-            standardId: 'gb-t-22239-2019',
+            standardId: 'gb-t-22239-2019-l3',
             status: 'draft',
             progress: 0,
             createdAt: now,

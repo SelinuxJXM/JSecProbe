@@ -1258,7 +1258,7 @@ async function selectGlobalDomain(domainId: string) {
   try {
     const projectId = route.params.id as string;
     const projectLevel = project.value?.level || 3;  // 默认三级
-    const projectStandardId = project.value?.standardId || 'gb-t-22239-2019';
+    const projectStandardId = project.value?.standardId || 'gb-t-22239-2019-l3';
     const extensionTypes = getExtensionTypeCodes(project.value?.extensionType);
     console.log('[selectGlobalDomain] projectId:', projectId, 'level:', projectLevel, 'standardId:', projectStandardId, 'extensions:', extensionTypes);
 
@@ -1370,7 +1370,7 @@ async function selectAsset(asset: any) {
     const projectId = route.params.id as string;
     const domainId = asset.domainId;
     const projectLevel = project.value?.level || 3;  // 默认三级
-    const projectStandardId = project.value?.standardId || 'gb-t-22239-2019';
+    const projectStandardId = project.value?.standardId || 'gb-t-22239-2019-l3';
     const extensionTypes = getExtensionTypeCodes(project.value?.extensionType);
 
     // 加载该层面的所有测评项（根据项目等级和扩展类型筛选）
@@ -1982,7 +1982,7 @@ async function handleSave() {
 async function loadProgress() {
   const projectId = route.params.id as string;
   if (!projectId || !window.api) return;
-  const res = await window.api.assessment.getProgress(projectId, project.value?.standardId || 'gb-t-22239-2019');
+  const res = await window.api.assessment.getProgress(projectId, project.value?.standardId || 'gb-t-22239-2019-l3');
   if (res.success && res.data) {
     progress.value = res.data;
   }

@@ -1,6 +1,6 @@
 {
   "name": "mlps-assessment-tool",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "JSecProbe - 等级保护现场测评系统",
   "main": "dist-electron/main/index.js",
   "author": "景景",
@@ -63,7 +63,7 @@
   },
   "build": {
     "appId": "com.mlps.assessment",
-    "productName": "等级保护现场测评系统",
+    "productName": "JSecProbe",
     "directories": {
       "output": "dist"
     },
@@ -74,6 +74,13 @@
     "asar": true,
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "./",
+        "filter": ["**/*"]
+      }
     ],
     "win": {
       "target": [
@@ -88,9 +95,12 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "等级保护现场测评系统"
+      "shortcutName": "JSecProbe"
     }
   }
 }

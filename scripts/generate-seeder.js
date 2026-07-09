@@ -90,7 +90,7 @@ function generateSeeder() {
       const id = `gb22239-${domain.key}-${globalSortOrder}`;
       allItems.push({
         id,
-        standardId: 'gb-t-22239-2019',
+        standardId: 'gb-t-22239-2019-l3',
         domain: domain.key,
         controlPoint: item.controlPoint,
         controlName: item.controlName,
@@ -114,9 +114,9 @@ function generateSeeder() {
   lines.push("import * as schema from '../schema';");
   lines.push('');
   lines.push('export const DEFAULT_STANDARD = {');
-  lines.push("  id: 'gb-t-22239-2019',");
+  lines.push("  id: 'gb-t-22239-2019-l3',");
   lines.push("  name: '信息安全技术 网络安全等级保护基本要求',");
-  lines.push("  code: 'GB/T 22239-2019',");
+  lines.push("  code: 'GB/T 22239-2019-L3',");
   lines.push("  version: '2.0',");
   lines.push("  description: '网络安全等级保护2.0基本要求，涵盖二级、三级信息系统，支持各类扩展指标',");
   lines.push('  grade: 3,');
