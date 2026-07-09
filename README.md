@@ -76,6 +76,20 @@ npm run build:linux
 └── package.json           # 项目配置
 ```
 
+## 🖼️ 界面展示
+
+| 登录页 | 主界面 | 项目列表 |
+| :--- | :--- | :--- |
+| ![登录页](https://raw.githubusercontent.com/SelinuxJXM/JSecProbe/main/screenshots/01-登录页.png) | ![主界面](https://raw.githubusercontent.com/SelinuxJXM/JSecProbe/main/screenshots/02-主界面.png) | ![项目列表](https://raw.githubusercontent.com/SelinuxJXM/JSecProbe/main/screenshots/03-项目列表.png) |
+
+| 系统构成 | 现场核查 | 问题清单 |
+| :--- | :--- | :--- |
+| ![系统构成](https://raw.githubusercontent.com/SelinuxJXM/JSecProbe/main/screenshots/04-系统构成.png) | ![现场核查](https://raw.githubusercontent.com/SelinuxJXM/JSecProbe/main/screenshots/05-现场核查.png) | ![问题清单](https://raw.githubusercontent.com/SelinuxJXM/JSecProbe/main/screenshots/06-问题清单.png) |
+
+| AI分析 | 知识库 | 系统设置 |
+| :--- | :--- | :--- |
+| ![AI分析](https://raw.githubusercontent.com/SelinuxJXM/JSecProbe/main/screenshots/07-AI分析.png) | ![知识库](https://raw.githubusercontent.com/SelinuxJXM/JSecProbe/main/screenshots/08-知识库.png) | ![系统设置](https://raw.githubusercontent.com/SelinuxJXM/JSecProbe/main/screenshots/09-系统设置.png) |
+
 ## 📝 默认账号
 
 开发模式下默认管理员账号：
