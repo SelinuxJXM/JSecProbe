@@ -93,7 +93,7 @@
       </div>
     </div>
 
-    <div class="card p-md">
+    <div class="card p-md" style="margin-bottom: 128px">
       <el-form :inline="true" :model="filterForm" class="mb-sm">
         <el-form-item label="关键词">
           <el-input
@@ -131,24 +131,38 @@
       </el-form>
 
       <div class="table-toolbar">
-        <el-button
-          type="danger"
-          :icon="Delete"
-          size="small"
-          :disabled="selectedRows.length === 0"
-          @click="handleBatchDelete"
-        >
-          批量删除 ({{ selectedRows.length }})
-        </el-button>
-        <el-button
-          type="warning"
-          :icon="Edit"
-          size="small"
-          :disabled="selectedRows.length === 0"
-          @click="handleBatchStatus"
-        >
-          批量修改状态 ({{ selectedRows.length }})
-        </el-button>
+        <div class="toolbar-left">
+          <el-button
+            type="danger"
+            :icon="Delete"
+            size="small"
+            :disabled="selectedRows.length === 0"
+            @click="handleBatchDelete"
+          >
+            批量删除 ({{ selectedRows.length }})
+          </el-button>
+          <el-button
+            type="warning"
+            :icon="Edit"
+            size="small"
+            :disabled="selectedRows.length === 0"
+            @click="handleBatchStatus"
+          >
+            批量修改状态 ({{ selectedRows.length }})
+          </el-button>
+        </div>
+        <div class="toolbar-right">
+          <el-pagination
+            v-model:current-page="pagination.page"
+            v-model:page-size="pagination.pageSize"
+            :total="pagination.total"
+            :page-sizes="[10, 20, 50, 100]"
+            layout="prev, pager, next, total"
+            background
+            @size-change="loadIssues"
+            @current-change="loadIssues"
+          />
+        </div>
       </div>
 
       <el-table
@@ -160,13 +174,22 @@
         @sort-change="handleSortChange"
       >
         <el-table-column type="selection" width="50" align="center" />
-        <el-table-column type="index" label="序号" width="60" align="center" />
+        <el-table-column label="序号" width="60" align="center">
+          <template #default="{ $index }">
+            {{ (pagination.page - 1) * pagination.pageSize + $index + 1 }}
+          </template>
+        </el-table-column>
         <el-table-column prop="issueTitle" label="问题标题" min-width="200" sortable="custom">
           <template #default="{ row }">
             <span class="issue-title-cell" @click="handleView(row)">{{ row.issueTitle }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="securityDomain" label="安全域" width="120" sortable="custom" />
+        <el-table-column label="安全域" width="120" sortable="custom" prop="securityDomain">
+          <template #default="{ row }">
+            {{ getSecurityDomainName(row.securityDomain) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="assetName" label="测评对象" width="150" sortable="custom" />
         <el-table-column prop="controlPoint" label="控制点" width="120" sortable="custom" />
         <el-table-column prop="riskLevel" label="风险等级" width="100" align="center" sortable="custom">
           <template #default="{ row }">
@@ -182,22 +205,12 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="responsiblePerson" label="责任人" width="100">
-          <template #default="{ row }">
-            {{ row.responsiblePerson || '-' }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="rectificationDeadline" label="截止日期" width="120" sortable="custom">
-          <template #default="{ row }">
-            {{ row.rectificationDeadline || '-' }}
-          </template>
-        </el-table-column>
         <el-table-column prop="createdAt" label="创建时间" width="170" sortable="custom">
           <template #default="{ row }">
             {{ formatDate(row.createdAt) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="220" fixed="right" align="center">
+        <el-table-column label="操作" width="260" fixed="right" align="center">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="handleView(row)">查看</el-button>
             <el-button link type="primary" size="small" @click="handleEdit(row)">编辑</el-button>
@@ -206,19 +219,6 @@
           </template>
         </el-table-column>
       </el-table>
-
-      <div class="pagination">
-        <el-pagination
-          v-model:current-page="pagination.page"
-          v-model:page-size="pagination.pageSize"
-          :total="pagination.total"
-          :page-sizes="[10, 20, 50, 100]"
-          layout="total, sizes, prev, pager, next, jumper"
-          background
-          @size-change="loadIssues"
-          @current-change="loadIssues"
-        />
-      </div>
     </div>
 
     <!-- 问题详情/编辑弹窗 -->
@@ -271,26 +271,6 @@
                 <el-option label="已整改" value="resolved" />
                 <el-option label="已关闭" value="closed" />
               </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="整改责任人">
-              <el-input v-model="formData.responsiblePerson" :disabled="!isEdit" placeholder="请输入责任人" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="整改截止日期">
-              <el-date-picker
-                v-model="formData.rectificationDeadline"
-                type="date"
-                placeholder="选择截止日期"
-                format="YYYY-MM-DD"
-                value-format="YYYY-MM-DD"
-                style="width: 100%"
-                :disabled="!isEdit"
-              />
             </el-form-item>
           </el-col>
         </el-row>
@@ -482,7 +462,7 @@ const sortConfig = reactive({
 
 const pagination = reactive({
   page: 1,
-  pageSize: 20,
+  pageSize: 10,
   total: 0,
 });
 
@@ -523,6 +503,29 @@ const domainList = computed(() => [
   '安全建设管理',
   '安全运维管理',
 ]);
+
+// 安全域ID与中文名称映射
+const DOMAIN_ID_TO_NAME: Record<string, string> = {
+  'secure_physical': '安全物理环境',
+  'secure_communication': '安全通信网络',
+  'secure_boundary': '安全区域边界',
+  'secure_computing': '安全计算环境',
+  'secure_management': '安全管理中心',
+  'security_management': '安全管理制度',
+  'security_organization': '安全管理机构',
+  'security_personnel': '安全管理人员',
+  'security_construction': '安全建设管理',
+  'security_maintenance': '安全运维管理',
+};
+
+function getSecurityDomainName(domainId: string): string {
+  return DOMAIN_ID_TO_NAME[domainId] || domainId || '-';
+}
+
+const DOMAIN_NAME_TO_ID: Record<string, string> = {};
+for (const [id, name] of Object.entries(DOMAIN_ID_TO_NAME)) {
+  DOMAIN_NAME_TO_ID[name] = id;
+}
 
 const complianceRateValue = computed(() => {
   const rate = summary.value?.complianceRate;
@@ -602,7 +605,7 @@ async function loadIssues() {
       keyword: filterForm.keyword || undefined,
       riskLevel: filterForm.riskLevel || undefined,
       status: filterForm.status || undefined,
-      securityDomain: filterForm.securityDomain || undefined,
+      securityDomain: filterForm.securityDomain ? DOMAIN_NAME_TO_ID[filterForm.securityDomain] : undefined,
       sortProp: sortConfig.prop || undefined,
       sortOrder: sortConfig.order || undefined,
       page: pagination.page,
@@ -1043,7 +1046,7 @@ onMounted(() => {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   padding: 16px 24px;
-  margin-bottom: 16px;
+  margin-bottom: 10px;
 
   .breadcrumb {
     display: flex;
@@ -1108,15 +1111,15 @@ onMounted(() => {
 
 .stat-cards-row {
   display: flex;
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: 10px;
+  margin-bottom: 6px;
 }
 
 .stat-card {
   flex: 1;
   display: flex;
   align-items: center;
-  padding: 16px 20px;
+  padding: 12px 20px;
   background: var(--color-bg-card);
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border-default);
@@ -1129,13 +1132,13 @@ onMounted(() => {
   }
 
   .stat-icon {
-    width: 48px;
-    height: 48px;
+    width: 40px;
+    height: 40px;
     border-radius: var(--radius-md);
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-right: 14px;
+    margin-right: 12px;
     flex-shrink: 0;
   }
 
@@ -1146,7 +1149,7 @@ onMounted(() => {
   }
 
   .stat-value {
-    font-size: 24px;
+    font-size: 20px;
     font-weight: 700;
     line-height: 1.2;
     color: var(--color-text-primary);
@@ -1195,11 +1198,11 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 24px;
+  padding: 14px 20px;
   background: var(--color-bg-card);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
-  margin-bottom: 16px;
+  margin-bottom: 10px;
 }
 
 .page-header-title {
@@ -1265,9 +1268,14 @@ onMounted(() => {
 .table-toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
   margin-bottom: 12px;
-  flex-wrap: wrap;
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .issue-title-cell {
@@ -1312,14 +1320,6 @@ onMounted(() => {
     color: var(--color-text-primary);
     border-bottom: 1px solid var(--color-border-light) !important;
   }
-}
-
-.pagination {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--color-border-light);
 }
 
 .evidence-dialog-content {
