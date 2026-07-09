@@ -218,7 +218,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
   auto_backup_enabled INTEGER NOT NULL DEFAULT 1,
   auto_backup_days INTEGER NOT NULL DEFAULT 7,
   data_path TEXT,
-  default_standard TEXT DEFAULT 'gb-t-22239-2019',
+  default_standard TEXT DEFAULT 'gb-t-22239-2019-l3',
   updated_at TEXT NOT NULL
 );
 

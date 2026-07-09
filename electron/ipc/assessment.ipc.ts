@@ -127,7 +127,7 @@ export function registerAssessmentHandlers(): void {
 
       // 从项目获取standardId
       const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
-      const standardId = project?.standardId || 'gb-t-22239-2019';
+      const standardId = project?.standardId || 'gb-t-22239-2019-l3';
 
       const conditions = [
         eq(schema.assessmentItems.standardId, standardId),
@@ -279,7 +279,7 @@ export function registerAssessmentHandlers(): void {
       const db = getDb();
 
       // 从项目获取standardId
-      let standardId = 'gb-t-22239-2019';
+      let standardId = 'gb-t-22239-2019-l3';
       if (projectId) {
         const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
         standardId = project?.standardId || standardId;

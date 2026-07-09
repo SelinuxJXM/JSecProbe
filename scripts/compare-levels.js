@@ -151,7 +151,7 @@ function generateSeeder(levelData) {
       const id = `gb22239-${domain}-${sortOrder}`;
       allItems.push({
         id,
-        standardId: 'gb-t-22239-2019',
+        standardId: 'gb-t-22239-2019-l3',
         domain,
         controlPoint: item.controlPoint,
         controlName: item.requirement,
@@ -186,9 +186,9 @@ ${allItems.map(item => `  {
 ];
 
 export const STANDARD_GB_T_22239_2019 = {
-  id: 'gb-t-22239-2019',
+  id: 'gb-t-22239-2019-l3',
   name: '信息安全技术 网络安全等级保护基本要求',
-  code: 'GB/T 22239-2019',
+  code: 'GB/T 22239-2019-L3',
   version: '2019',
   description: '网络安全等级保护基本要求标准，包含安全通用要求和各应用场景扩展要求',
   grade: 2,
@@ -201,7 +201,7 @@ export async function seedGbT22239Standard() {
   const existing = await db
     .select()
     .from(schema.standards)
-    .where(schema.standards.id, 'gb-t-22239-2019')
+    .where(schema.standards.id, 'gb-t-22239-2019-l3')
     .limit(1);
 
   if (existing.length === 0) {
@@ -212,7 +212,7 @@ export async function seedGbT22239Standard() {
     await db.insert(schema.assessmentItems).values(item);
   }
 
-  console.log(\`已初始化 GB/T 22239-2019 标准: \${STANDARD_GB_T_22239_2019_ITEMS.length} 条测评项\`);
+  console.log(\`已初始化 GB/T 22239-2019-L3 标准: \${STANDARD_GB_T_22239_2019_ITEMS.length} 条测评项\`);
 }
 `;
 

@@ -55,7 +55,7 @@ export class ProjectService {
       }
     }
     if (!level) level = 3;
-    const standardId = data.standardId || (level === 2 ? 'gb-t-22239-2019-l2' : 'gb-t-22239-2019');
+    const standardId = data.standardId || (level === 2 ? 'gb-t-22239-2019-l2' : 'gb-t-22239-2019-l3');
     
     await db.insert(schema.projects).values({
       id, ...data, level, standardId, status: data.status || 'draft',

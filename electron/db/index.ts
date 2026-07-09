@@ -287,7 +287,7 @@ async function ensureTablesExist(sqlite: Database.Database): Promise<void> {
       auto_backup_enabled INTEGER NOT NULL DEFAULT 1,
       auto_backup_days INTEGER NOT NULL DEFAULT 7,
       data_path TEXT,
-      default_standard TEXT DEFAULT 'gb-t-22239-2019',
+      default_standard TEXT DEFAULT 'gb-t-22239-2019-l3',
       updated_at TEXT NOT NULL
     );
     
@@ -355,7 +355,7 @@ async function ensureTablesExist(sqlite: Database.Database): Promise<void> {
     { table: 'ai_configs', column: 'api_base', definition: 'TEXT' },
     { table: 'ai_configs', column: 'ocr_api_key', definition: 'TEXT' },
     { table: 'system_settings', column: 'data_path', definition: 'TEXT' },
-    { table: 'system_settings', column: 'default_standard', definition: "TEXT DEFAULT 'gb-t-22239-2019'" },
+    { table: 'system_settings', column: 'default_standard', definition: "TEXT DEFAULT 'gb-t-22239-2019-l3'" },
     { table: 'system_settings', column: 'standard_data_version', definition: 'INTEGER NOT NULL DEFAULT 1' },
     { table: 'standards', column: 'grade', definition: 'INTEGER DEFAULT 3' },
     { table: 'standards', column: 'is_default', definition: 'INTEGER DEFAULT 0' },
@@ -419,7 +419,7 @@ async function initDefaultData(): Promise<void> {
       language: 'zh-CN',
       autoBackupEnabled: 1,
       autoBackupDays: 7,
-      defaultStandard: 'gb-t-22239-2019',
+      defaultStandard: 'gb-t-22239-2019-l3',
       updatedAt: now,
     });
     log.info('初始化系统设置');
@@ -467,7 +467,7 @@ async function initStandardLibrary(): Promise<void> {
   const standardCount = await dbInstance
     .select()
     .from(schema.standards)
-    .where(eq(schema.standards.code, 'GB/T 22239-2019'))
+    .where(eq(schema.standards.code, 'GB/T 22239-2019-L3'))
     .limit(1);
   
   // 检查测评项表中的数据
@@ -523,6 +523,8 @@ async function initStandardLibrary(): Promise<void> {
   if (needRebuild || levelNotNull) {
     try {
       log.info('重建assessment_items表...');
+      await dbInstance.delete(schema.assessmentRecords);
+      log.info('已删除所有测评记录');
       sqliteInstance.exec('DROP TABLE IF EXISTS assessment_items');
       sqliteInstance.exec(`
         CREATE TABLE IF NOT EXISTS assessment_items (
@@ -566,11 +568,27 @@ async function initStandardLibrary(): Promise<void> {
     .groupBy(schema.assessmentItems.standardId);
   log.info('按标准统计测评项:', JSON.stringify(itemsByStandard));
   
-  const STANDARD_DATA_VERSION = 6;
-  
+  const STANDARD_DATA_VERSION = 7;
+
+  // 检查是否存在旧的三级标准库数据（旧编码 GB/T 22239-2019）
+  const oldStandardCount = await dbInstance
+    .select()
+    .from(schema.standards)
+    .where(eq(schema.standards.code, 'GB/T 22239-2019'))
+    .limit(1);
+
+  if (oldStandardCount.length > 0) {
+    log.info('检测到旧的三级标准库数据（GB/T 22239-2019），需要清理并重新导入...');
+    await dbInstance.delete(schema.assessmentRecords);
+    log.info('已删除所有测评记录');
+    await dbInstance.delete(schema.assessmentItems);
+    await dbInstance.delete(schema.standards).where(eq(schema.standards.code, 'GB/T 22239-2019'));
+    itemCount = 0;
+  }
+
   if (standardCount.length > 0 && itemCount > 0) {
     let needReimport = false;
-    
+
     if (hasExtensionTypeField) {
       const extCountResult = await dbInstance
         .select({ count: count() })
@@ -602,6 +620,8 @@ async function initStandardLibrary(): Promise<void> {
     }
     
     if (needReimport) {
+      await dbInstance.delete(schema.assessmentRecords);
+      log.info('已删除所有测评记录');
       await dbInstance.delete(schema.assessmentItems);
       itemCount = 0;
     } else {

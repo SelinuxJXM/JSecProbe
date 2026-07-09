@@ -159,6 +159,11 @@ async function handleLogin() {
     width: 72px;
     height: 72px;
     margin-bottom: var(--spacing-lg);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.12);
+    padding: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    object-fit: cover;
   }
   
   .brand-title {

@@ -255,6 +255,11 @@ function handleLogout() {
     width: 36px;
     height: 36px;
     flex-shrink: 0;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.1);
+    padding: 3px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    object-fit: cover;
   }
   
   .logo-text {
