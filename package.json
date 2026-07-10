@@ -1,6 +1,6 @@
 {
   "name": "mlps-assessment-tool",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "JSecProbe - 等级保护现场测评系统",
   "main": "dist-electron/main/index.js",
   "author": "景景",
@@ -11,6 +11,7 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build && electron-builder",
     "build:win": "vue-tsc --noEmit && vite build && electron-builder --win",
+    "build:win:full": "node scripts/build-win.js",
     "build:portable": "vue-tsc --noEmit && vite build && electron-builder --win portable",
     "rebuild": "electron-rebuild",
     "preview": "vite preview",
@@ -51,8 +52,10 @@
     "electron": "^29.4.6",
     "electron-builder": "^24.13.3",
     "electron-rebuild": "^3.2.9",
+    "ico-endec": "^0.1.6",
     "pdf-parse": "^2.4.5",
     "pdfjs-dist": "^3.11.174",
+    "rcedit": "^5.0.1",
     "sass": "^1.71.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.0",
@@ -79,7 +82,9 @@
       {
         "from": "resources",
         "to": "./",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
@@ -91,6 +96,12 @@
       "sign": null,
       "signAndEditExecutable": false,
       "verifyUpdateCodeSignature": false
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "SelinuxJXM",
+      "repo": "JSecProbe",
+      "releaseType": "release"
     },
     "nsis": {
       "oneClick": false,

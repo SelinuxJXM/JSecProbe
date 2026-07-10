@@ -878,7 +878,7 @@ async function handleImport() {
   if (importRes.success && importRes.data) {
     const { count, results } = importRes.data;
     const detail = results && results.length > 1
-      ? `共 ${count} 条资产（${results.map(r => `${r.sheet}: ${r.count}条`).join('，')}）`
+      ? `共 ${count} 条资产（${(results || []).map((r: { sheet: string; count: number }) => `${r.sheet}: ${r.count}条`).join('，')}）`
       : `成功导入 ${count} 条资产`;
     ElMessage.success(detail);
     loadAssets();
