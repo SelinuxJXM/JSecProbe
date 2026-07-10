@@ -7,11 +7,13 @@ import { initDatabase, getDb } from '../db';
 import * as schema from '../db/schema';
 import { getAppDataPath, getBackupPath, getDefaultBasePath } from './paths';
 import { initAutoUpdater } from '../services/update.service';
+import { createTray, destroyTray } from './tray';
 
 log.transports.file.level = 'info';
 log.transports.console.level = 'debug';
 
 let mainWindow: BrowserWindow | null = null;
+let isQuitting = false;
 
 function showErrorAndQuit(title: string, message: string, detail?: string) {
   dialog.showErrorBox(title, `${message}\n\n${detail || ''}`);
@@ -132,6 +134,13 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow?.hide();
+    }
+  });
 }
 
 async function initApp() {
@@ -155,6 +164,8 @@ async function initApp() {
     if (mainWindow) {
       initAutoUpdater(mainWindow);
       log.info('自动更新服务初始化完成');
+      createTray(mainWindow);
+      log.info('系统托盘创建完成');
     }
     
     // 启动自动备份定时器
@@ -245,6 +256,7 @@ app.whenReady().then(initApp).catch((err) => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
+    destroyTray();
     app.quit();
   }
 });
@@ -253,4 +265,8 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
 });

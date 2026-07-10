@@ -344,7 +344,7 @@ export interface ApiBridge {
     update: (id: string, data: Partial<Asset>) => Promise<IpcResponse<Asset>>;
     remove: (id: string) => Promise<IpcResponse<void>>;
     batchRemove: (ids: string[]) => Promise<IpcResponse<void>>;
-    importExcel: (projectId: string, filePath: string) => Promise<IpcResponse<{ count: number; category: string }>>;
+    importExcel: (projectId: string, filePath: string) => Promise<IpcResponse<{ count: number; category?: string; results?: Array<{ sheet: string; count: number }> }>>;
     exportExcel: (projectId: string, category: string) => Promise<IpcResponse<string>>;
   };
   standard: {
