@@ -403,7 +403,7 @@ export function registerAssessmentHandlers(): void {
           { key: 'seq', width: 7 },
           { key: 'controlPoint', width: 20 },
           { key: 'requirement', width: 50 },
-          { key: 'result', width: 38 },
+          { key: 'result', width: 80 },
           { key: 'compliance', width: 12 },
           { key: 'evidence', width: 30 },
         ];
@@ -428,6 +428,11 @@ export function registerAssessmentHandlers(): void {
             styleCell(cell, { bold: true, fontSize: 11, fontColor: 'FF2E7D32', bgColor: 'FFE8F5E9', alignH: 'center', alignV: 'middle', border: 'thin' });
           });
           extHeaderRow.height = 22;
+
+          const cpRanges: Array<{startRow: number; endRow: number}> = [];
+          let cpRangeStart = worksheet.rowCount + 1;
+          let prevCP2 = '';
+          let lastDataRowNum = 0;
 
           for (const item of extItems) {
             seqNo++;
@@ -457,6 +462,16 @@ export function registerAssessmentHandlers(): void {
             const dataRow = worksheet.addRow([
               seqNo, item.controlPoint, item.requirement, resultRecord, compliance, col6Value,
             ]);
+
+            const newCP = item.controlPoint || '';
+            if (newCP !== prevCP2) {
+              if (prevCP2 && dataRow.number - 1 > cpRangeStart) {
+                cpRanges.push({ startRow: cpRangeStart, endRow: dataRow.number - 1 });
+              }
+              cpRangeStart = dataRow.number;
+              prevCP2 = newCP;
+            }
+            lastDataRowNum = dataRow.number;
 
             const maxImgHeight = 80;
             const padding = 4;
@@ -536,7 +551,7 @@ export function registerAssessmentHandlers(): void {
                 currentRowIdx++;
               });
               
-              evidenceCell.alignment = { wrapText: true, vertical: 'top', horizontal: 'left' };
+              evidenceCell.alignment = { wrapText: true, vertical: 'middle', horizontal: 'left' };
             }
 
             const rowHeight = getRowMaxHeight(dataRow, dataColIndexes, worksheet);
@@ -552,14 +567,23 @@ export function registerAssessmentHandlers(): void {
               styleCell(cell, {
                 bgColor: isZebra ? 'FFF7F9FC' : undefined,
                 alignH: colNumber === 1 ? 'center' : (colNumber === 5 ? 'center' : 'left'),
-                alignV: 'top',
-                border: 'thin',
+                alignV: 'middle',
+                border: 'medium',
               });
               if (colNumber === 5 && complianceColor) {
                 cell.font = { size: 11, bold: true, color: { argb: complianceColor } };
               }
             });
             dataRowIndex++;
+          }
+
+          if (prevCP2 && lastDataRowNum > cpRangeStart) {
+            cpRanges.push({ startRow: cpRangeStart, endRow: lastDataRowNum });
+          }
+          for (const range of cpRanges) {
+            worksheet.mergeCells(`B${range.startRow}:B${range.endRow}`);
+            const cell = worksheet.getCell(`B${range.startRow}`);
+            cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
           }
         }
         worksheet.getRow(1).height = 28;
@@ -704,7 +728,7 @@ export function registerAssessmentHandlers(): void {
           { key: 'seq', width: 7 },
           { key: 'controlPoint', width: 20 },
           { key: 'requirement', width: 50 },
-          { key: 'result', width: 38 },
+          { key: 'result', width: 80 },
           { key: 'compliance', width: 12 },
           { key: 'evidence', width: 25 },
         ];
@@ -729,6 +753,11 @@ export function registerAssessmentHandlers(): void {
             styleCell(cell, { bold: true, fontSize: 11, fontColor: 'FF2E7D32', bgColor: 'FFE8F5E9', alignH: 'center', alignV: 'middle', border: 'thin' });
           });
           extHeaderRow.height = 22;
+
+          const cpRanges: Array<{startRow: number; endRow: number}> = [];
+          let cpRangeStart = worksheet.rowCount + 1;
+          let prevCP2 = '';
+          let lastDataRowNum = 0;
 
           for (const item of extItems) {
             seqNo++;
@@ -792,6 +821,16 @@ export function registerAssessmentHandlers(): void {
               seqNo, item.controlPoint, item.requirement, resultRecord, compliance, col6Value,
             ]);
 
+            const newCP = item.controlPoint || '';
+            if (newCP !== prevCP2) {
+              if (prevCP2 && dataRow.number - 1 > cpRangeStart) {
+                cpRanges.push({ startRow: cpRangeStart, endRow: dataRow.number - 1 });
+              }
+              cpRangeStart = dataRow.number;
+              prevCP2 = newCP;
+            }
+            lastDataRowNum = dataRow.number;
+
             const maxImgHeight = 80;
             const padding = 4;
             const lineHeight = 14;
@@ -833,7 +872,7 @@ export function registerAssessmentHandlers(): void {
 
             if (nonImagePaths.length > 0) {
               const evidenceCell = dataRow.getCell(6);
-              evidenceCell.alignment = { wrapText: true, vertical: 'top', horizontal: 'left' };
+              evidenceCell.alignment = { wrapText: true, vertical: 'middle', horizontal: 'left' };
               const pathList = nonImagePaths.map(p => `• ${p}`).join('\n');
               const imgInfo = imagePaths.length > 0 ? `\n\n[包含 ${imagePaths.length} 张嵌入图片]` : '';
               evidenceCell.note = {
@@ -855,14 +894,23 @@ export function registerAssessmentHandlers(): void {
               styleCell(cell, {
                 bgColor: isZebra ? 'FFF7F9FC' : undefined,
                 alignH: colNumber === 1 ? 'center' : (colNumber === 5 ? 'center' : 'left'),
-                alignV: 'top',
-                border: 'thin',
+                alignV: 'middle',
+                border: 'medium',
               });
               if (colNumber === 5 && complianceColor) {
                 cell.font = { size: 11, bold: true, color: { argb: complianceColor } };
               }
             });
             dataRowIndex++;
+          }
+
+          if (prevCP2 && lastDataRowNum > cpRangeStart) {
+            cpRanges.push({ startRow: cpRangeStart, endRow: lastDataRowNum });
+          }
+          for (const range of cpRanges) {
+            worksheet.mergeCells(`B${range.startRow}:B${range.endRow}`);
+            const cell = worksheet.getCell(`B${range.startRow}`);
+            cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
           }
         }
         worksheet.getRow(1).height = 28;

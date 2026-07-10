@@ -248,11 +248,11 @@
               <tr v-for="(row, index) in tableRows" :key="row.itemId || index" :class="{ active: currentRowIndex === index, 'extension-divider': isExtensionDivider(index) }" @click="currentRowIndex = index">
                 <td v-if="!row.controlPointHidden" class="cell-control" :rowspan="row.controlPointRowSpan || 1">{{ row.controlPoint }}</td>
                 <td class="cell-requirement">{{ row.requirement }}</td>
-                <td class="cell-conclusion" :class="{ selected: isCellSelected(index, 'conclusion'), 'selection-anchor': isSelectionAnchor(index, 'conclusion') }" @click="handleCellClick($event, index, 'conclusion')">
-                  <textarea v-model="row.conclusion" class="cell-textarea conclusion-box" placeholder="填写测评结论..." @input="adjustConclusionHeight($event); debounceAutoSave(row)" @paste="handleConclusionPaste($event, index)" :class="{ 'cell-selected': isCellSelected(index, 'conclusion') }" />
+                <td class="cell-conclusion" :class="{ selected: isCellSelected(index, 'conclusion'), 'selection-anchor': isSelectionAnchor(index, 'conclusion') }" @click="handleCellClick($event, index, 'conclusion')" @mousedown="handleCellMouseDown($event)">
+                  <textarea v-model="row.conclusion" class="cell-textarea conclusion-box" placeholder="填写测评结论..." @input="adjustConclusionHeight($event); debounceAutoSave(row)" @paste="handleConclusionPaste($event, index)" @mousedown="handleCellMouseDown($event)" :class="{ 'cell-selected': isCellSelected(index, 'conclusion') }" />
                 </td>
-                <td class="cell-compliance" :class="{ selected: isCellSelected(index, 'compliance'), 'selection-anchor': isSelectionAnchor(index, 'compliance') }" @click="handleCellClick($event, index, 'compliance')">
-                  <select v-model="row.compliance" class="compliance-select" :class="row.compliance" @change="debounceAutoSave(row)" @paste="handleCompliancePaste($event, index)">
+                <td class="cell-compliance" :class="{ selected: isCellSelected(index, 'compliance'), 'selection-anchor': isSelectionAnchor(index, 'compliance') }" @click="handleCellClick($event, index, 'compliance')" @mousedown="handleCellMouseDown($event)">
+                  <select v-model="row.compliance" class="compliance-select" :class="row.compliance" @change="debounceAutoSave(row)" @paste="handleCompliancePaste($event, index)" @mousedown="handleCellMouseDown($event)">
                     <option value="">待判定</option>
                     <option value="conform">符合</option>
                     <option value="partial">部分符合</option>
@@ -260,8 +260,8 @@
                     <option value="na">不适用</option>
                   </select>
                 </td>
-                <td class="cell-evidence" :class="{ selected: isCellSelected(index, 'evidence'), 'selection-anchor': isSelectionAnchor(index, 'evidence') }" @click="handleCellClick($event, index, 'evidence')">
-                  <textarea v-model="row.evidence" class="cell-textarea evidence-box mono" placeholder="粘贴执行结果、截图，或填写关键证据点..." @input="adjustEvidenceHeight($event); debounceAutoSave(row)" :class="{ 'cell-selected': isCellSelected(index, 'evidence') }" />
+                <td class="cell-evidence" :class="{ selected: isCellSelected(index, 'evidence'), 'selection-anchor': isSelectionAnchor(index, 'evidence') }" @click="handleCellClick($event, index, 'evidence')" @mousedown="handleCellMouseDown($event)">
+                  <textarea v-model="row.evidence" class="cell-textarea evidence-box mono" placeholder="粘贴执行结果、截图，或填写关键证据点..." @input="adjustEvidenceHeight($event); debounceAutoSave(row)" @mousedown="handleCellMouseDown($event)" :class="{ 'cell-selected': isCellSelected(index, 'evidence') }" />
                   <div class="screenshot-area" v-if="row.screenshots && row.screenshots.length > 0">
                     <div v-for="(shot, idx) in row.screenshots" :key="idx" class="screenshot-thumb" @click="previewScreenshot(row, shot)">
                       <template v-if="getFileType(shot) === 'image'">
@@ -858,37 +858,37 @@ function adjustEvidenceHeight(event: Event) {
 }
 
 // 处理测评结论批量粘贴（从Excel复制多行内容）
-// 从Excel表格HTML中提取单元格值
-function parseExcelTableHTML(html: string): string[] | null {
-  // 创建临时DOM解析HTML
+// 从Excel表格HTML中提取单元格值（返回二维：行×列）
+function parseExcelTableHTML(html: string): string[][] | null {
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, 'text/html');
   const table = doc.querySelector('table');
   if (!table) return null;
 
-  const cells: string[] = [];
-  const rows = table.querySelectorAll('tr');
-  for (const row of rows) {
-    const tds = row.querySelectorAll('td, th');
+  const rows: string[][] = [];
+  const trs = table.querySelectorAll('tr');
+  for (const tr of trs) {
+    const tds = tr.querySelectorAll('td, th');
+    const rowCells: string[] = [];
     for (const td of tds) {
-      // 获取单元格内容，替换 <br> 和 <br/> 为换行符，保留原始换行
       const content = td.innerHTML
         .replace(/<br\s*\/?>/gi, '\n')
-        .replace(/<[^>]*>/g, '') // 移除其余HTML标签
+        .replace(/<[^>]*>/g, '')
         .replace(/&nbsp;/g, ' ')
         .replace(/&amp;/g, '&')
         .replace(/&lt;/g, '<')
         .replace(/&gt;/g, '>')
         .trim();
-      cells.push(content);
+      rowCells.push(content);
     }
+    if (rowCells.length > 0) rows.push(rowCells);
   }
-  return cells.length > 0 ? cells : null;
+  return rows.length > 0 ? rows : null;
 }
 
-// 解析纯文本粘贴（非Excel场景）
-function parsePlainText(text: string): string[] {
-  return text.split(/\r\n|\r|\n/).filter(line => line.trim() !== '');
+// 解析纯文本粘贴为二维（支持 Tab 分隔的多列）
+function parsePlainText(text: string): string[][] {
+  return text.split(/\r\n|\r|\n/).filter(line => line.trim() !== '').map(line => line.split('\t'));
 }
 
 // 单元格多选功能
@@ -907,11 +907,20 @@ function isSelectionAnchor(rowIndex: number, field: string): boolean {
   return selectionAnchor.value?.rowIndex === rowIndex && selectionAnchor.value?.field === field;
 }
 
+function handleCellMouseDown(event: MouseEvent) {
+  if (event.shiftKey || event.ctrlKey || event.metaKey) {
+    event.preventDefault();
+  }
+}
+
 function handleCellClick(event: MouseEvent, rowIndex: number, field: string) {
   const key = cellKey(rowIndex, field);
 
+  if (event.ctrlKey || event.metaKey || event.shiftKey) {
+    event.preventDefault();
+  }
+
   if (event.ctrlKey || event.metaKey) {
-    // Ctrl+Click: 切换单个单元格选中
     if (selectedCells.value.has(key)) {
       selectedCells.value.delete(key);
     } else {
@@ -986,55 +995,62 @@ function handleTableContainerClick(event: MouseEvent) {
   }
 }
 
-function handleConclusionPaste(event: Event, rowIndex: number) {
-  const textarea = event.target as HTMLTextAreaElement;
-  const clipboardData = (event as ClipboardEvent).clipboardData;
+// 处理测评结论批量粘贴（从Excel复制多行/多列内容）
+function handleConclusionPaste(_event: Event, rowIndex: number) {
+  const clipboardData = (_event as ClipboardEvent).clipboardData;
   if (!clipboardData) return;
 
-  let cells: string[] = [];
+  let rows: string[][] = [];
 
   // 优先从HTML解析（Excel复制场景，能正确处理单元格内换行）
   const htmlData = clipboardData.getData('text/html');
   if (htmlData) {
     const parsed = parseExcelTableHTML(htmlData);
     if (parsed && parsed.length > 0) {
-      cells = parsed;
+      rows = parsed;
     }
   }
 
   // HTML解析失败则回退到纯文本
-  if (cells.length === 0) {
+  if (rows.length === 0) {
     const pastedText = clipboardData.getData('text');
     if (!pastedText) return;
-    cells = parsePlainText(pastedText);
+    rows = parsePlainText(pastedText);
   }
 
   // 如果只有一行，正常粘贴不做处理
-  if (cells.length <= 1) return;
+  if (rows.length <= 1) return;
 
   // 阻止默认粘贴行为
-  event.preventDefault();
+  event!.preventDefault();
 
   // 获取表格行
-  const rows = document.querySelectorAll('tbody tr');
-  if (!rows || rows.length === 0) return;
+  const domRows = document.querySelectorAll('tbody tr');
+  if (!domRows || domRows.length === 0) return;
+
+  const colCount = Math.max(...rows.map(r => r.length));
 
   // 从当前行开始，批量填充内容
-  for (let i = 0; i < cells.length; i++) {
+  for (let i = 0; i < rows.length; i++) {
     const targetRowIndex = rowIndex + i;
     if (targetRowIndex >= tableRows.value.length) break;
 
-    // 更新数据
-    tableRows.value[targetRowIndex].conclusion = cells[i];
+    // 第一列填充到测评结论
+    if (rows[i].length > 0 && rows[i][0]) {
+      tableRows.value[targetRowIndex].conclusion = rows[i][0];
+      const targetTextarea = domRows[targetRowIndex]?.querySelector('.conclusion-box') as HTMLTextAreaElement;
+      if (targetTextarea) {
+        setTimeout(() => {
+          targetTextarea.style.height = 'auto';
+          targetTextarea.style.height = targetTextarea.scrollHeight + 2 + 'px';
+        }, 0);
+      }
+    }
 
-    // 调整对应textarea的高度
-    const targetTextarea = rows[targetRowIndex]?.querySelector('.conclusion-box') as HTMLTextAreaElement;
-    if (targetTextarea) {
-      // 使用 setTimeout 确保DOM更新后再计算高度
-      setTimeout(() => {
-        targetTextarea.style.height = 'auto';
-        targetTextarea.style.height = targetTextarea.scrollHeight + 2 + 'px';
-      }, 0);
+    // 第二列填充到符合性（如果存在）
+    if (colCount >= 2 && rows[i].length > 1 && rows[i][1]) {
+      const complianceValue = parseComplianceText(rows[i][1]);
+      tableRows.value[targetRowIndex].compliance = complianceValue;
     }
   }
 
@@ -1045,8 +1061,9 @@ function handleConclusionPaste(event: Event, rowIndex: number) {
   autoSaveTimer = window.setTimeout(() => saveAllRows(), 1500);
 
   // 显示提示
-  const pastedCount = Math.min(cells.length, tableRows.value.length - rowIndex);
-  ElMessage.success(`已批量填写 ${pastedCount} 条测评结论`);
+  const pastedCount = Math.min(rows.length, tableRows.value.length - rowIndex);
+  const colHint = colCount >= 2 ? '（含测评结论 + 符合性）' : '';
+  ElMessage.success(`已批量填写 ${pastedCount} 条测评结论${colHint}`);
 }
 
 // 符合性文本到值的映射
@@ -1079,21 +1096,32 @@ function parseComplianceText(text: string): string {
   return '';
 }
 
-// 处理符合性批量粘贴（从Excel复制）
-function handleCompliancePaste(event: Event, rowIndex: number) {
-  const select = event.target as HTMLSelectElement;
-  const clipboardData = (event as ClipboardEvent).clipboardData;
+// 处理符合性批量粘贴（从Excel复制多行/多列内容）
+function handleCompliancePaste(_event: Event, rowIndex: number) {
+  const clipboardData = (_event as ClipboardEvent).clipboardData;
   if (!clipboardData) return;
 
-  const pastedText = clipboardData.getData('text');
-  if (!pastedText) return;
+  let rows: string[][] = [];
 
-  // 按换行符拆分
-  const lines = pastedText.split(/\r\n|\r|\n/).filter(l => l.trim() !== '');
+  // 优先从HTML解析
+  const htmlData = clipboardData.getData('text/html');
+  if (htmlData) {
+    const parsed = parseExcelTableHTML(htmlData);
+    if (parsed && parsed.length > 0) {
+      rows = parsed;
+    }
+  }
+
+  // HTML解析失败则回退到纯文本
+  if (rows.length === 0) {
+    const pastedText = clipboardData.getData('text');
+    if (!pastedText) return;
+    rows = parsePlainText(pastedText);
+  }
 
   // 如果只有一个值，直接设置当前行
-  if (lines.length <= 1) {
-    const value = parseComplianceText(pastedText);
+  if (rows.length <= 1 && rows[0]?.length === 1) {
+    const value = parseComplianceText(rows[0][0]);
     tableRows.value[rowIndex].compliance = value;
     hasUnsavedChanges.value = true;
     saveStatus.value = 'unsaved';
@@ -1103,15 +1131,17 @@ function handleCompliancePaste(event: Event, rowIndex: number) {
   }
 
   // 阻止默认粘贴
-  event.preventDefault();
+  event!.preventDefault();
 
   // 批量填充
   let successCount = 0;
-  for (let i = 0; i < lines.length; i++) {
+  for (let i = 0; i < rows.length; i++) {
     const targetRowIndex = rowIndex + i;
     if (targetRowIndex >= tableRows.value.length) break;
 
-    const value = parseComplianceText(lines[i]);
+    // 如果有多列，第二列是符合性；如果只有一列，第一列是符合性
+    const colIdx = rows[i].length >= 2 ? 1 : 0;
+    const value = parseComplianceText(rows[i][colIdx]);
     tableRows.value[targetRowIndex].compliance = value;
     successCount++;
   }
@@ -1457,7 +1487,7 @@ function batchAiAnalyze() {
           for (const result of results) {
             const row = tableRows.value.find(r => r.itemId === result.itemId);
             if (row && row.screenshots && row.screenshots.length > 0) {
-              saveSingleRow(row);
+              autoSaveTimer = window.setTimeout(() => saveAllRows(), 1000);
             }
           }
         } else {

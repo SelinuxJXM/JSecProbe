@@ -456,60 +456,304 @@ export function registerAssetHandlers(): void {
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.readFile(filePath);
 
-      const worksheet = workbook.worksheets[0];
-      if (!worksheet) {
-        throw new Error('Excel文件中没有工作表');
+      const CATEGORY_NAME_TO_KEY: Record<string, string> = {
+        '管理机房': 'machine_room',
+        '区域边界': 'network_boundary',
+        '网络设备': 'network_device',
+        '安全设备': 'security_device',
+        '服务器/存储设备': 'server_storage',
+        '服务器存储设备': 'server_storage',
+        '服务器-存储设备': 'server_storage',
+        '数据库管理系统': 'dbms',
+        '数据库管理': 'dbms',
+        '系统管理平台': 'management_platform',
+        '业务应用系统': 'business_app',
+        '业务应用': 'business_app',
+        '业务终端/运维终端': 'terminal',
+        '业务终端运维终端': 'terminal',
+        '业务终端-运维终端': 'terminal',
+        '运维终端': 'terminal',
+        '业务终端': 'terminal',
+        '终端': 'terminal',
+        '数据资源': 'data_resource',
+      };
+
+      const COLUMNS_MAP: Record<string, { header: string; key: string; width: number }[]> = {
+        machine_room: [
+          { header: '机房名称', key: 'name', width: 25 },
+          { header: '机房位置', key: 'os', width: 30 },
+          { header: '备注', key: 'description', width: 40 },
+          { header: '重要程度', key: 'importance', width: 12 },
+          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+        ],
+        network_boundary: [
+          { header: '边界名称', key: 'name', width: 25 },
+          { header: '备注', key: 'description', width: 40 },
+          { header: '重要程度', key: 'importance', width: 12 },
+          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+        ],
+        network_device: [
+          { header: '设备名称', key: 'name', width: 25 },
+          { header: '虚拟设备', key: 'isVirtual', width: 10 },
+          { header: '系统及版本', key: 'os', width: 25 },
+          { header: '品牌及型号', key: 'version', width: 20 },
+          { header: '设备用途', key: 'deviceUsage', width: 20 },
+          { header: '数量', key: 'quantity', width: 8 },
+          { header: 'IP地址', key: 'ip', width: 18 },
+          { header: '备注', key: 'description', width: 40 },
+          { header: '重要程度', key: 'importance', width: 12 },
+          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+        ],
+        security_device: [
+          { header: '设备名称', key: 'name', width: 25 },
+          { header: '虚拟设备', key: 'isVirtual', width: 10 },
+          { header: '系统及版本', key: 'os', width: 25 },
+          { header: '品牌及型号', key: 'version', width: 20 },
+          { header: '设备用途', key: 'deviceUsage', width: 20 },
+          { header: '数量', key: 'quantity', width: 8 },
+          { header: 'IP地址', key: 'ip', width: 18 },
+          { header: '备注', key: 'description', width: 40 },
+          { header: '重要程度', key: 'importance', width: 12 },
+          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+        ],
+        server_storage: [
+          { header: '设备名称', key: 'name', width: 25 },
+          { header: '虚拟设备', key: 'isVirtual', width: 10 },
+          { header: '操作系统及版本', key: 'os', width: 25 },
+          { header: '数据库系统及版本', key: 'dbSystem', width: 22 },
+          { header: '中间件及版本', key: 'middleware', width: 22 },
+          { header: '数量', key: 'quantity', width: 8 },
+          { header: 'IP地址', key: 'ip', width: 18 },
+          { header: '备注', key: 'description', width: 40 },
+          { header: '重要程度', key: 'importance', width: 12 },
+          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+        ],
+        dbms: [
+          { header: '数据库名称', key: 'name', width: 25 },
+          { header: '所在设备名称', key: 'os', width: 25 },
+          { header: '类型/版本', key: 'deviceUsage', width: 20 },
+          { header: '数量', key: 'quantity', width: 8 },
+          { header: '备注', key: 'description', width: 40 },
+          { header: '重要程度', key: 'importance', width: 12 },
+          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+        ],
+        management_platform: [
+          { header: '平台名称', key: 'name', width: 25 },
+          { header: '所在设备名称', key: 'os', width: 25 },
+          { header: '版本', key: 'version', width: 20 },
+          { header: 'IP地址', key: 'ip', width: 18 },
+          { header: '主要功能', key: 'deviceUsage', width: 40 },
+          { header: '重要程度', key: 'importance', width: 12 },
+          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+        ],
+        business_app: [
+          { header: '应用系统名称', key: 'name', width: 25 },
+          { header: '软件及版本', key: 'os', width: 25 },
+          { header: '主要功能', key: 'deviceUsage', width: 25 },
+          { header: 'IP地址', key: 'ip', width: 18 },
+          { header: '备注', key: 'description', width: 40 },
+          { header: '重要程度', key: 'importance', width: 12 },
+          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+        ],
+        terminal: [
+          { header: '设备名称', key: 'name', width: 25 },
+          { header: '虚拟设备', key: 'isVirtual', width: 10 },
+          { header: '操作系统及版本', key: 'os', width: 25 },
+          { header: '设备类别/用途', key: 'deviceUsage', width: 20 },
+          { header: '数量', key: 'quantity', width: 8 },
+          { header: 'IP地址', key: 'ip', width: 18 },
+          { header: '备注', key: 'description', width: 40 },
+          { header: '重要程度', key: 'importance', width: 12 },
+          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+        ],
+        data_resource: [
+          { header: '数据类别', key: 'name', width: 25 },
+          { header: '所属业务应用', key: 'os', width: 25 },
+          { header: '安全防护需求', key: 'deviceUsage', width: 25 },
+          { header: '重要程度', key: 'importance', width: 12 },
+          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+        ],
+      };
+
+      const importFromSheet = async (worksheet: ExcelJS.Worksheet, category: string) => {
+        const columns = COLUMNS_MAP[category] || COLUMNS_MAP.network_device;
+
+        // 构建表头到列号的映射
+        const headerMap: Record<string, number> = {};
+        const headerRow = worksheet.getRow(1);
+        // 使用 worksheet.columnCount 确保遍历所有列
+        const maxCol = Math.max(headerRow.cellCount || 0, worksheet.columnCount || 0);
+        for (let colNum = 1; colNum <= maxCol; colNum++) {
+          const cell = headerRow.getCell(colNum);
+          const val = (cell.value?.toString() || '').trim();
+          if (val) {
+            headerMap[val] = colNum;
+          }
+        }
+
+        const colPositions: Record<string, number> = {};
+        for (const col of columns) {
+          if (headerMap[col.header]) {
+            colPositions[col.key] = headerMap[col.header];
+          }
+        }
+
+        // 如果没有精确匹配到预定义列，尝试模糊匹配
+        if (!colPositions['name']) {
+          const nameKeywords = ['名称', '设备名', '数据库', '平台', '应用', '边界', '数据类'];
+          for (const [header, colNum] of Object.entries(headerMap)) {
+            if (nameKeywords.some(kw => header.includes(kw))) {
+              colPositions['name'] = colNum;
+              break;
+            }
+          }
+        }
+
+        if (!colPositions['name']) {
+          return 0;
+        }
+
+        // 如果重要程度列未匹配，尝试关键词匹配
+        if (!colPositions['importance']) {
+          for (const [header, colNum] of Object.entries(headerMap)) {
+            if (header.includes('重要') || header.includes('程度')) {
+              colPositions['importance'] = colNum;
+              break;
+            }
+          }
+        }
+
+        // 如果测评对象列未匹配，尝试关键词匹配
+        if (!colPositions['isAssessmentTarget']) {
+          for (const [header, colNum] of Object.entries(headerMap)) {
+            if (header.includes('测评') || header.includes('对象')) {
+              colPositions['isAssessmentTarget'] = colNum;
+              break;
+            }
+          }
+        }
+
+        // 如果虚拟设备列未匹配，尝试关键词匹配
+        if (!colPositions['isVirtual']) {
+          for (const [header, colNum] of Object.entries(headerMap)) {
+            if (header.includes('虚拟')) {
+              colPositions['isVirtual'] = colNum;
+              break;
+            }
+          }
+        }
+
+        const IMPORTANCE_MAP: Record<string, string> = {
+          '关键': 'high',
+          '重要': 'medium',
+          '一般': 'low',
+        };
+
+        const getCellString = (row: ExcelJS.Row, colKey: string): string | undefined => {
+          const colIdx = colPositions[colKey];
+          if (!colIdx) return undefined;
+          const val = row.getCell(colIdx).value?.toString()?.trim();
+          return val || undefined;
+        };
+
+        const getCellBool = (row: ExcelJS.Row, colKey: string): number => {
+          const colIdx = colPositions[colKey];
+          if (!colIdx) return 0;
+          const val = row.getCell(colIdx).value?.toString()?.trim();
+          return val === '是' ? 1 : 0;
+        };
+
+        let importCount = 0;
+        const now = new Date().toISOString();
+        let skippedRows = 0;
+
+        for (let rowNum = 2; rowNum <= worksheet.rowCount; rowNum++) {
+          const row = worksheet.getRow(rowNum);
+          const name = getCellString(row, 'name');
+          
+          if (!name) {
+            skippedRows++;
+            continue;
+          }
+
+          const id = randomUUID();
+          const importanceStr = getCellString(row, 'importance');
+          const importance = importanceStr ? (IMPORTANCE_MAP[importanceStr] || 'medium') : 'medium';
+
+          await db.insert(schema.assets).values({
+            id,
+            projectId,
+            category,
+            name,
+            os: getCellString(row, 'os'),
+            version: getCellString(row, 'version'),
+            deviceUsage: getCellString(row, 'deviceUsage'),
+            ip: getCellString(row, 'ip'),
+            quantity: parseInt(getCellString(row, 'quantity') || '1', 10),
+            description: getCellString(row, 'description'),
+            importance,
+            isVirtual: getCellBool(row, 'isVirtual'),
+            dbSystem: getCellString(row, 'dbSystem'),
+            middleware: getCellString(row, 'middleware'),
+            isAssessmentTarget: getCellBool(row, 'isAssessmentTarget'),
+            sortOrder: rowNum - 1,
+            createdAt: now,
+            updatedAt: now,
+          });
+
+          importCount++;
+        }
+
+        console.log(`[AssetImport] Sheet "${worksheet.name}": imported ${importCount} rows, skipped ${skippedRows} rows, total rows in sheet: ${worksheet.rowCount}`);
+        return importCount;
+      };
+
+      let totalCount = 0;
+      const results: Array<{ sheet: string; count: number }> = [];
+
+      for (const worksheet of workbook.worksheets) {
+        const sheetName = worksheet.name;
+        let category = CATEGORY_NAME_TO_KEY[sheetName];
+        
+        if (!category) {
+          const lowerSheetName = sheetName.toLowerCase();
+          if (lowerSheetName.includes('机房') || lowerSheetName.includes('管理机房')) {
+            category = 'machine_room';
+          } else if (lowerSheetName.includes('边界')) {
+            category = 'network_boundary';
+          } else if (lowerSheetName.includes('网络设备') || lowerSheetName.includes('网络')) {
+            category = 'network_device';
+          } else if (lowerSheetName.includes('安全设备') || lowerSheetName.includes('安全')) {
+            category = 'security_device';
+          } else if (lowerSheetName.includes('服务器') || lowerSheetName.includes('存储')) {
+            category = 'server_storage';
+          } else if (lowerSheetName.includes('数据库')) {
+            category = 'dbms';
+          } else if (lowerSheetName.includes('平台') || lowerSheetName.includes('管理')) {
+            category = 'management_platform';
+          } else if (lowerSheetName.includes('应用') || lowerSheetName.includes('业务')) {
+            category = 'business_app';
+          } else if (lowerSheetName.includes('终端') || lowerSheetName.includes('运维')) {
+            category = 'terminal';
+          } else if (lowerSheetName.includes('数据')) {
+            category = 'data_resource';
+          } else {
+            category = detectCategoryFromFileName(filePath);
+          }
+        }
+        
+        const count = await importFromSheet(worksheet, category);
+        if (count > 0) {
+          results.push({ sheet: sheetName, count });
+          totalCount += count;
+        }
       }
 
-      const headers: string[] = [];
-      worksheet.getRow(1).eachCell((cell, colNumber) => {
-        headers[colNumber] = cell.value?.toString() || '';
-      });
-
-      const nameCol = headers.findIndex(h => h.includes('名称') || h.includes('设备名')) + 1;
-      const osCol = headers.findIndex(h => h.includes('操作系统') || h.includes('系统')) + 1;
-      const versionCol = headers.findIndex(h => h.includes('版本')) + 1;
-      const ipCol = headers.findIndex(h => h.includes('IP') || h.includes('地址')) + 1;
-      const quantityCol = headers.findIndex(h => h.includes('数量')) + 1;
-      const descriptionCol = headers.findIndex(h => h.includes('备注') || h.includes('描述')) + 1;
-
-      if (nameCol === 0) {
-        throw new Error('未找到设备名称列');
+      if (totalCount === 0) {
+        throw new Error('没有找到可导入的数据（请确保sheet名称与导出时一致，且包含名称列）');
       }
 
-      let importCount = 0;
-      const now = new Date().toISOString();
-      const category = detectCategoryFromFileName(filePath);
-
-      for (let rowNum = 2; rowNum <= worksheet.rowCount; rowNum++) {
-        const row = worksheet.getRow(rowNum);
-        const name = row.getCell(nameCol).value?.toString().trim();
-
-        if (!name) continue;
-
-        const id = randomUUID();
-        await db.insert(schema.assets).values({
-          id,
-          projectId,
-          category,
-          name,
-          os: osCol > 0 ? row.getCell(osCol).value?.toString() : undefined,
-          version: versionCol > 0 ? row.getCell(versionCol).value?.toString() : undefined,
-          ip: ipCol > 0 ? row.getCell(ipCol).value?.toString() : undefined,
-          quantity: quantityCol > 0 ? parseInt(row.getCell(quantityCol).value?.toString() || '1') : 1,
-          description: descriptionCol > 0 ? row.getCell(descriptionCol).value?.toString() : undefined,
-          importance: 'medium',
-          isVirtual: 0,
-          isAssessmentTarget: 1,
-          sortOrder: rowNum - 1,
-          createdAt: now,
-          updatedAt: now,
-        });
-
-        importCount++;
-      }
-
-      return { count: importCount, category };
+      return { count: totalCount, results };
     })
   );
 
@@ -604,10 +848,9 @@ export function registerAssetHandlers(): void {
           { header: '序号', key: 'index', width: 8 },
           { header: '平台名称', key: 'name', width: 25 },
           { header: '所在设备名称', key: 'os', width: 25 },
-          { header: '类型/版本', key: 'deviceUsage', width: 20 },
-          { header: '数量', key: 'quantity', width: 8 },
+          { header: '版本', key: 'version', width: 20 },
           { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '备注', key: 'description', width: 40 },
+          { header: '主要功能', key: 'deviceUsage', width: 40 },
           { header: '重要程度', key: 'importance', width: 12 },
           { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
         ],
@@ -711,12 +954,12 @@ export function registerAssetHandlers(): void {
           row.eachCell((cell, colNumber) => {
             cell.font = { size: 11 };
             cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isZebra ? 'FFF7F9FC' : 'FFFFFFFF' } };
-            cell.alignment = { wrapText: true, vertical: 'top', horizontal: colNumber === 1 ? 'center' : 'left' };
+            cell.alignment = { wrapText: true, vertical: 'middle', horizontal: colNumber === 1 ? 'center' : 'left' };
             cell.border = {
-              top: { style: 'thin', color: { argb: 'FFB0B0B0' } },
-              left: { style: 'thin', color: { argb: 'FFB0B0B0' } },
-              bottom: { style: 'thin', color: { argb: 'FFB0B0B0' } },
-              right: { style: 'thin', color: { argb: 'FFB0B0B0' } },
+              top: { style: 'medium', color: { argb: 'FFB0B0B0' } },
+              left: { style: 'medium', color: { argb: 'FFB0B0B0' } },
+              bottom: { style: 'medium', color: { argb: 'FFB0B0B0' } },
+              right: { style: 'medium', color: { argb: 'FFB0B0B0' } },
             };
           });
         });
