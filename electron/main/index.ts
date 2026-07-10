@@ -5,7 +5,7 @@ import log from 'electron-log';
 import { registerIpcHandlers } from './ipc';
 import { initDatabase, getDb } from '../db';
 import * as schema from '../db/schema';
-import { getAppDataPath, getBackupPath } from './paths';
+import { getAppDataPath, getBackupPath, getDefaultBasePath } from './paths';
 import { initAutoUpdater } from '../services/update.service';
 
 log.transports.file.level = 'info';
@@ -26,6 +26,60 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason) => {
   log.error('未处理的Promise拒绝:', reason);
 });
+
+const USER_DATA_BASE = getDefaultBasePath();
+const LOCK_DIR = join(USER_DATA_BASE, 'locks');
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getActiveInstancePids(): number[] {
+  if (!fs.existsSync(LOCK_DIR)) return [];
+  const files = fs.readdirSync(LOCK_DIR).filter((f: string) => f.endsWith('.lock'));
+  const pids: number[] = [];
+  for (const file of files) {
+    const pid = parseInt(file.replace('.lock', ''), 10);
+    if (pid && isProcessRunning(pid)) {
+      pids.push(pid);
+    } else {
+      try { fs.unlinkSync(join(LOCK_DIR, file)); } catch {}
+    }
+  }
+  return pids;
+}
+
+function setupMultiInstanceSupport() {
+  if (getActiveInstancePids().length === 0) return;
+  
+  const instanceNum = getActiveInstancePids().length + 1;
+  const newPath = `${USER_DATA_BASE}_实例${instanceNum}`;
+  app.setPath('userData', newPath);
+  log.info(`检测到已有实例运行，使用独立数据目录: ${newPath}`);
+}
+
+setupMultiInstanceSupport();
+
+const LOCK_FILE = join(LOCK_DIR, `${process.pid}.lock`);
+(function createLockFile() {
+  if (!fs.existsSync(LOCK_DIR)) {
+    fs.mkdirSync(LOCK_DIR, { recursive: true });
+  }
+  fs.writeFileSync(LOCK_FILE, '');
+})();
+
+function cleanupLockFile() {
+  try { fs.unlinkSync(LOCK_FILE); } catch {}
+}
+app.on('quit', cleanupLockFile);
+process.on('exit', cleanupLockFile);
+process.on('SIGINT', () => { cleanupLockFile(); process.exit(0); });
+process.on('SIGTERM', () => { cleanupLockFile(); process.exit(0); });
 
 function createWindow() {
   const iconPath = app.isPackaged

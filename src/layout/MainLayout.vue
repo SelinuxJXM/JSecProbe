@@ -62,13 +62,28 @@
         </el-menu>
       </nav>
       
-      <div class="sidebar-footer">
-        <div class="version" v-if="!appStore.sidebarCollapsed">
-          v1.2.4
+      <div class="sidebar-footer" v-if="!appStore.sidebarCollapsed">
+        <div class="sidebar-footer-card">
+          <div class="sf-version">v1.2.5</div>
+          <a href="https://github.com/SelinuxJXM/JSecProbe" target="_blank" class="sf-github" title="访问 GitHub 仓库">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
+            </svg>
+            <span>源码仓库</span>
+          </a>
         </div>
-        <div class="copyright" v-if="!appStore.sidebarCollapsed">
-          © 2025 景景
+        <div class="sf-divider"></div>
+        <div class="sf-copyright">
+          <span>© 2025 景景 · 版权所有</span>
         </div>
+      </div>
+      
+      <div class="sidebar-footer-mini" v-if="appStore.sidebarCollapsed">
+        <a href="https://github.com/SelinuxJXM/JSecProbe" target="_blank" class="sfm-github" title="访问 GitHub 仓库">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
+          </svg>
+        </a>
       </div>
     </aside>
     
@@ -284,8 +299,11 @@ function handleLogout() {
     .el-sub-menu__title {
       height: 44px;
       line-height: 44px;
-      margin: 2px var(--spacing-sm);
-      border-radius: var(--radius-base);
+      margin: 2px 0;
+      padding: 0 var(--spacing-md) !important;
+      border-radius: 0;
+      display: flex;
+      align-items: center;
 
       &:hover {
         background: var(--color-sidebar-bg-hover) !important;
@@ -294,6 +312,10 @@ function handleLogout() {
 
       .el-icon {
         font-size: 18px;
+        flex-shrink: 0;
+        width: 24px;
+        text-align: center;
+        margin-right: var(--spacing-sm);
       }
     }
 
@@ -304,7 +326,7 @@ function handleLogout() {
 
     .el-sub-menu {
       .el-menu-item {
-        padding-left: 48px !important;
+        padding-left: calc(var(--spacing-md) + 24px + var(--spacing-sm)) !important;
       }
     }
 
@@ -315,27 +337,128 @@ function handleLogout() {
         margin: 2px auto;
         padding: 0 !important;
         justify-content: center;
+        
+        .el-icon {
+          margin-right: 0;
+          width: auto;
+        }
       }
     }
   }
 }
 
 .sidebar-footer {
-  padding: var(--spacing-sm) var(--spacing-md);
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0;
+  border-top: none;
   
-  .version {
-    color: var(--color-sidebar-text);
-    font-size: var(--font-size-xs);
-    text-align: center;
+  .sidebar-footer-card {
+    margin: 0 var(--spacing-md) var(--spacing-sm);
+    padding: var(--spacing-md);
+    border-radius: var(--radius-lg);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    
+    .sf-version {
+      font-size: var(--font-size-xs);
+      font-weight: var(--font-weight-bold);
+      color: var(--color-sidebar-text);
+      text-align: center;
+      letter-spacing: 0.05em;
+      margin-bottom: var(--spacing-sm);
+    }
+    
+    .sf-github {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: var(--spacing-xs) var(--spacing-sm);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.06);
+      font-size: var(--font-size-xs);
+      color: var(--color-sidebar-text);
+      text-decoration: none;
+      opacity: 0.8;
+      transition: all 0.25s ease;
+      
+      svg {
+        width: 14px;
+        height: 14px;
+        flex-shrink: 0;
+        opacity: 0.8;
+        transition: all 0.25s ease;
+      }
+      
+      &:hover {
+        opacity: 1;
+        background: rgba(255, 255, 255, 0.1);
+        color: #fff;
+        
+        svg {
+          opacity: 1;
+          transform: scale(1.15);
+        }
+      }
+    }
   }
-
-  .copyright {
-    color: var(--color-sidebar-text);
+  
+  .sf-divider {
+    height: 1px;
+    margin: 0 var(--spacing-lg);
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.1) 50%,
+      transparent 100%
+    );
+  }
+  
+  .sf-copyright {
+    padding: var(--spacing-sm) 0;
     font-size: var(--font-size-xs);
+    color: var(--color-sidebar-text);
     text-align: center;
-    margin-top: var(--spacing-xs);
-    opacity: 0.6;
+    opacity: 0.45;
+    letter-spacing: 0.02em;
+  }
+}
+
+.sidebar-footer-mini {
+  display: flex;
+  justify-content: center;
+  padding-top: var(--spacing-md);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+
+  .sfm-github {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    color: #fff;
+    background: linear-gradient(135deg, #24292e 0%, #404448 100%);
+    text-decoration: none;
+    opacity: 0.9;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    
+    svg {
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+      transition: all 0.3s ease;
+    }
+    
+    &:hover {
+      opacity: 1;
+      transform: scale(1.1);
+      box-shadow: 0 4px 16px rgba(36, 41, 46, 0.5);
+      
+      svg {
+        transform: scale(1.1);
+      }
+    }
   }
 }
 

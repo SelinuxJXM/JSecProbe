@@ -473,7 +473,7 @@ export function registerIssueHandlers(): void {
 
       const dataColIndexes = columns.map((_, i) => i + 1);
 
-      issues.forEach((issue, index) => {
+      issues.forEach((issue: any, index) => {
         const row = worksheet.addRow({
           index: index + 1,
           riskLevel: riskMap[issue.riskLevel] || issue.riskLevel,
@@ -500,12 +500,12 @@ export function registerIssueHandlers(): void {
         row.eachCell((cell, colNumber) => {
           cell.font = { size: 11, color: { argb: 'FF000000' } };
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isZebra ? 'FFF7F9FC' : 'FFFFFFFF' } };
-          cell.alignment = { wrapText: true, vertical: 'top', horizontal: colNumber === 1 ? 'center' : 'left' };
+          cell.alignment = { wrapText: true, vertical: 'middle', horizontal: colNumber === 1 ? 'center' : 'left' };
           cell.border = {
-            top: { style: 'thin', color: { argb: 'FFB0B0B0' } },
-            left: { style: 'thin', color: { argb: 'FFB0B0B0' } },
-            bottom: { style: 'thin', color: { argb: 'FFB0B0B0' } },
-            right: { style: 'thin', color: { argb: 'FFB0B0B0' } },
+            top: { style: 'medium', color: { argb: 'FFB0B0B0' } },
+            left: { style: 'medium', color: { argb: 'FFB0B0B0' } },
+            bottom: { style: 'medium', color: { argb: 'FFB0B0B0' } },
+            right: { style: 'medium', color: { argb: 'FFB0B0B0' } },
           };
           if (colNumber === 2 && riskColor) {
             cell.font = { size: 11, bold: true, color: { argb: riskColor } };

@@ -189,7 +189,12 @@
             <el-input v-model="row.deviceUsage" placeholder="如 Oracle 19c" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory === 'business_app'" label="主要功能" min-width="160">
+        <el-table-column v-if="currentCategory === 'management_platform'" label="版本" min-width="140">
+          <template #default="{ row }">
+            <el-input v-model="row.version" placeholder="版本" size="small" class="cell-input" @input="markModified(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentCategory === 'business_app' || currentCategory === 'management_platform'" label="主要功能" min-width="160">
           <template #default="{ row }">
             <el-input v-model="row.deviceUsage" placeholder="主要功能描述" size="small" class="cell-input" @input="markModified(row)" />
           </template>
@@ -199,19 +204,19 @@
             <el-input v-model="row.deviceUsage" placeholder="如 保密性、完整性" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'network_device' && currentCategory !== 'security_device' && currentCategory !== 'server_storage' && currentCategory !== 'dbms' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="设备类别/用途" min-width="140">
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'network_device' && currentCategory !== 'security_device' && currentCategory !== 'server_storage' && currentCategory !== 'dbms' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="设备类别/用途" min-width="140">
           <template #default="{ row }">
             <el-input v-model="row.deviceUsage" placeholder="设备用途" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
         <!-- 备注 -->
-        <el-table-column v-if="currentCategory !== 'data_resource'" label="备注" min-width="120">
+        <el-table-column v-if="currentCategory !== 'data_resource' && currentCategory !== 'management_platform'" label="备注" min-width="120">
           <template #default="{ row }">
             <el-input v-model="row.description" placeholder="备注" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
         <!-- 数量 -->
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="数量" width="70" align="center">
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'management_platform'" label="数量" width="70" align="center">
           <template #default="{ row }">
             <el-input-number v-model="row.quantity" :min="1" :max="999" size="small" controls-position="right" style="width: 68px" @change="markModified(row)" />
           </template>
@@ -438,7 +443,7 @@ const EDITABLE_COLUMNS: Record<string, string[]> = {
   security_device: ['name', 'isVirtual', 'os', 'version', 'deviceUsage', 'description', 'quantity', 'ip', 'importance', 'isAssessmentTarget'],
   server_storage: ['name', 'isVirtual', 'os', 'dbSystem', 'middleware', 'description', 'quantity', 'ip', 'importance', 'isAssessmentTarget'],
   dbms: ['name', 'os', 'deviceUsage', 'description', 'quantity', 'importance', 'isAssessmentTarget'],
-  management_platform: ['name', 'os', 'deviceUsage', 'description', 'quantity', 'ip', 'importance', 'isAssessmentTarget'],
+  management_platform: ['name', 'os', 'version', 'ip', 'deviceUsage', 'importance', 'isAssessmentTarget'],
   business_app: ['name', 'os', 'deviceUsage', 'description', 'ip', 'importance', 'isAssessmentTarget'],
   terminal: ['name', 'isVirtual', 'os', 'deviceUsage', 'description', 'quantity', 'ip', 'importance', 'isAssessmentTarget'],
   data_resource: ['name', 'os', 'deviceUsage', 'importance', 'isAssessmentTarget'],
@@ -871,8 +876,11 @@ async function handleImport() {
   const importRes = await window.api.asset.importExcel(projectId, res.data);
   
   if (importRes.success && importRes.data) {
-    ElMessage.success(`成功导入 ${importRes.data.count} 条资产`);
-    currentCategory.value = importRes.data.category;
+    const { count, results } = importRes.data;
+    const detail = results && results.length > 1
+      ? `共 ${count} 条资产（${results.map(r => `${r.sheet}: ${r.count}条`).join('，')}）`
+      : `成功导入 ${count} 条资产`;
+    ElMessage.success(detail);
     loadAssets();
   } else {
     ElMessage.error(importRes.error?.message || '导入失败');

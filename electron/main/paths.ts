@@ -7,8 +7,16 @@ let appDataPath = '';
 
 const CONFIG_FILE_NAME = 'app-config.json';
 
+export function getDefaultBasePath(): string {
+  if (app.isPackaged) {
+    const execDir = process.execPath.substring(0, process.execPath.lastIndexOf('\\'));
+    return join(execDir, 'JSecProbeData');
+  }
+  return join(process.cwd(), 'JSecProbeData');
+}
+
 function getDefaultConfigPath(): string {
-  return join(app.getPath('userData'), CONFIG_FILE_NAME);
+  return join(getDefaultBasePath(), CONFIG_FILE_NAME);
 }
 
 function readConfig(): Record<string, any> {
@@ -26,10 +34,7 @@ function readConfig(): Record<string, any> {
 
 function writeConfig(config: Record<string, any>): void {
   try {
-    const configPath = getDefaultConfigPath();
-    log.info(`写入配置文件: ${configPath}`);
-    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
-    log.info(`配置文件写入成功: ${configPath}`);
+    writeFileSync(getDefaultConfigPath(), JSON.stringify(config, null, 2), 'utf-8');
   } catch (e) {
     log.error('写入配置文件失败:', e);
     throw e;
@@ -40,7 +45,7 @@ export async function getAppDataPath(): Promise<string> {
   if (appDataPath) return appDataPath;
   
   const config = readConfig();
-  let basePath = config.dataPath || app.getPath('userData');
+  let basePath = config.dataPath || getDefaultBasePath();
   basePath = resolve(basePath);
   
   appDataPath = basePath;
@@ -63,14 +68,13 @@ export function setAppDataPath(newPath: string): void {
 
   const config = readConfig();
   config.dataPath = resolvedPath;
-  log.info(`准备将数据存储路径写入配置: ${resolvedPath}`);
   writeConfig(config);
 
   log.info(`数据存储路径已更改为: ${resolvedPath}`);
 }
 
 export function getDefaultUserDataPath(): string {
-  return app.getPath('userData');
+  return getDefaultBasePath();
 }
 
 export function getDbPath(): string {

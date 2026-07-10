@@ -101,6 +101,23 @@ npm run build:linux
 
 > ⚠️ 生产环境请务必修改默认密码！
 
+## 🤝 联系方式
+
+- **技术支持邮箱**: SelinuxJ@163.com
+- **官方网站**: https://www.soer.ccwu.cc/Nav/
+
+<div align="center">
+
+### 微信扫码联系
+
+<img src="https://raw.githubusercontent.com/SelinuxJXM/JSecProbe/main/screenshots/wechat-qrcode.png" alt="微信二维码" width="200"/>
+
+*（请上传您的微信二维码到 screenshots/wechat-qrcode.png）*
+
+</div>
+
+---
+
 ## 🤝 贡献指南
 
 1. Fork 本项目

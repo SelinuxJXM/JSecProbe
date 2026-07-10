@@ -37,3 +37,14 @@ Thumbs.db
 *.tmp
 *.temp
 *.bak
+
+# Sensitive files (contain secrets/tokens)
+upload.ps1
+upload-release.ps1
+
+# Local data directory
+JSecProbeData
+
+# Screenshots (optional, keep wechat-qrcode for README)
+screenshots/*.png
+!screenshots/wechat-qrcode.png
