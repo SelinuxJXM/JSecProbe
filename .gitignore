@@ -23,6 +23,7 @@ dev-data
 # IDE / Editor
 .vscode
 .idea
+.trae/
 *.suo
 *.ntvs*
 *.njsproj
