@@ -93,17 +93,6 @@ export function registerUpdateHandlers() {
         return { success: true, message: '开发模式下不检查更新' };
       }
 
-      // 检查是否配置了更新服务器
-      const publishConfig = (app as any)._publishProvider || require('../../package.json').publish;
-      if (!publishConfig) {
-        log.info('[更新] 未配置更新服务器，跳过检查');
-        sendStatusToWindow({
-          status: 'notavailable',
-          version: app.getVersion(),
-        });
-        return { success: true, message: '当前已是最新版本（未配置更新服务器）' };
-      }
-
       log.info('[更新] 手动检查更新');
       await autoUpdater.checkForUpdates();
       return { success: true };
