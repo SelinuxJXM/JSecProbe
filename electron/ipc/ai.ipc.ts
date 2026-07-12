@@ -2,22 +2,24 @@ import { ipcMain } from 'electron';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
-import { readFileSync } from 'fs';
+import { readFile } from 'fs/promises';
 import log from 'electron-log';
 import sharp from 'sharp';
+import { createWorker } from 'tesseract.js';
+import { writeOperationLog } from '../utils/operation-log';
 
-function sanitize<T>(obj: T): T {
+function sanitize<T>(obj: T): any {
   try {
     return JSON.parse(JSON.stringify(obj));
   } catch (e) {
     log.error('IPC返回值序列化失败:', e);
-    return obj;
+    return { success: false, error: { code: 'SERIALIZE_ERROR', message: '数据序列化失败' } };
   }
 }
 
 function isImageFile(filePath: string): boolean {
   const ext = filePath.toLowerCase().split('.').pop() || '';
-  return ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff', 'svg'].includes(ext);
+  return ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff'].includes(ext);
 }
 
 async function encodeImageToBase64(imagePath: string, maxSizeKB: number = 200): Promise<string> {
@@ -26,15 +28,15 @@ async function encodeImageToBase64(imagePath: string, maxSizeKB: number = 200): 
       log.warn(`[图片编码] 跳过非图片文件: ${imagePath}`);
       return '';
     }
-    
-    const imageBuffer = readFileSync(imagePath);
+
+    const imageBuffer = await readFile(imagePath);
     const originalSizeKB = imageBuffer.length / 1024;
     log.info(`[图片编码] 路径: ${imagePath}, 原始大小: ${originalSizeKB.toFixed(1)} KB`);
-    
+
     if (originalSizeKB <= maxSizeKB) {
       return imageBuffer.toString('base64');
     }
-    
+
     const compressed = await sharp(imageBuffer)
       .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 70 })
@@ -48,16 +50,129 @@ async function encodeImageToBase64(imagePath: string, maxSizeKB: number = 200): 
   }
 }
 
+async function desensitizeImage(imagePath: string): Promise<string> {
+  let worker: Awaited<ReturnType<typeof createWorker>> | null = null;
+  try {
+    if (!isImageFile(imagePath)) {
+      return '';
+    }
+    const imageBuffer = await readFile(imagePath);
+    const originalSizeKB = imageBuffer.length / 1024;
+    log.info(`[图片脱敏] 路径: ${imagePath}, 原始大小: ${originalSizeKB.toFixed(1)} KB`);
+
+    const meta = await sharp(imageBuffer).metadata();
+    const width = meta.width || 0;
+    const height = meta.height || 0;
+
+    worker = await createWorker('eng');
+    const { data } = await worker.recognize(imageBuffer);
+
+    const ipPattern = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/;
+    const maskRects: { x: number; y: number; w: number; h: number }[] = [];
+
+    for (const word of data.words || []) {
+      if (word.text && ipPattern.test(word.text.trim())) {
+        const pad = 2;
+        maskRects.push({
+          x: Math.max(0, word.bbox.x0 - pad),
+          y: Math.max(0, word.bbox.y0 - pad),
+          w: word.bbox.x1 - word.bbox.x0 + pad * 2,
+          h: word.bbox.y1 - word.bbox.y0 + pad * 2,
+        });
+      }
+    }
+
+    if (maskRects.length === 0) {
+      log.info(`[图片脱敏] ${imagePath}: 未检测到敏感文本，发送原图`);
+      return imageBuffer.toString('base64');
+    }
+
+    let svgRects = '';
+    for (const r of maskRects) {
+      svgRects += `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" fill="black"/>`;
+    }
+    const svg = `<svg width="${width}" height="${height}">${svgRects}</svg>`;
+
+    const processed = await sharp(imageBuffer)
+      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+      .jpeg({ quality: 85 })
+      .toBuffer();
+
+    const processedSizeKB = processed.length / 1024;
+    log.info(`[图片脱敏] ${imagePath}: 共遮盖 ${maskRects.length} 处敏感文本, ${originalSizeKB.toFixed(1)} KB → ${processedSizeKB.toFixed(1)} KB`);
+    return processed.toString('base64');
+  } catch (err: any) {
+    log.error(`[图片脱敏失败] ${imagePath}: ${err.message}，将发送原图`);
+    try {
+      return (await readFile(imagePath)).toString('base64');
+    } catch {
+      return '';
+    }
+  } finally {
+    if (worker) {
+      try { await worker.terminate(); } catch {}
+    }
+  }
+}
+
 function ensureApiUrl(baseUrl: string | null | undefined): string {
-  const url = (baseUrl || '').trim().replace(/\/+$/, '');
-  if (!url) return '';
-  if (url.endsWith('/chat/completions')) {
-    return url;
+  const raw = (baseUrl || '').trim().replace(/\/+$/, '');
+  if (!raw) return '';
+
+  const queryIndex = raw.indexOf('?');
+  const base = queryIndex >= 0 ? raw.substring(0, queryIndex) : raw;
+
+  if (base.endsWith('/chat/completions')) {
+    return raw;
   }
-  if (url.includes('/v1')) {
-    return `${url}/chat/completions`;
+  if (/\/v1(\/|$)/.test(base)) {
+    return `${base}/chat/completions`;
   }
-  return `${url}/v1/chat/completions`;
+  return `${base}/v1/chat/completions`;
+}
+
+function desensitizeText(text: string, extraWords?: string[]): string {
+  if (!text) return text;
+  let result = text;
+
+  result = result.replace(/\b(\d{1,3}\.\d{1,3}\.)\d{1,3}(\.\d{1,3})\b/g, '$1***$2');
+  result = result.replace(/\b([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/g, '**:**:**:**:**:**');
+  result = result.replace(/\b[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+\.(com|cn|org|net|gov|edu|io|ai|dev|info|mil|int|biz|pro|name|coop|mobi)\b/g, (m) => {
+    const parts = m.split('.');
+    return `***.${parts.slice(-2).join('.')}`;
+  });
+  result = result.replace(/\/(home|Users|data|export|app|var|etc|tmp|opt|usr)\/[a-zA-Z0-9_\/\-]+/g, (m) => {
+    const parts = m.split('/');
+    if (parts.length > 2) {
+      return '/' + parts[1] + '/***';
+    }
+    return m;
+  });
+  result = result.replace(/(password|passwd|pwd|secret|token)\s*[=:]\s*['"]?[^\s;,:]+['"]?/gi, '$1=***');
+
+  result = result.replace(/\b1[3-9]\d{9}\b/g, '1**********');
+
+  const phoneLike = /\b\d{3,4}-?\d{7,8}\b/g;
+  result = result.replace(phoneLike, (m) => {
+    if (/^\d{4,5}$/.test(m) || /^\d{7,8}$/.test(m)) return m;
+    return '***-*******';
+  });
+
+  result = result.replace(/\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g, '***@***.***');
+  result = result.replace(/\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b/g, '******************');
+  result = result.replace(/\b[0-9A-HJ-NPQRTUWXY]{2}\d{6}[0-9A-HJ-NPQRTUWXY]{10}\b/g, '*******************');
+
+  result = result.replace(/([\u4e00-\u9fa5]{2,12})(有限公司|有限责任公司|股份有限公司|集团有限公司|集团公司|厂|局|研究院|设计院|设计研究院|分行|支行|信用社|联社|集团|分公司|子公司|办事处|联络处|指挥部|委员会)/g, '***$2');
+
+  if (extraWords && extraWords.length > 0) {
+    for (const word of extraWords) {
+      if (!word || word.trim().length === 0) continue;
+      const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      result = result.replace(new RegExp(escaped, 'g'), '***');
+    }
+  }
+
+  return result;
 }
 
 function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
@@ -106,6 +221,8 @@ export function registerAIHandlers(): void {
             apiKey: config.apiKey,
             model: config.model,
             temperature: config.temperature ?? 0.3,
+            privacyMode: config.privacyMode ?? 0,
+            sensitiveWords: config.sensitiveWords || '',
             updatedAt: now,
           })
           .where(eq(schema.aiConfigs.id, configs[0].id));
@@ -116,7 +233,10 @@ export function registerAIHandlers(): void {
           apiKey: config.apiKey,
           model: config.model,
           temperature: config.temperature ?? 0.3,
+          privacyMode: config.privacyMode ?? 0,
+          sensitiveWords: config.sensitiveWords || '',
           updatedAt: now,
+          createdAt: now,
         });
       }
     })
@@ -127,27 +247,25 @@ export function registerAIHandlers(): void {
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) return sanitize({ success: false, error: { code: 'NOT_CONFIGURED', message: 'AI未配置' } });
-      
+
       const config = sanitize(configs[0]);
       const apiBase = params?.apiBase || config.apiBase || '';
       const apiKey = params?.apiKey || config.apiKey || '';
       const model = params?.model || config.model || '';
-      
+
       if (!apiKey) return sanitize({ success: false, error: { code: 'NO_API_KEY', message: 'API Key未配置' } });
       if (!apiBase) return sanitize({ success: false, error: { code: 'NO_API_BASE', message: 'API地址未配置' } });
-      
+
       const apiUrl = ensureApiUrl(apiBase);
       log.info(`[测试连接] URL: ${apiUrl}, 模型: ${model}, Key前4位: ${apiKey.substring(0, 4)}***`);
-      
+
       const requestBody = {
         model,
         messages: [{ role: 'user', content: 'Hello' }],
         max_tokens: 10,
         temperature: 0.1,
       };
-      
-      log.info(`[测试连接] 请求体: ${JSON.stringify(requestBody)}`);
-      
+
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
@@ -156,30 +274,30 @@ export function registerAIHandlers(): void {
         },
         body: JSON.stringify(requestBody),
       });
-      
+
       const responseText = await response.text();
       log.info(`[测试连接] 状态: ${response.status}, 响应: ${responseText.substring(0, 500)}`);
-      
+
       if (!response.ok) {
-        return sanitize({ 
-          success: false, 
-          error: { 
-            code: `HTTP_${response.status}`, 
-            message: `请求失败(${response.status}): ${apiUrl}`, 
+        return sanitize({
+          success: false,
+          error: {
+            code: `HTTP_${response.status}`,
+            message: `请求失败(${response.status}): ${apiUrl}`,
             details: responseText.substring(0, 500),
             apiUrl,
-          } 
+          }
         });
       }
-      
+
       const data = JSON.parse(responseText);
-      return sanitize({ 
-        success: true, 
-        data: { 
-          url: apiUrl, 
-          model, 
-          reply: data.choices?.[0]?.message?.content || '无回复' 
-        } 
+      return sanitize({
+        success: true,
+        data: {
+          url: apiUrl,
+          model,
+          reply: data.choices?.[0]?.message?.content || '无回复'
+        }
       });
     } catch (error: any) {
       log.error('[测试连接] 错误:', error);
@@ -188,7 +306,7 @@ export function registerAIHandlers(): void {
   });
 
   ipcMain.handle('ai:chat', async (_event, params: {
-    messages: { role: string; content: any }[];
+    messages: { role: string; content: string }[];
     model?: string;
     temperature?: number;
     context?: string;
@@ -232,6 +350,16 @@ export function registerAIHandlers(): void {
 
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content || '';
+
+      try {
+        writeOperationLog({
+          action: 'ai_chat',
+          module: 'ai',
+          description: `AI对话: 模型=${model}, 消息数=${params.messages.length}, 上下文=${params.context ? '是' : '否'}`,
+        });
+      } catch (logErr: any) {
+        log.error('[操作日志] 写入AI对话日志失败:', logErr.message);
+      }
 
       return sanitize({
         success: true,
@@ -277,11 +405,28 @@ export function registerAIHandlers(): void {
 
       if (!apiUrl) throw new Error('API地址未配置');
 
-      const hasScreenshots = params.screenshots && params.screenshots.length > 0;
+      const privacyMode = config.privacyMode === 1;
+      const extraWords = config.sensitiveWords
+        ? config.sensitiveWords.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
+        : [];
+      let hasScreenshots = params.screenshots && params.screenshots.length > 0;
 
       const userContent: any[] = [];
 
-      if (hasScreenshots) {
+      if (hasScreenshots && privacyMode) {
+        for (const screenshotPath of params.screenshots!) {
+          const base64 = await desensitizeImage(screenshotPath);
+          if (base64) {
+            userContent.push({
+              type: 'image_url',
+              image_url: {
+                url: `data:image/jpeg;base64,${base64}`,
+              },
+            });
+          }
+        }
+        log.info(`[隐私模式] 截图已脱敏发送（OCR遮盖IP），数量: ${params.screenshots!.length}`);
+      } else if (hasScreenshots) {
         for (const screenshotPath of params.screenshots!) {
           const base64 = await encodeImageToBase64(screenshotPath);
           if (base64) {
@@ -295,15 +440,24 @@ export function registerAIHandlers(): void {
         }
       }
 
+      const screenshotCount = hasScreenshots ? params.screenshots!.length : 0;
+
+      const evidenceText = privacyMode
+        ? desensitizeText(params.result || '无文本内容', extraWords)
+        : params.result || '无文本内容，请分析图片中的证据信息';
+
       userContent.push({
         type: 'text',
-        text: `关键证据点内容：${params.result || '无文本内容，请分析图片中的证据信息'}`,
+        text: `关键证据点内容：${evidenceText}`,
       });
+
+      const controlPoint = privacyMode ? desensitizeText(params.controlPoint, extraWords) : params.controlPoint;
+      const requirement = privacyMode ? desensitizeText(params.requirement, extraWords) : params.requirement;
 
       const systemPrompt = `你是一名专业的等级保护测评师。请根据以下信息撰写现场测评记录：
 
-安全控制点：${params.controlPoint}
-测评项（标准条款）：${params.requirement}
+安全控制点：${controlPoint}
+测评项（标准条款）：${requirement}
 
 用户已在"关键证据点"中提供了核查证据（命令输出、配置信息、文件内容、截图等）。
 
@@ -358,6 +512,17 @@ export function registerAIHandlers(): void {
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content || '';
 
+      try {
+        writeOperationLog({
+          action: 'ai_analyze',
+          module: 'ai',
+          targetName: params.controlPoint,
+          description: `AI单条分析: 控制点=${params.controlPoint}, 截图数=${screenshotCount}, 隐私模式=${privacyMode ? '是' : '否'}`,
+        });
+      } catch (logErr: any) {
+        log.error('[操作日志] 写入AI分析日志失败:', logErr.message);
+      }
+
       return sanitize({ success: true, data: { content } });
     } catch (error: any) {
       log.error('AI分析错误:', error);
@@ -377,7 +542,9 @@ export function registerAIHandlers(): void {
     documents?: { name: string; content: string }[];
   }) => {
     const sendProgress = (data: { stage: string; message: string; percent: number }) => {
-      try { _event.sender.send('ai:analysisProgress', data); } catch {}
+      try { _event.sender.send('ai:analysisProgress', data); } catch (innerErr: any) {
+        log.warn('[批量分析] 发送进度失败:', innerErr.message);
+      }
     };
 
     try {
@@ -394,10 +561,18 @@ export function registerAIHandlers(): void {
 
       if (!apiUrl) throw new Error('API地址未配置');
 
+      const privacyMode = config.privacyMode === 1;
+      const extraWords = config.sensitiveWords
+        ? config.sensitiveWords.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
+        : [];
       const hasImages = params.screenshots && params.screenshots.length > 0;
 
       sendProgress({ stage: 'encoding', message: `正在编码文件...`, percent: 15 });
-      log.info(`批量AI分析 请求URL: ${apiUrl}, 模型: ${model}, 图片数: ${hasImages ? params.screenshots.length : 0}`);
+      if (privacyMode && params.screenshots && params.screenshots.length > 0) {
+        log.info('[隐私模式] 批量分析截图将脱敏处理（OCR遮盖IP）后发送');
+      }
+
+      log.info(`批量AI分析 请求URL: ${apiUrl}, 模型: ${model}, 图片数: ${hasImages ? params.screenshots.length : 0}, 隐私模式: ${privacyMode}`);
 
       const userContent: any[] = [];
       const imageFileNames: string[] = [];
@@ -407,8 +582,10 @@ export function registerAIHandlers(): void {
         for (const screenshotPath of params.screenshots) {
           const fileName = screenshotPath.split('\\').pop()?.split('/').pop() || 'unknown';
           imageFileNames.push(fileName);
-          
-          const base64 = await encodeImageToBase64(screenshotPath);
+
+          const base64 = privacyMode
+            ? await desensitizeImage(screenshotPath)
+            : await encodeImageToBase64(screenshotPath);
           const base64Preview = base64 ? base64.substring(0, 50) + '...' : 'EMPTY';
           log.info(`[图片编码结果] ${screenshotPath}: ${base64Preview}`);
           if (base64) {
@@ -423,7 +600,7 @@ export function registerAIHandlers(): void {
           const encodePercent = 15 + Math.round((encoded / params.screenshots.length) * 35);
           sendProgress({ stage: 'encoding', message: `正在编码文件 (${encoded}/${params.screenshots.length})...`, percent: encodePercent });
         }
-        
+
         const imageListDesc = imageFileNames.map((name, idx) => `  图片${idx + 1}: ${name}`).join('\n');
         userContent.unshift({
           type: 'text',
@@ -433,20 +610,22 @@ export function registerAIHandlers(): void {
 
       const itemsJson = JSON.stringify(params.items.map(item => ({
         id: item.id,
-        controlPoint: item.controlPoint,
-        requirement: item.requirement,
+        controlPoint: privacyMode ? desensitizeText(item.controlPoint, extraWords) : item.controlPoint,
+        requirement: privacyMode ? desensitizeText(item.requirement, extraWords) : item.requirement,
       })));
 
       let docContent = '';
       if (params.documents && params.documents.length > 0) {
         for (const doc of params.documents) {
-          docContent += `\n=== 文档：${doc.name} ===\n${doc.content}\n`;
+          const content = privacyMode ? desensitizeText(doc.content, extraWords) : doc.content;
+          docContent += `\n=== 文档：${doc.name} ===\n${content}\n`;
         }
       }
 
       let evidenceDesc = '';
       if (hasImages) {
-        evidenceDesc = `已提供 ${params.screenshots.length} 张截图，已附加在消息中（先文本后图片）。`;
+        const modeText = privacyMode ? '（已脱敏处理：OCR遮盖IP地址）' : '';
+        evidenceDesc = `已提供 ${params.screenshots.length} 张截图${modeText}，已附加在消息中（先文本后图片）。`;
       }
       if (docContent) {
         evidenceDesc += `\n\n文档文本内容：\n${docContent}`;
@@ -507,10 +686,9 @@ ${itemsJson}
 
       const bodySizeKB = Buffer.byteLength(batchRequestBody, 'utf8') / 1024;
       log.info(`[批量AI分析] 请求体大小: ${bodySizeKB.toFixed(1)} KB, 用户内容项数: ${userContent.length}`);
-      log.info(`[批量AI分析] 请求体预览: ${batchRequestBody.substring(0, 1000)}`);
 
       sendProgress({ stage: 'sending', message: '正在提交给AI分析...', percent: 60 });
-      
+
       log.info(`[批量AI分析] 开始发送fetch请求...`);
       const fetchStartTime = Date.now();
 
@@ -555,6 +733,16 @@ ${itemsJson}
       const content = data.choices?.[0]?.message?.content || '';
 
       sendProgress({ stage: 'done', message: '分析完成', percent: 100 });
+
+      try {
+        writeOperationLog({
+          action: 'ai_batch_analyze',
+          module: 'ai',
+          description: `AI批量分析: 测评项数=${params.items.length}, 截图数=${params.screenshots.length}, 文档数=${params.documents?.length || 0}, 隐私模式=${privacyMode ? '是' : '否'}`,
+        });
+      } catch (logErr: any) {
+        log.error('[操作日志] 写入批量分析日志失败:', logErr.message);
+      }
 
       return sanitize({ success: true, data: { content } });
     } catch (error: any) {

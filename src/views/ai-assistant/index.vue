@@ -186,8 +186,22 @@
       </div>
     </div>
 
-    <el-dialog v-model="showSettings" title="AI设置" width="600px" destroy-on-close>
+    <el-dialog v-model="showSettings" title="AI设置" width="640px" destroy-on-close>
       <div class="ai-settings">
+        <!-- 合规声明 -->
+        <div class="compliance-notice">
+          <div class="compliance-notice-title">⚠️ 数据合规声明</div>
+          <div class="compliance-notice-body">
+            <p>AI分析功能会将测评数据（包括核查记录、截图、文档等）发送到您配置的第三方AI服务进行处理。在启用AI功能前，请确保：</p>
+            <ul>
+              <li>已获得被测评单位的数据处理授权</li>
+              <li>您配置的AI服务符合数据安全与隐私保护要求</li>
+              <li>对于等保三级及以上项目，建议使用本地部署的LLM（如Ollama、vLLM等）</li>
+            </ul>
+            <p class="compliance-notice-footer">如涉及敏感数据，建议开启下方的「隐私模式」（截图自动遮盖IP地址，文本自动脱敏处理）。</p>
+          </div>
+        </div>
+
         <!-- API格式 -->
         <div class="setting-item">
           <label class="setting-label"><span class="required">*</span>API格式</label>
@@ -218,10 +232,7 @@
 
         <!-- 模型ID -->
         <div class="setting-item">
-          <div class="setting-label-row">
-            <label class="setting-label"><span class="required">*</span>模型ID</label>
-            <el-switch v-model="aiSettings.multiModal" size="small">多模态</el-switch>
-          </div>
+          <label class="setting-label"><span class="required">*</span>模型ID</label>
           <el-input
             v-model="aiSettings.model"
             placeholder="输入模型ID，例如：gpt-4o"
@@ -237,6 +248,89 @@
             show-password
             placeholder="输入 API 密钥"
           />
+        </div>
+
+        <!-- 隐私模式 -->
+        <div class="setting-item">
+          <div class="setting-label-row">
+            <label class="setting-label">隐私模式</label>
+            <el-switch v-model="aiSettings.privacyMode" size="small" />
+          </div>
+          <div class="setting-hint" style="margin-top: 4px;">
+            开启后，截图中的IP地址将被OCR识别并局部遮盖，其余内容保持清晰；文本内容中的涉密信息将自动脱敏后发送给AI分析。
+          </div>
+          <div v-if="aiSettings.privacyMode" class="desensitize-rules">
+            <div class="desensitize-rules-title">自动脱敏规则</div>
+            <div class="desensitize-rule-item">
+              <span class="rule-type">图片</span>
+              <span>IP地址 → OCR识别后黑色方块遮盖</span>
+            </div>
+            <div class="desensitize-rules-subtitle">文本内置规则</div>
+            <div class="desensitize-rule-item">
+              <span class="rule-type">IP</span>
+              <span><code>192.168.1.100</code> → <code>192.168.***.100</code>（仅第3段）</span>
+            </div>
+            <div class="desensitize-rule-item">
+              <span class="rule-type">手机</span>
+              <span><code>13812345678</code> → <code>1**********</code></span>
+            </div>
+            <div class="desensitize-rule-item">
+              <span class="rule-type">固话</span>
+              <span><code>0355-1234567</code> → <code>***-*******</code></span>
+            </div>
+            <div class="desensitize-rule-item">
+              <span class="rule-type">邮箱</span>
+              <span><code>admin@xxx.com</code> → <code>***@***.***</code></span>
+            </div>
+            <div class="desensitize-rule-item">
+              <span class="rule-type">域名</span>
+              <span><code>mail.xxx.com</code> → <code>***.xxx.com</code></span>
+            </div>
+            <div class="desensitize-rule-item">
+              <span class="rule-type">身份证</span>
+              <span>18位 → 全部替换为 <code>***</code></span>
+            </div>
+            <div class="desensitize-rule-item">
+              <span class="rule-type">信用代码</span>
+              <span>18位统一信用代码 → 全部替换</span>
+            </div>
+            <div class="desensitize-rule-item">
+              <span class="rule-type">密码</span>
+              <span><code>password=123456</code> → <code>password=***</code></span>
+            </div>
+            <div class="desensitize-rule-item">
+              <span class="rule-type">MAC</span>
+              <span><code>00:1A:2B:3C:4D:5E</code> → <code>**:**:**:**:**:**</code></span>
+            </div>
+            <div class="desensitize-rule-item">
+              <span class="rule-type">路径</span>
+              <span><code>/home/admin</code> → <code>/home/***</code></span>
+            </div>
+            <div class="desensitize-rule-item">
+              <span class="rule-type">单位</span>
+              <span>公司名（如XX有限责任公司）→ 隐藏名称</span>
+            </div>
+            <div class="desensitize-rule-item">
+              <span class="rule-type">自定义</span>
+              <span>下方配置的敏感词 → 全文替换为 <code>***</code></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 敏感词过滤 -->
+        <div class="setting-item">
+          <div class="setting-label-row">
+            <label class="setting-label">敏感词过滤列表</label>
+          </div>
+          <el-input
+            v-model="aiSettings.sensitiveWords"
+            type="textarea"
+            :rows="4"
+            placeholder="每行一个敏感词，例如：&#10;内网核心系统&#10;生产数据库节点&#10;SVR-DB-01"
+          />
+          <div class="setting-hint" style="margin-top: 4px;">
+            隐私模式下，文本中的公司名、单位名等自定义敏感词将被替换为「***」。每行一个关键词。
+          </div>
         </div>
 
         <!-- 测试连接 -->
@@ -314,12 +408,13 @@ const projectsLoading = ref(false);
 const aiSettings = reactive({
   apiFormat: 'openai',
   fullUrl: false,
-  multiModal: true,
   apiKey: '',
   baseUrl: 'https://api.openai.com/v1',
   model: 'gpt-4o',
   temperature: 0.3,
   provider: 'openai',
+  privacyMode: false,
+  sensitiveWords: '',
 });
 
 const isConfigured = computed(() => aiSettings.apiKey.length > 0);
@@ -435,9 +530,10 @@ async function loadSettings() {
       aiSettings.baseUrl = res.data.apiBase || 'https://api.openai.com/v1';
       aiSettings.model = res.data.model || 'gpt-4o';
       aiSettings.temperature = res.data.temperature ?? 0.3;
-      aiSettings.multiModal = (res.data.multiModal ?? 0) === 1;
       aiSettings.fullUrl = aiSettings.baseUrl.includes('/v1');
-      aiSettings.apiFormat = aiSettings.fullUrl ? 'openai' : 'openai';
+      aiSettings.apiFormat = 'openai';
+      aiSettings.privacyMode = (res.data.privacyMode ?? 0) === 1;
+      aiSettings.sensitiveWords = res.data.sensitiveWords || '';
     }
   } catch (e) {
     console.error('Failed to load AI settings', e);
@@ -457,6 +553,8 @@ async function saveSettings() {
       apiKey: aiSettings.apiKey,
       model: aiSettings.model,
       temperature: aiSettings.temperature,
+      privacyMode: aiSettings.privacyMode ? 1 : 0,
+      sensitiveWords: aiSettings.sensitiveWords,
     });
     if (res.success) {
       ElMessage.success('设置已保存');
@@ -1176,6 +1274,99 @@ onMounted(() => {
     word-break: break-all;
     white-space: pre-wrap;
   }
+}
+
+.desensitize-rules {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(64, 158, 255, 0.06);
+  border: 1px solid rgba(64, 158, 255, 0.15);
+  border-radius: 6px;
+}
+
+.desensitize-rules-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.desensitize-rules-subtitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 8px 0 4px 0;
+  padding-top: 6px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.desensitize-rule-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 2;
+}
+
+.rule-type {
+  display: inline-block;
+  min-width: 48px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #409eff;
+  background: rgba(64, 158, 255, 0.1);
+  border-radius: 3px;
+  padding: 0 5px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.desensitize-rule-item code {
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0 4px;
+  border-radius: 3px;
+  font-family: 'Consolas', 'Courier New', monospace;
+}
+
+.compliance-notice {
+  background: rgba(230, 162, 60, 0.08);
+  border: 1px solid rgba(230, 162, 60, 0.25);
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+
+.compliance-notice-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e6a23c;
+  margin-bottom: 10px;
+}
+
+.compliance-notice-body {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.compliance-notice-body p {
+  margin: 0 0 6px 0;
+}
+
+.compliance-notice-body ul {
+  margin: 4px 0 8px 0;
+  padding-left: 18px;
+}
+
+.compliance-notice-body li {
+  margin-bottom: 3px;
+}
+
+.compliance-notice-footer {
+  font-weight: 500;
+  color: #e6a23c;
+  margin-top: 4px;
 }
 
 /* Markdown body styles for AI assistant */

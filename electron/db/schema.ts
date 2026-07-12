@@ -190,7 +190,10 @@ export const aiConfigs = sqliteTable('ai_configs', {
   ocrProvider: text('ocr_provider').default('tesseract'),
   ocrApiKey: text('ocr_api_key'),
   enableAi: integer('enable_ai').notNull().default(0),
+  privacyMode: integer('privacy_mode').notNull().default(0),
+  sensitiveWords: text('sensitive_words'),
   updatedAt: text('updated_at').notNull(),
+  createdAt: text('created_at').notNull(),
 });
 
 export const systemSettings = sqliteTable('system_settings', {
