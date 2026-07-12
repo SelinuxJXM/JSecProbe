@@ -466,6 +466,27 @@
       </template>
     </el-dialog>
 
+    <!-- AI使用合规确认弹窗 -->
+    <el-dialog v-model="showAiConsentDialog" title="AI分析使用确认" width="520px" :close-on-click-modal="false">
+      <div class="ai-consent-content">
+        <div class="ai-consent-icon">⚠️</div>
+        <div class="ai-consent-title">数据合规确认</div>
+        <div class="ai-consent-body">
+          <p>AI分析功能会将当前测评数据（包括核查记录、截图、文档等）发送到您配置的第三方AI服务进行处理。在使用AI分析功能前，请确认：</p>
+          <ul>
+            <li>✅ 已获得被测评单位的数据处理授权</li>
+            <li>✅ 您配置的AI服务符合数据安全与隐私保护要求</li>
+            <li>✅ 您了解发送的数据可能包含系统配置信息、截图内容等敏感信息</li>
+          </ul>
+          <p class="ai-consent-hint">您可以在「AI设置」中开启隐私模式（仅发送文本，不发送截图），或配置本地部署的LLM以实现数据不出本地。</p>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="showAiConsentDialog = false; aiConsentPendingAction = null">暂不使用</el-button>
+        <el-button type="primary" @click="confirmAiConsent">我已确认，继续使用</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 导出选择弹窗 -->
     <el-dialog
       v-model="exportDialogVisible"
@@ -1282,6 +1303,22 @@ const batchAiProgress = ref({ visible: false, percent: 0, message: '', stage: ''
 const batchAiMinimized = ref(false);
 const aiDialogMinimized = ref(false);
 
+// AI使用合规确认
+const aiConsentGiven = ref(false);
+const showAiConsentDialog = ref(false);
+const aiConsentPendingAction = ref<'single' | 'batch' | null>(null);
+
+function confirmAiConsent() {
+  aiConsentGiven.value = true;
+  showAiConsentDialog.value = false;
+  if (aiConsentPendingAction.value === 'single') {
+    executeAiAnalyze(aiCurrentRow.value);
+  } else if (aiConsentPendingAction.value === 'batch') {
+    executeBatchAiAnalyze();
+  }
+  aiConsentPendingAction.value = null;
+}
+
 // 文件预览
 const previewDialogVisible = ref(false);
 const previewFile = ref<{ name: string; path: string; fileType: string } | null>(null);
@@ -1358,6 +1395,15 @@ function clearBatchFiles() {
 }
 
 function batchAiAnalyze() {
+  if (!aiConsentGiven.value) {
+    aiConsentPendingAction.value = 'batch';
+    showAiConsentDialog.value = true;
+    return;
+  }
+  executeBatchAiAnalyze();
+}
+
+function executeBatchAiAnalyze() {
   if (!window.api) {
     ElMessage.error('AI功能不可用');
     return;
@@ -2080,7 +2126,17 @@ async function removeScreenshot(row: any, index: number) {
   debounceAutoSave(row);
 }
 
-async function aiAnalyze(row: any) {
+function aiAnalyze(row: any) {
+  if (!aiConsentGiven.value) {
+    aiCurrentRow.value = row;
+    aiConsentPendingAction.value = 'single';
+    showAiConsentDialog.value = true;
+    return;
+  }
+  executeAiAnalyze(row);
+}
+
+async function executeAiAnalyze(row: any) {
   if (!window.api) {
     ElMessage.error('AI功能不可用');
     return;
@@ -4832,5 +4888,54 @@ onUpdated(() => {
   &.text {
     background: linear-gradient(135deg, #10B981, #059669);
   }
+}
+
+/* AI使用合规确认弹窗 */
+.ai-consent-content {
+  text-align: center;
+  padding: 8px 0;
+}
+
+.ai-consent-icon {
+  font-size: 40px;
+  margin-bottom: 12px;
+}
+
+.ai-consent-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 14px;
+}
+
+.ai-consent-body {
+  text-align: left;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.ai-consent-body p {
+  margin: 0 0 8px 0;
+}
+
+.ai-consent-body ul {
+  margin: 8px 0 12px 0;
+  padding-left: 20px;
+  list-style: none;
+}
+
+.ai-consent-body li {
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.ai-consent-hint {
+  font-size: 12px;
+  color: #e6a23c;
+  background: rgba(230, 162, 60, 0.08);
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-top: 8px;
 }
 </style>

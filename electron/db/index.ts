@@ -276,7 +276,10 @@ async function ensureTablesExist(sqlite: Database.Database): Promise<void> {
       ocr_provider TEXT DEFAULT 'tesseract',
       ocr_api_key TEXT,
       enable_ai INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL
+      privacy_mode INTEGER NOT NULL DEFAULT 0,
+      sensitive_words TEXT,
+      updated_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
     );
     
     CREATE TABLE IF NOT EXISTS system_settings (
@@ -353,7 +356,11 @@ async function ensureTablesExist(sqlite: Database.Database): Promise<void> {
     { table: 'knowledge_commands', column: 'device_type', definition: "TEXT DEFAULT ''" },
     { table: 'knowledge_commands', column: 'sub_category', definition: "TEXT DEFAULT ''" },
     { table: 'ai_configs', column: 'api_base', definition: 'TEXT' },
+    { table: 'ai_configs', column: 'enable_ai', definition: 'INTEGER NOT NULL DEFAULT 0' },
     { table: 'ai_configs', column: 'ocr_api_key', definition: 'TEXT' },
+    { table: 'ai_configs', column: 'privacy_mode', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'ai_configs', column: 'sensitive_words', definition: 'TEXT' },
+    { table: 'ai_configs', column: 'created_at', definition: "TEXT NOT NULL DEFAULT ''" },
     { table: 'system_settings', column: 'data_path', definition: 'TEXT' },
     { table: 'system_settings', column: 'default_standard', definition: "TEXT DEFAULT 'gb-t-22239-2019-l3'" },
     { table: 'system_settings', column: 'standard_data_version', definition: 'INTEGER NOT NULL DEFAULT 1' },
@@ -455,6 +462,7 @@ async function initDefaultData(): Promise<void> {
       ocrProvider: 'tesseract',
       enableAi: 0,
       updatedAt: now,
+      createdAt: now,
     });
     log.info('初始化AI配置');
   }

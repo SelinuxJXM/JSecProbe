@@ -397,7 +397,7 @@ async function saveAllChanges() {
           assessedUnit: row.assessedUnit,
           standardSystem: row.standardSystem,
           levelCombo: row.levelCombo,
-          extensionType: row.extensionTypes && row.extensionTypes.length > 0 ? row.extensionTypes.join(',') : undefined,
+          extensionType: row.extensionTypes && row.extensionTypes.length > 0 ? row.extensionTypes.join(',') : null,
           level: parseLevelFromCombo(row.levelCombo),
         });
         if (res.success) created++;
@@ -409,7 +409,7 @@ async function saveAllChanges() {
           assessedUnit: row.assessedUnit,
           standardSystem: row.standardSystem,
           levelCombo: row.levelCombo,
-          extensionType: row.extensionTypes && row.extensionTypes.length > 0 ? row.extensionTypes.join(',') : undefined,
+          extensionType: row.extensionTypes && row.extensionTypes.length > 0 ? row.extensionTypes.join(',') : null,
           level: parseLevelFromCombo(row.levelCombo),
         });
         if (res.success) updated++;

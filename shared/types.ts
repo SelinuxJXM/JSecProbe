@@ -436,11 +436,11 @@ export interface ApiBridge {
     list: (params: { page?: number; pageSize?: number; module?: string; action?: string }) => Promise<IpcResponse<{ list: OperationLog[]; total: number }>>;
   };
   ai: {
-    chat: (params: { messages: { role: string; content: any }[]; model?: string; temperature?: number; context?: string }) => Promise<IpcResponse<{ content: string; suggestions: string[] }>>;
+    chat: (params: { messages: { role: string; content: string }[]; model?: string; temperature?: number; context?: string }) => Promise<IpcResponse<{ content: string; suggestions: string[] }>>;
     analyzeAssessment: (params: { controlPoint: string; requirement: string; command: string; result: string; screenshots?: string[] }) => Promise<IpcResponse<{ content: string }>>;
     batchAnalyzeScreenshots: (params: { items: { id: string; controlPoint: string; requirement: string }[]; screenshots: string[]; documents?: { name: string; content: string }[] }) => Promise<IpcResponse<{ content: string }>>;
     getConfig: () => Promise<IpcResponse<any>>;
-    saveConfig: (config: { apiBase: string; apiKey: string; model: string; temperature: number }) => Promise<IpcResponse<void>>;
+    saveConfig: (config: { apiBase: string; apiKey: string; model: string; temperature: number; privacyMode?: number; sensitiveWords?: string }) => Promise<IpcResponse<void>>;
     testConnection: (params?: { apiBase?: string; apiKey?: string; model?: string }) => Promise<IpcResponse<any>>;
     onAnalysisProgress: (callback: (data: { stage: string; message: string; percent: number }) => void) => () => void;
   };
