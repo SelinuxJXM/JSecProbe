@@ -83,6 +83,16 @@ process.on('exit', cleanupLockFile);
 process.on('SIGINT', () => { cleanupLockFile(); process.exit(0); });
 process.on('SIGTERM', () => { cleanupLockFile(); process.exit(0); });
 
+process.on('uncaughtException', (error) => {
+  log.error('未捕获的异常:', error);
+  showErrorAndQuit('应用异常', error.message || '未知异常', error.stack);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  log.error('未处理的 Promise 拒绝:', reason);
+  log.error('Promise:', promise);
+});
+
 function createWindow() {
   const iconPath = app.isPackaged
     ? join(process.resourcesPath, 'icon.ico')

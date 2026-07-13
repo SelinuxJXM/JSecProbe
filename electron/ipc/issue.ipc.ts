@@ -7,8 +7,9 @@ import { randomUUID } from 'crypto';
 import ExcelJS from 'exceljs';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getRowMaxHeight } from '../utils/excel-helper';
+import { getRowMaxHeight, styleCell } from '../utils/excel-helper';
 import { getAppDataPath } from '../main/paths';
+import { wrap } from '../utils/ipc-wrapper';
 
 // 安全域ID到中文名称映射
 const DOMAIN_ID_TO_NAME: Record<string, string> = {
@@ -81,24 +82,8 @@ async function validatePath(inputPath: string): Promise<string> {
 const MAX_EXCEL_SIZE = 50 * 1024 * 1024;
 const MAX_EXCEL_ROWS = 10000;
 
-function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
-  return Promise.resolve()
-    .then(fn)
-    .then((data) => ({ success: true, data }))
-    .catch((error) => {
-      log.error('Issue IPC Error:', error);
-      return {
-        success: false,
-        error: {
-          code: error.code || 'INTERNAL_ERROR',
-          message: error.message || '操作失败',
-        },
-      };
-    });
-}
-
 export function registerIssueHandlers(): void {
-  ipcMain.handle('issue:list', (_event, params: {
+  ipcMain.handle('issue:list', wrap(async (_event, params: {
     projectId: string;
     keyword?: string;
     riskLevel?: string;
@@ -108,8 +93,7 @@ export function registerIssueHandlers(): void {
     sortOrder?: string;
     page?: number;
     pageSize?: number;
-  }) =>
-    wrap<{ list: any[]; total: number; riskStats: any[] }>(async () => {
+  }) => {
       const db = getDb();
       const {
         projectId, keyword, riskLevel, status, securityDomain,
@@ -204,16 +188,14 @@ export function registerIssueHandlers(): void {
     })
   );
 
-  ipcMain.handle('issue:get', (_event, id: string) =>
-    wrap<any>(async () => {
+  ipcMain.handle('issue:get', wrap(async (_event, id: string) => {
       const db = getDb();
       const result = await db.select().from(schema.issues).where(eq(schema.issues.id, id)).limit(1);
       return result[0] || null;
     })
   );
 
-  ipcMain.handle('issue:create', (_event, data: any) =>
-    wrap<string>(async () => {
+  ipcMain.handle('issue:create', wrap(async (_event, data: any) => {
       const db = getDb();
       const id = randomUUID();
       const now = new Date().toISOString();
@@ -227,8 +209,7 @@ export function registerIssueHandlers(): void {
     })
   );
 
-  ipcMain.handle('issue:update', (_event, id: string, data: any) =>
-    wrap<void>(async () => {
+  ipcMain.handle('issue:update', wrap(async (_event, id: string, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
       await db.update(schema.issues).set({
@@ -238,22 +219,19 @@ export function registerIssueHandlers(): void {
     })
   );
 
-  ipcMain.handle('issue:remove', (_event, id: string) =>
-    wrap<void>(async () => {
+  ipcMain.handle('issue:remove', wrap(async (_event, id: string) => {
       const db = getDb();
       await db.delete(schema.issues).where(eq(schema.issues.id, id));
     })
   );
 
-  ipcMain.handle('issue:batchRemove', (_event, ids: string[]) =>
-    wrap<void>(async () => {
+  ipcMain.handle('issue:batchRemove', wrap(async (_event, ids: string[]) => {
       const db = getDb();
       await db.delete(schema.issues).where(inArray(schema.issues.id, ids));
     })
   );
 
-  ipcMain.handle('issue:batchUpdateStatus', (_event, ids: string[], status: string) =>
-    wrap<void>(async () => {
+  ipcMain.handle('issue:batchUpdateStatus', wrap(async (_event, ids: string[], status: string) => {
       const db = getDb();
       const now = new Date().toISOString();
       await db.update(schema.issues).set({
@@ -263,8 +241,7 @@ export function registerIssueHandlers(): void {
     })
   );
 
-  ipcMain.handle('issue:updateEvidence', (_event, id: string, evidenceFiles: string[]) =>
-    wrap<void>(async () => {
+  ipcMain.handle('issue:updateEvidence', wrap(async (_event, id: string, evidenceFiles: string[]) => {
       const db = getDb();
       const now = new Date().toISOString();
       await db.update(schema.issues).set({
@@ -274,8 +251,7 @@ export function registerIssueHandlers(): void {
     })
   );
 
-  ipcMain.handle('issue:generateFromRecords', (_event, projectId: string) =>
-    wrap<{ count: number }>(async () => {
+  ipcMain.handle('issue:generateFromRecords', wrap(async (_event, projectId: string) => {
       const db = getDb();
       const now = new Date().toISOString();
 
@@ -333,8 +309,7 @@ export function registerIssueHandlers(): void {
     })
   );
 
-  ipcMain.handle('issue:getSummary', (_event, projectId: string) =>
-    wrap<any>(async () => {
+  ipcMain.handle('issue:getSummary', wrap(async (_event, projectId: string) => {
       const db = getDb();
 
       const riskStatsResult = await db
@@ -411,9 +386,10 @@ export function registerIssueHandlers(): void {
     })
   );
 
-  ipcMain.handle('issue:exportExcel', (_event, projectId: string) =>
-    wrap<string>(async () => {
+  ipcMain.handle('issue:exportExcel', wrap(async (_event, projectId: string) => {
       const db = getDb();
+      const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
+      const projectName = project?.name || '未知项目';
       let issues = await db.select().from(schema.issues).where(eq(schema.issues.projectId, projectId));
 
       issues = issues.sort((a: any, b: any) => {
@@ -459,15 +435,7 @@ export function registerIssueHandlers(): void {
 
       const headerRow = worksheet.getRow(1);
       headerRow.eachCell((cell) => {
-        cell.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF409EFF' } };
-        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-        cell.border = {
-          top: { style: 'medium', color: { argb: 'FF808080' } },
-          left: { style: 'thin', color: { argb: 'FFB0B0B0' } },
-          bottom: { style: 'medium', color: { argb: 'FF808080' } },
-          right: { style: 'thin', color: { argb: 'FFB0B0B0' } },
-        };
+        styleCell(cell, { bold: true, fontSize: 12, fontColor: 'FFFFFFFF', bgColor: 'FF409EFF', alignH: 'center', alignV: 'middle', border: 'medium' });
       });
       headerRow.height = 28;
 
@@ -498,15 +466,13 @@ export function registerIssueHandlers(): void {
         const riskColor = issue.riskLevel === 'high' ? 'FFC62828' : issue.riskLevel === 'medium' ? 'FFF57F17' : issue.riskLevel === 'low' ? 'FF2E7D32' : null;
 
         row.eachCell((cell, colNumber) => {
-          cell.font = { size: 11, color: { argb: 'FF000000' } };
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isZebra ? 'FFF7F9FC' : 'FFFFFFFF' } };
-          cell.alignment = { wrapText: true, vertical: 'middle', horizontal: colNumber === 1 ? 'center' : 'left' };
-          cell.border = {
-            top: { style: 'medium', color: { argb: 'FFB0B0B0' } },
-            left: { style: 'medium', color: { argb: 'FFB0B0B0' } },
-            bottom: { style: 'medium', color: { argb: 'FFB0B0B0' } },
-            right: { style: 'medium', color: { argb: 'FFB0B0B0' } },
-          };
+          styleCell(cell, {
+            bgColor: isZebra ? 'FFF7F9FC' : undefined,
+            alignH: colNumber === 1 ? 'center' : 'left',
+            alignV: 'middle',
+            border: 'thin',
+          });
+          // Keep risk level color highlighting
           if (colNumber === 2 && riskColor) {
             cell.font = { size: 11, bold: true, color: { argb: riskColor } };
           }
@@ -514,7 +480,7 @@ export function registerIssueHandlers(): void {
       });
 
       const result = await dialog.showSaveDialog({
-        defaultPath: `问题清单_${Date.now()}.xlsx`,
+        defaultPath: `${projectName}_问题清单_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`,
         filters: [{ name: 'Excel文件', extensions: ['xlsx'] }],
       });
       if (result.canceled || !result.filePath) throw new Error('用户取消');
@@ -524,8 +490,122 @@ export function registerIssueHandlers(): void {
     })
   );
 
-  ipcMain.handle('issue:importExcel', (_event, projectId: string, filePath: string) =>
-    wrap<{ count: number; errors: string[] }>(async () => {
+  ipcMain.handle('issue:downloadTemplate', wrap(async (_event, _projectId: string) => {
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('问题清单');
+
+      const columns = [
+        { header: '序号', key: 'index', width: 7 },
+        { header: '风险等级', key: 'riskLevel', width: 10 },
+        { header: '安全域', key: 'securityDomain', width: 16 },
+        { header: '测评对象', key: 'assetName', width: 18 },
+        { header: '控制点', key: 'controlPoint', width: 16 },
+        { header: '控制项', key: 'controlName', width: 20 },
+        { header: '问题标题', key: 'issueTitle', width: 30 },
+        { header: '问题描述', key: 'issueDescription', width: 40 },
+        { header: '整改建议', key: 'rectificationSuggestion', width: 40 },
+        { header: '整改日期', key: 'fixedDate', width: 14 },
+        { header: '整改描述', key: 'fixedDescription', width: 30 },
+        { header: '测评人', key: 'assessor', width: 12 },
+        { header: '状态', key: 'status', width: 10 },
+        { header: '创建时间', key: 'createdAt', width: 18 },
+      ];
+      worksheet.columns = columns as ExcelJS.Column[];
+
+      // Header row
+      const headerRow = worksheet.getRow(1);
+      headerRow.eachCell((cell) => {
+        styleCell(cell, { bold: true, fontSize: 12, fontColor: 'FFFFFFFF', bgColor: 'FF409EFF', alignH: 'center', alignV: 'middle', border: 'medium' });
+      });
+      headerRow.height = 28;
+
+      // Example data
+      const examples = [
+        {
+          riskLevel: '高风险',
+          securityDomain: '安全计算环境',
+          assetName: '应用服务器',
+          controlPoint: '身份鉴别',
+          controlName: '应对登录的用户进行身份标识和鉴别',
+          issueTitle: '未设置密码复杂度策略',
+          issueDescription: '系统未配置密码复杂度要求，允许使用简单密码',
+          rectificationSuggestion: '在系统安全策略中配置密码复杂度要求，包括最小长度、大小写字母、数字和特殊字符组合',
+          fixedDate: '',
+          fixedDescription: '',
+          assessor: '张三',
+          status: '待整改',
+          createdAt: new Date().toISOString().slice(0, 10),
+        },
+        {
+          riskLevel: '中风险',
+          securityDomain: '安全区域边界',
+          assetName: '下一代防火墙',
+          controlPoint: '边界防护',
+          controlName: '应能够在网络边界处监视入侵行为',
+          issueTitle: '入侵检测规则未及时更新',
+          issueDescription: '入侵检测系统的检测规则库超过3个月未更新',
+          rectificationSuggestion: '定期更新入侵检测规则库，建议每月至少更新一次',
+          fixedDate: '',
+          fixedDescription: '',
+          assessor: '李四',
+          status: '整改中',
+          createdAt: new Date().toISOString().slice(0, 10),
+        },
+        {
+          riskLevel: '低风险',
+          securityDomain: '安全管理制度',
+          assetName: '-',
+          controlPoint: '管理制度',
+          controlName: '应制定信息安全工作的总体方针和安全策略',
+          issueTitle: '信息安全方针策略文档需更新',
+          issueDescription: '信息安全总体方针文档内容陈旧，未反映当前业务实际情况',
+          rectificationSuggestion: '根据当前业务发展和安全要求，更新信息安全总体方针文档',
+          fixedDate: new Date().toISOString().slice(0, 10),
+          fixedDescription: '已完成方针文档更新并发布',
+          assessor: '王五',
+          status: '已整改',
+          createdAt: new Date().toISOString().slice(0, 10),
+        },
+      ];
+
+      examples.forEach((example, index) => {
+        const row = worksheet.addRow({
+          index: index + 1,
+          ...example,
+        });
+
+        const riskColor = example.riskLevel === '高风险' ? 'FFC62828' : example.riskLevel === '中风险' ? 'FFF57F17' : example.riskLevel === '低风险' ? 'FF2E7D32' : null;
+        const isZebra = index % 2 === 1;
+
+        row.eachCell((cell, colNumber) => {
+          styleCell(cell, {
+            bgColor: isZebra ? 'FFF7F9FC' : undefined,
+            alignH: colNumber === 1 ? 'center' : 'left',
+            alignV: 'middle',
+            border: 'thin',
+          });
+          if (colNumber === 2 && riskColor) {
+            cell.font = { size: 11, bold: true, color: { argb: riskColor } };
+          }
+        });
+        row.height = 40;
+      });
+
+      const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const result = await dialog.showSaveDialog({
+        defaultPath: `问题清单导入模板_${timestamp}.xlsx`,
+        filters: [{ name: 'Excel文件', extensions: ['xlsx'] }],
+      });
+      if (result.canceled || !result.filePath) {
+        throw new Error('用户取消');
+      }
+
+      await workbook.xlsx.writeFile(result.filePath);
+      return result.filePath;
+    })
+  );
+
+  ipcMain.handle('issue:importExcel', wrap(async (_event, projectId: string, filePath: string) => {
       const db = getDb();
       const safePath = await validatePath(filePath);
       

@@ -36,6 +36,7 @@
         </el-button>
         <el-button :icon="Plus" @click="handleAdd">新增问题</el-button>
         <el-button :icon="Upload" @click="handleImport">导入问题</el-button>
+        <el-button :icon="Document" @click="handleDownloadTemplate">下载导入模板</el-button>
         <el-button type="success" :icon="Download" @click="handleExport">
           导出问题清单
         </el-button>
@@ -893,6 +894,16 @@ async function handleExport() {
     ElMessage.success('导出成功');
   } else if (res.error?.message !== '用户取消') {
     ElMessage.error(res.error?.message || '导出失败');
+  }
+}
+
+// 下载导入模板
+async function handleDownloadTemplate() {
+  const res = await window.api.issue.downloadTemplate(projectId.value);
+  if (res.success && res.data) {
+    ElMessage.success('模板下载成功');
+  } else if (res.error?.message !== '用户取消') {
+    ElMessage.error(res.error?.message || '下载模板失败');
   }
 }
 

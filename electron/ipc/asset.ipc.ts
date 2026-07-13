@@ -5,27 +5,13 @@ import * as schema from '../db/schema';
 import { eq, like, and, count } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import ExcelJS from 'exceljs';
-import { getRowMaxHeight } from '../utils/excel-helper';
+import { getRowMaxHeight, styleCell } from '../utils/excel-helper';
+import { ASSET_CATEGORY_NAMES, ASSET_IMPORTANCE_MAP, ASSET_COLUMNS_MAP, ASSET_CATEGORY_ORDER, ASSET_EXAMPLE_DATA, sanitizeSheetName } from '../utils/excel-config';
 import * as XLSX from 'xlsx';
 import * as path from 'path';
 import * as fs from 'fs';
 import { writeOperationLog } from '../utils/operation-log';
-
-function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
-  return Promise.resolve()
-    .then(fn)
-    .then((data) => ({ success: true, data }))
-    .catch((error) => {
-      log.error('Asset IPC Error:', error);
-      return {
-        success: false,
-        error: {
-          code: error.code || 'INTERNAL_ERROR',
-          message: error.message || '操作失败',
-        },
-      };
-    });
-}
+import { wrap } from '../utils/ipc-wrapper';
 
 function detectCategoryFromFileName(filePath: string): string {
   const lowerPath = filePath.toLowerCase();
@@ -132,6 +118,7 @@ async function importAssetPresetRecords(asset: any): Promise<number> {
     
     const possiblePaths = [
       path.join(process.cwd(), templateFileName),
+      path.join(process.cwd(), 'resources', templateFileName),
       path.join(app.getAppPath(), templateFileName),
       path.join(path.dirname(app.getAppPath()), templateFileName),
       path.join(path.dirname(app.getAppPath()), 'resources', templateFileName),
@@ -265,8 +252,7 @@ async function importAssetPresetRecords(asset: any): Promise<number> {
 }
 
 export function registerAssetHandlers(): void {
-  ipcMain.handle('asset:list', (_event, params: { projectId: string; category?: string; keyword?: string; page?: number; pageSize?: number }) =>
-    wrap(async () => {
+  ipcMain.handle('asset:list', wrap(async (_event, params: { projectId: string; category?: string; keyword?: string; page?: number; pageSize?: number }) => {
       const db = getDb();
       const { projectId, category, keyword, page = 1, pageSize = 50 } = params;
 
@@ -352,8 +338,7 @@ export function registerAssetHandlers(): void {
     })
   );
 
-  ipcMain.handle('asset:create', (_event, data: any) =>
-    wrap(async () => {
+  ipcMain.handle('asset:create', wrap(async (_event, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
       const id = randomUUID();
@@ -393,8 +378,7 @@ export function registerAssetHandlers(): void {
     })
   );
 
-  ipcMain.handle('asset:update', (_event, id: string, data: any) =>
-    wrap(async () => {
+  ipcMain.handle('asset:update', wrap(async (_event, id: string, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
 
@@ -424,8 +408,7 @@ export function registerAssetHandlers(): void {
     })
   );
 
-  ipcMain.handle('asset:remove', (_event, id: string) =>
-    wrap<void>(async () => {
+  ipcMain.handle('asset:remove', wrap(async (_event, id: string) => {
       const db = getDb();
       const asset = await db.query.assets.findFirst({
         where: eq(schema.assets.id, id),
@@ -441,8 +424,7 @@ export function registerAssetHandlers(): void {
     })
   );
 
-  ipcMain.handle('asset:batchRemove', (_event, ids: string[]) =>
-    wrap<void>(async () => {
+  ipcMain.handle('asset:batchRemove', wrap(async (_event, ids: string[]) => {
       const db = getDb();
       for (const id of ids) {
         await db.delete(schema.assets).where(eq(schema.assets.id, id));
@@ -450,8 +432,7 @@ export function registerAssetHandlers(): void {
     })
   );
 
-  ipcMain.handle('asset:importExcel', (_event, projectId: string, filePath: string) =>
-    wrap(async () => {
+  ipcMain.handle('asset:importExcel', wrap(async (_event, projectId: string, filePath: string) => {
       const db = getDb();
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.readFile(filePath);
@@ -757,145 +738,10 @@ export function registerAssetHandlers(): void {
     })
   );
 
-  ipcMain.handle('asset:exportExcel', (_event, projectId: string, category: string) =>
-    wrap(async () => {
+  ipcMain.handle('asset:exportExcel', wrap(async (_event, projectId: string, category: string) => {
       const db = getDb();
-      const CATEGORY_NAMES: Record<string, string> = {
-        machine_room: '管理机房',
-        network_boundary: '区域边界',
-        network_device: '网络设备',
-        security_device: '安全设备',
-        server_storage: '服务器/存储设备',
-        dbms: '数据库管理系统',
-        management_platform: '系统管理平台',
-        business_app: '业务应用系统',
-        terminal: '业务终端/运维终端',
-        data_resource: '数据资源',
-      };
-
-      const IMPORTANCE_MAP: Record<string, string> = {
-        high: '关键',
-        medium: '重要',
-        low: '一般',
-      };
-
-      const COLUMNS_MAP: Record<string, { header: string; key: string; width: number }[]> = {
-        machine_room: [
-          { header: '序号', key: 'index', width: 8 },
-          { header: '机房名称', key: 'name', width: 25 },
-          { header: '机房位置', key: 'os', width: 30 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        network_boundary: [
-          { header: '序号', key: 'index', width: 8 },
-          { header: '边界名称', key: 'name', width: 25 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        network_device: [
-          { header: '序号', key: 'index', width: 8 },
-          { header: '设备名称', key: 'name', width: 25 },
-          { header: '虚拟设备', key: 'isVirtual', width: 10 },
-          { header: '系统及版本', key: 'os', width: 25 },
-          { header: '品牌及型号', key: 'version', width: 20 },
-          { header: '设备用途', key: 'deviceUsage', width: 20 },
-          { header: '数量', key: 'quantity', width: 8 },
-          { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        security_device: [
-          { header: '序号', key: 'index', width: 8 },
-          { header: '设备名称', key: 'name', width: 25 },
-          { header: '虚拟设备', key: 'isVirtual', width: 10 },
-          { header: '系统及版本', key: 'os', width: 25 },
-          { header: '品牌及型号', key: 'version', width: 20 },
-          { header: '设备用途', key: 'deviceUsage', width: 20 },
-          { header: '数量', key: 'quantity', width: 8 },
-          { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        server_storage: [
-          { header: '序号', key: 'index', width: 8 },
-          { header: '设备名称', key: 'name', width: 25 },
-          { header: '虚拟设备', key: 'isVirtual', width: 10 },
-          { header: '操作系统及版本', key: 'os', width: 25 },
-          { header: '数据库系统及版本', key: 'dbSystem', width: 22 },
-          { header: '中间件及版本', key: 'middleware', width: 22 },
-          { header: '数量', key: 'quantity', width: 8 },
-          { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        dbms: [
-          { header: '序号', key: 'index', width: 8 },
-          { header: '数据库名称', key: 'name', width: 25 },
-          { header: '所在设备名称', key: 'os', width: 25 },
-          { header: '类型/版本', key: 'deviceUsage', width: 20 },
-          { header: '数量', key: 'quantity', width: 8 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        management_platform: [
-          { header: '序号', key: 'index', width: 8 },
-          { header: '平台名称', key: 'name', width: 25 },
-          { header: '所在设备名称', key: 'os', width: 25 },
-          { header: '版本', key: 'version', width: 20 },
-          { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '主要功能', key: 'deviceUsage', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        business_app: [
-          { header: '序号', key: 'index', width: 8 },
-          { header: '应用系统名称', key: 'name', width: 25 },
-          { header: '软件及版本', key: 'os', width: 25 },
-          { header: '主要功能', key: 'deviceUsage', width: 25 },
-          { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        terminal: [
-          { header: '序号', key: 'index', width: 8 },
-          { header: '设备名称', key: 'name', width: 25 },
-          { header: '虚拟设备', key: 'isVirtual', width: 10 },
-          { header: '操作系统及版本', key: 'os', width: 25 },
-          { header: '设备类别/用途', key: 'deviceUsage', width: 20 },
-          { header: '数量', key: 'quantity', width: 8 },
-          { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        data_resource: [
-          { header: '序号', key: 'index', width: 8 },
-          { header: '数据类别', key: 'name', width: 25 },
-          { header: '所属业务应用', key: 'os', width: 25 },
-          { header: '安全防护需求', key: 'deviceUsage', width: 25 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-      };
-
-      const CATEGORY_ORDER = [
-        'machine_room', 'network_boundary', 'network_device', 'security_device',
-        'server_storage', 'dbms', 'management_platform', 'business_app',
-        'terminal', 'data_resource',
-      ];
-
-      // Excel工作表名称不允许包含: * ? : \ / [ ]
-      const sanitizeSheetName = (name: string): string => {
-        return name.replace(/[\\*?:\/\[\]]/g, '-').substring(0, 31);
-      };
+      const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
+      const projectName = project?.name || '未知项目';
 
       const exportSingleCategory = async (cat: string) => {
         const assets = await db
@@ -910,22 +756,14 @@ export function registerAssetHandlers(): void {
       };
 
       const buildSheet = async (worksheet: ExcelJS.Worksheet, cat: string, assets: any[]) => {
-        const columns = COLUMNS_MAP[cat] || COLUMNS_MAP.network_device;
+        const columns = ASSET_COLUMNS_MAP[cat] || ASSET_COLUMNS_MAP.network_device;
         worksheet.columns = columns.map(c => ({ key: c.key, width: c.width })) as ExcelJS.Column[];
 
         const headerRow = worksheet.getRow(1);
         columns.forEach((col, idx) => {
           const cell = headerRow.getCell(idx + 1);
           cell.value = col.header;
-          cell.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF409EFF' } };
-          cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-          cell.border = {
-            top: { style: 'medium', color: { argb: 'FF808080' } },
-            left: { style: 'thin', color: { argb: 'FFB0B0B0' } },
-            bottom: { style: 'medium', color: { argb: 'FF808080' } },
-            right: { style: 'thin', color: { argb: 'FFB0B0B0' } },
-          };
+          styleCell(cell, { bold: true, fontSize: 12, fontColor: 'FFFFFFFF', bgColor: 'FF409EFF', alignH: 'center', alignV: 'middle', border: 'medium' });
         });
         headerRow.height = 28;
 
@@ -936,7 +774,7 @@ export function registerAssetHandlers(): void {
           columns.forEach(col => {
             if (col.key === 'index') return;
             if (col.key === 'importance') {
-              rowData[col.key] = IMPORTANCE_MAP[asset.importance || 'medium'] || '重要';
+              rowData[col.key] = ASSET_IMPORTANCE_MAP[asset.importance || 'medium'] || '重要';
             } else if (col.key === 'isVirtual') {
               rowData[col.key] = asset.isVirtual ? '是' : '否';
             } else if (col.key === 'isAssessmentTarget') {
@@ -952,15 +790,12 @@ export function registerAssetHandlers(): void {
 
           const isZebra = index % 2 === 1;
           row.eachCell((cell, colNumber) => {
-            cell.font = { size: 11 };
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isZebra ? 'FFF7F9FC' : 'FFFFFFFF' } };
-            cell.alignment = { wrapText: true, vertical: 'middle', horizontal: colNumber === 1 ? 'center' : 'left' };
-            cell.border = {
-              top: { style: 'medium', color: { argb: 'FFB0B0B0' } },
-              left: { style: 'medium', color: { argb: 'FFB0B0B0' } },
-              bottom: { style: 'medium', color: { argb: 'FFB0B0B0' } },
-              right: { style: 'medium', color: { argb: 'FFB0B0B0' } },
-            };
+            styleCell(cell, {
+              bgColor: isZebra ? 'FFF7F9FC' : undefined,
+              alignH: colNumber === 1 ? 'center' : 'left',
+              alignV: 'middle',
+              border: 'thin',
+            });
           });
         });
       };
@@ -969,10 +804,10 @@ export function registerAssetHandlers(): void {
 
       if (category === 'all') {
         let totalAssets = 0;
-        for (const cat of CATEGORY_ORDER) {
+        for (const cat of ASSET_CATEGORY_ORDER) {
           const assets = await exportSingleCategory(cat);
           if (assets.length > 0) {
-            const catName = sanitizeSheetName(CATEGORY_NAMES[cat] || cat);
+            const catName = sanitizeSheetName(ASSET_CATEGORY_NAMES[cat] || cat);
             const worksheet = workbook.addWorksheet(catName);
             await buildSheet(worksheet, cat, assets);
             totalAssets += assets.length;
@@ -984,7 +819,7 @@ export function registerAssetHandlers(): void {
         }
 
         const result = await dialog.showSaveDialog({
-          defaultPath: `系统构成_全部资产_${Date.now()}.xlsx`,
+          defaultPath: `${projectName}_系统构成_全部资产_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`,
           filters: [{ name: 'Excel文件', extensions: ['xlsx'] }],
         });
         if (result.canceled || !result.filePath) {
@@ -1000,12 +835,12 @@ export function registerAssetHandlers(): void {
           throw new Error('没有可导出的数据');
         }
 
-        const categoryName = CATEGORY_NAMES[category] || '资产列表';
+        const categoryName = ASSET_CATEGORY_NAMES[category] || '资产列表';
         const worksheet = workbook.addWorksheet(sanitizeSheetName(categoryName));
         await buildSheet(worksheet, category, assets);
 
         const result = await dialog.showSaveDialog({
-          defaultPath: `${categoryName}_${Date.now()}.xlsx`,
+          defaultPath: `${projectName}_系统构成_${categoryName}_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`,
           filters: [{ name: 'Excel文件', extensions: ['xlsx'] }],
         });
         if (result.canceled || !result.filePath) {
@@ -1015,6 +850,60 @@ export function registerAssetHandlers(): void {
         await workbook.xlsx.writeFile(result.filePath);
         return result.filePath;
       }
+    })
+  );
+
+  ipcMain.handle('asset:downloadTemplate', wrap(async (_event, _projectId: string) => {
+      const workbook = new ExcelJS.Workbook();
+
+      for (const cat of ASSET_CATEGORY_ORDER) {
+        const catName = sanitizeSheetName(ASSET_CATEGORY_NAMES[cat] || cat);
+        const worksheet = workbook.addWorksheet(catName);
+        const columns = ASSET_COLUMNS_MAP[cat] || ASSET_COLUMNS_MAP.network_device;
+
+        worksheet.columns = columns.map(c => ({ key: c.key, width: c.width })) as ExcelJS.Column[];
+
+        const headerRow = worksheet.getRow(1);
+        columns.forEach((col, idx) => {
+          const cell = headerRow.getCell(idx + 1);
+          cell.value = col.header;
+          styleCell(cell, { bold: true, fontSize: 12, fontColor: 'FFFFFFFF', bgColor: 'FF409EFF', alignH: 'center', alignV: 'middle', border: 'medium' });
+        });
+        headerRow.height = 28;
+
+        const examples = ASSET_EXAMPLE_DATA[cat] || [];
+        examples.forEach((example: any, index: number) => {
+          const rowData: Record<string, any> = { index: index + 1 };
+          columns.forEach(col => {
+            if (col.key === 'index') return;
+            rowData[col.key] = example[col.key] || '';
+          });
+          const row = worksheet.addRow(rowData);
+
+          const isZebra = index % 2 === 1;
+          row.eachCell((cell, colNumber) => {
+            styleCell(cell, {
+              bgColor: isZebra ? 'FFF7F9FC' : undefined,
+              alignH: colNumber === 1 ? 'center' : 'left',
+              alignV: 'middle',
+              border: 'thin',
+            });
+          });
+          row.height = 22;
+        });
+      }
+
+      const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const result = await dialog.showSaveDialog({
+        defaultPath: `系统构成导入模板_${timestamp}.xlsx`,
+        filters: [{ name: 'Excel文件', extensions: ['xlsx'] }],
+      });
+      if (result.canceled || !result.filePath) {
+        throw new Error('用户取消');
+      }
+
+      await workbook.xlsx.writeFile(result.filePath);
+      return result.filePath;
     })
   );
 }

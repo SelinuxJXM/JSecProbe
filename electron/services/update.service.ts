@@ -205,6 +205,25 @@ export function initAutoUpdater(window: BrowserWindow) {
       error: error.message || '未知错误',
     });
   });
+
+  setTimeout(() => {
+    log.info('[更新] 启动时自动检查更新');
+    if (!process.env.VITE_DEV_SERVER_URL) {
+      autoUpdater.checkForUpdates().catch((err: any) => {
+        log.warn('[更新] 自动检查更新失败:', err.message);
+        checkOssForUpdates().then((ossInfo) => {
+          if (ossInfo) {
+            updateSource = 'oss';
+            ossUpdateInfo = ossInfo;
+            sendStatusToWindow({
+              status: 'available',
+              version: ossInfo.version,
+            });
+          }
+        }).catch(() => {});
+      });
+    }
+  }, 5000);
 }
 
 export function registerUpdateHandlers() {
@@ -216,7 +235,7 @@ export function registerUpdateHandlers() {
         return { success: true, message: '开发模式下不检查更新' };
       }
 
-      log.info('[更新] 手动检查更新');
+      log.info('[更新] 检查更新');
       updateSource = null;
       ossUpdateInfo = null;
       ossInstallerPath = null;

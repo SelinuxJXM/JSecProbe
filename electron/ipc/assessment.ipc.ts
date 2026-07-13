@@ -10,27 +10,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { styleCell, getRowMaxHeight } from '../utils/excel-helper';
-
-function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
-  return Promise.resolve()
-    .then(fn)
-    .then((data) => ({ success: true, data }))
-    .catch((error) => {
-      log.error('Assessment IPC Error:', error);
-      return {
-        success: false,
-        error: {
-          code: error.code || 'INTERNAL_ERROR',
-          message: error.message || '操作失败',
-        },
-      };
-    });
-}
+import { wrap } from '../utils/ipc-wrapper';
 
 export function registerAssessmentHandlers(): void {
   // 根据项目等级和扩展类型筛选测评项
-  ipcMain.handle('assessment:getItems', (_event, standardId: string, domain?: string, projectLevel?: number, extensionType?: string | string[]) =>
-    wrap(async () => {
+  ipcMain.handle('assessment:getItems', wrap(async (_event, standardId: string, domain?: string, projectLevel?: number, extensionType?: string | string[]) => {
       console.log(`[assessment:getItems] 调用参数: standardId=${standardId}, domain=${domain}, level=${projectLevel}, extension=${JSON.stringify(extensionType)}`);
       const db = getDb();
       
@@ -74,8 +58,7 @@ export function registerAssessmentHandlers(): void {
     })
   );
 
-  ipcMain.handle('assessment:getRecords', (_event, projectId: string, itemId: string) =>
-    wrap(async () => {
+  ipcMain.handle('assessment:getRecords', wrap(async (_event, projectId: string, itemId: string) => {
       const db = getDb();
       const records = await db.query.assessmentRecords.findMany({
         where: and(
@@ -89,8 +72,7 @@ export function registerAssessmentHandlers(): void {
   );
 
   // 按资产ID获取测评记录
-  ipcMain.handle('assessment:getRecordsByAsset', (_event, projectId: string, assetId: string) =>
-    wrap(async () => {
+  ipcMain.handle('assessment:getRecordsByAsset', wrap(async (_event, projectId: string, assetId: string) => {
       const db = getDb();
       const records = await db.query.assessmentRecords.findMany({
         where: and(
@@ -104,8 +86,7 @@ export function registerAssessmentHandlers(): void {
   );
 
   // 按资产ID和测评项ID获取单条记录
-  ipcMain.handle('assessment:getRecordByAssetAndItem', (_event, projectId: string, assetId: string, itemId: string) =>
-    wrap(async () => {
+  ipcMain.handle('assessment:getRecordByAssetAndItem', wrap(async (_event, projectId: string, assetId: string, itemId: string) => {
       const db = getDb();
       const records = await db.query.assessmentRecords.findMany({
         where: and(
@@ -120,8 +101,7 @@ export function registerAssessmentHandlers(): void {
   );
 
   // 按层面获取全局测评记录（assetId为空的记录）
-  ipcMain.handle('assessment:getRecordsByDomain', (_event, projectId: string, domain: string, projectLevel?: number, extensionType?: string | string[]) =>
-    wrap(async () => {
+  ipcMain.handle('assessment:getRecordsByDomain', wrap(async (_event, projectId: string, domain: string, projectLevel?: number, extensionType?: string | string[]) => {
       console.log(`[assessment:getRecordsByDomain] 调用参数: projectId=${projectId}, domain=${domain}, level=${projectLevel}, extension=${JSON.stringify(extensionType)}`);
       const db = getDb();
 
@@ -173,8 +153,7 @@ export function registerAssessmentHandlers(): void {
     })
   );
 
-  ipcMain.handle('assessment:saveRecord', (_event, data: any) =>
-    wrap(async () => {
+  ipcMain.handle('assessment:saveRecord', wrap(async (_event, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
 
@@ -204,8 +183,7 @@ export function registerAssessmentHandlers(): void {
     })
   );
 
-  ipcMain.handle('assessment:getProgress', (_event, projectId: string, standardId: string) =>
-    wrap(async () => {
+  ipcMain.handle('assessment:getProgress', wrap(async (_event, projectId: string, standardId: string) => {
       const db = getDb();
 
       const totalItems = await db
@@ -245,8 +223,7 @@ export function registerAssessmentHandlers(): void {
   );
 
   // 获取安全域列表
-  ipcMain.handle('assessment:listDomains', (_event, standardId?: string) =>
-    wrap(async () => {
+  ipcMain.handle('assessment:listDomains', wrap(async (_event, standardId?: string) => {
       const db = getDb();
       const conditions = [];
       if (standardId) {
@@ -274,8 +251,7 @@ export function registerAssessmentHandlers(): void {
   );
 
   // 根据资产类别获取适用的测评项
-  ipcMain.handle('assessment:getItemsByCategory', (_event, category: string, projectId?: string) =>
-    wrap(async () => {
+  ipcMain.handle('assessment:getItemsByCategory', wrap(async (_event, category: string, projectId?: string) => {
       const db = getDb();
 
       // 从项目获取standardId
@@ -916,17 +892,19 @@ export function registerAssessmentHandlers(): void {
         worksheet.getRow(1).height = 28;
       }
       
+      let assets: any[] = [];
+      
       // 1. 导出全局测评层面
       if (domainIds && domainIds.length > 0) {
         for (const domainId of domainIds) {
-          const sheetName = DOMAIN_NAMES[domainId] || domainId;
+          const sheetName = `${DOMAIN_NAMES[domainId] || domainId}_全局层面`;
           await addSheet(sheetName, domainId, globalRecordMap);
         }
       }
       
       // 2. 导出资产相关测评记录
       if (assetIds && assetIds.length > 0) {
-        const assets = await db.query.assets.findMany({
+        assets = await db.query.assets.findMany({
           where: inArray(schema.assets.id, assetIds),
         });
         
@@ -941,11 +919,13 @@ export function registerAssessmentHandlers(): void {
         
         for (const asset of assets) {
           const domainId = CATEGORY_TO_DOMAIN[asset.category] || 'secure_computing';
+          const domainName = DOMAIN_NAMES[domainId] || domainId;
           let recordMap = assetRecordMaps.get(asset.id);
           if (!recordMap || recordMap.size === 0) {
             recordMap = globalRecordMap;
           }
-          await addSheet(asset.name, domainId, recordMap);
+          const sheetName = `${domainName}_${asset.name}`;
+          await addSheet(sheetName, domainId, recordMap);
         }
       }
       
@@ -954,9 +934,26 @@ export function registerAssessmentHandlers(): void {
         return { success: false, error: { message: '没有可导出的数据' } };
       }
       
-      // 生成文件名
+      // 生成文件名（包含具体层面或资产名称）
       const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-      const defaultFileName = `${project.name || '测评项目'}_现场核查记录表_${timestamp}.xlsx`;
+      let contentLabel = '现场核查记录表';
+      
+      if (domainIds && domainIds.length === 1) {
+        contentLabel = `${DOMAIN_NAMES[domainIds[0]] || domainIds[0]}_全局层面`;
+      } else if (domainIds && domainIds.length > 1) {
+        contentLabel = `多层面_全局层面`;
+      } else if (assetIds && assetIds.length === 1) {
+        const asset = assets.find(a => a.id === assetIds[0]);
+        const domainId = CATEGORY_TO_DOMAIN[asset?.category] || 'secure_computing';
+        const domainName = DOMAIN_NAMES[domainId] || domainId;
+        contentLabel = `${domainName}_${asset?.name || '资产'}`;
+      } else if (assetIds && assetIds.length > 1) {
+        contentLabel = `多资产_现场核查记录`;
+      } else if (domainIds && domainIds.length > 0 && assetIds && assetIds.length > 0) {
+        contentLabel = `混合内容_现场核查记录`;
+      }
+      
+      const defaultFileName = `${project.name || '测评项目'}_${contentLabel}_${timestamp}.xlsx`;
       
       // 打开保存对话框
       const saveResult = await dialog.showSaveDialog({
