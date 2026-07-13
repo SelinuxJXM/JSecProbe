@@ -346,6 +346,7 @@ export interface ApiBridge {
     batchRemove: (ids: string[]) => Promise<IpcResponse<void>>;
     importExcel: (projectId: string, filePath: string) => Promise<IpcResponse<{ count: number; category?: string; results?: Array<{ sheet: string; count: number }> }>>;
     exportExcel: (projectId: string, category: string) => Promise<IpcResponse<string>>;
+    downloadTemplate: (projectId: string) => Promise<IpcResponse<string>>;
   };
   standard: {
     list: () => Promise<IpcResponse<Standard[]>>;
@@ -389,6 +390,7 @@ export interface ApiBridge {
     batchUpdateStatus: (ids: string[], status: string) => Promise<IpcResponse<void>>;
     updateEvidence: (id: string, evidenceFiles: string[]) => Promise<IpcResponse<void>>;
     importExcel: (projectId: string, filePath: string) => Promise<IpcResponse<{ count: number; errors?: string[] }>>;
+    downloadTemplate: (projectId: string) => Promise<IpcResponse<string>>;
   };
   report: {
     generate: (projectId: string) => Promise<IpcResponse<string>>;
@@ -423,7 +425,9 @@ export interface ApiBridge {
     selectFile: (filters?: FileFilter[]) => Promise<IpcResponse<string | null>>;
     saveFile: (defaultPath?: string, filters?: FileFilter[]) => Promise<IpcResponse<string | null>>;
     backupData: (customPath?: string) => Promise<IpcResponse<string>>;
-    restoreData: (backupPath: string) => Promise<IpcResponse<void>>;
+    restoreData: (backupPath: string, options?: { incremental?: boolean; projectIds?: string[] }) => Promise<IpcResponse<void>>;
+    previewBackup: (backupPath: string) => Promise<IpcResponse<any>>;
+    listBackups: () => Promise<IpcResponse<any[]>>;
     changeDataPath: (newPath: string) => Promise<IpcResponse<string>>;
   };
   user: {

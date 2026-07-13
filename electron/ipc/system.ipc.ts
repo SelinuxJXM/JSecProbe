@@ -5,8 +5,10 @@ import * as schema from '../db/schema';
 import { eq, and, desc, count } from 'drizzle-orm';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { SystemInfo, FileFilter } from '../../shared/types';
+import type { FileFilter } from '../../shared/types';
 import { getAppDataPath, setAppDataPath } from '../main/paths';
+import { createFullBackup, restoreFromZipBackup, restoreFromLegacyBackup, restoreFromZipBackupIncremental, previewZipBackup, listBackups } from '../services/backup.service';
+import { wrap } from '../utils/ipc-wrapper';
 
 function restartApp(): void {
   try {
@@ -21,27 +23,6 @@ function restartApp(): void {
   } catch (error) {
     log.error('应用重启失败:', error);
   }
-}
-
-function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
-  return Promise.resolve()
-    .then(fn)
-    .then((data) => ({ success: true, data }))
-    .catch((error) => {
-      log.error('System IPC Error:', error);
-      return {
-        success: false,
-        error: {
-          code: error.code || 'INTERNAL_ERROR',
-          message: error.message || '操作失败',
-        },
-      };
-    });
-}
-
-async function getDbPath(): Promise<string> {
-  const dataPath = await getAppDataPath();
-  return path.join(dataPath, 'data', 'mlps.db');
 }
 
 async function getAllowedBasePaths(): Promise<string[]> {
@@ -79,8 +60,7 @@ function validatePathName(name: string): string {
 }
 
 export function registerSystemHandlers(): void {
-  ipcMain.handle('system:getInfo', () =>
-    wrap<SystemInfo>(async () => ({
+  ipcMain.handle('system:getInfo', wrap(async () => ({
       appVersion: app.getVersion(),
       electronVersion: process.versions.electron,
       nodeVersion: process.versions.node,
@@ -89,15 +69,13 @@ export function registerSystemHandlers(): void {
     }))
   );
 
-  ipcMain.handle('system:openDataFolder', () =>
-    wrap<void>(async () => {
+  ipcMain.handle('system:openDataFolder', wrap(async () => {
       const dataPath = await getAppDataPath();
       shell.openPath(dataPath);
     })
   );
 
-  ipcMain.handle('system:changeDataPath', (_event, newPath: string) =>
-    wrap<string>(async () => {
+  ipcMain.handle('system:changeDataPath', wrap(async (_event, newPath: string) => {
       log.info(`开始更改数据存储路径，目标路径: ${newPath}`);
       const resolvedPath = path.resolve(newPath);
       log.info(`解析后的目标路径: ${resolvedPath}`);
@@ -140,22 +118,19 @@ export function registerSystemHandlers(): void {
     })
   );
 
-  ipcMain.handle('shell:openPath', (_event, filePath: string) =>
-    wrap<void>(async () => {
+  ipcMain.handle('shell:openPath', wrap(async (_event, filePath: string) => {
       const safePath = await validatePath(filePath);
       shell.openPath(safePath);
     })
   );
 
-  ipcMain.handle('shell:openExternal', (_event, filePath: string) =>
-    wrap<void>(async () => {
+  ipcMain.handle('shell:openExternal', wrap(async (_event, filePath: string) => {
       const safePath = await validatePath(filePath);
       shell.openPath(safePath);
     })
   );
 
-  ipcMain.handle('system:selectFile', (_event, filters?: FileFilter[]) =>
-    wrap<string | null>(async () => {
+  ipcMain.handle('system:selectFile', wrap(async (_event, filters?: FileFilter[]) => {
       const result = await dialog.showOpenDialog({
         properties: ['openFile'],
         filters: filters || [],
@@ -167,8 +142,7 @@ export function registerSystemHandlers(): void {
     })
   );
 
-  ipcMain.handle('system:saveFile', (_event, defaultPath?: string, filters?: FileFilter[]) =>
-    wrap<string | null>(async () => {
+  ipcMain.handle('system:saveFile', wrap(async (_event, defaultPath?: string, filters?: FileFilter[]) => {
       const result = await dialog.showSaveDialog({
         defaultPath: defaultPath || '',
         filters: filters || [],
@@ -180,9 +154,7 @@ export function registerSystemHandlers(): void {
     })
   );
 
-  ipcMain.handle('system:backupData', (_event, customPath?: string) =>
-    wrap<string>(async () => {
-      const dbPath = await getDbPath();
+  ipcMain.handle('system:backupData', wrap(async (_event, customPath?: string) => {
       let backupPath: string;
 
       if (customPath) {
@@ -191,27 +163,27 @@ export function registerSystemHandlers(): void {
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
         }
-        backupPath = resolvedPath;
+        backupPath = resolvedPath.endsWith('.zip') ? resolvedPath : resolvedPath + '.zip';
       } else {
         const dataPath = await getAppDataPath();
         const backupDir = path.join(dataPath, 'backups');
-
         if (!fs.existsSync(backupDir)) {
           fs.mkdirSync(backupDir, { recursive: true });
         }
-
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        backupPath = path.join(backupDir, `mlps_backup_${timestamp}.db`);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        backupPath = path.join(backupDir, `backup_${timestamp}.zip`);
       }
 
-      fs.copyFileSync(dbPath, backupPath);
+      const result = await createFullBackup(backupPath);
+      if (!result.success) {
+        throw new Error(result.error || '备份失败');
+      }
 
-      return backupPath;
+      return result.path || backupPath;
     })
   );
 
-  ipcMain.handle('system:restoreData', (_event, backupPath: string) =>
-    wrap<void>(async () => {
+  ipcMain.handle('system:restoreData', wrap(async (_event, backupPath: string, options?: { incremental?: boolean; projectIds?: string[] }) => {
       if (!fs.existsSync(backupPath)) {
         throw new Error('备份文件不存在');
       }
@@ -220,30 +192,29 @@ export function registerSystemHandlers(): void {
       if (!stats.isFile()) {
         throw new Error('备份路径不是文件');
       }
-      if (stats.size > 500 * 1024 * 1024) {
-        throw new Error('备份文件过大 (最大500MB)');
+
+      const isZip = backupPath.endsWith('.zip');
+      const isDb = backupPath.endsWith('.db') || backupPath.endsWith('.sqlite') || backupPath.endsWith('.sqlite3');
+
+      if (!isZip && !isDb) {
+        throw new Error('不支持的备份文件格式，请选择 .zip 或 .db 文件');
       }
-      
-      if (!backupPath.endsWith('.db')) {
-        throw new Error('备份文件必须是.db格式');
+
+      let result: any;
+
+      if (isZip) {
+        if (options?.incremental) {
+          result = await restoreFromZipBackupIncremental(backupPath, options.projectIds);
+        } else {
+          result = await restoreFromZipBackup(backupPath);
+        }
+      } else {
+        result = await restoreFromLegacyBackup(backupPath);
       }
-      
-      const dbPath = await getDbPath();
-      const tempPath = dbPath + '.tmp';
-      fs.copyFileSync(backupPath, tempPath);
-      
-      const fd = fs.openSync(tempPath, 'r');
-      const buffer = Buffer.alloc(16);
-      fs.readSync(fd, buffer, 0, 16, 0);
-      fs.closeSync(fd);
-      if (!buffer.toString('utf8').startsWith('SQLite format 3')) {
-        fs.unlinkSync(tempPath);
-        throw new Error('无效的备份文件：不是SQLite数据库格式');
+
+      if (!result.success) {
+        throw new Error(result.error || '恢复失败');
       }
-      
-      closeDb();
-      fs.copyFileSync(tempPath, dbPath);
-      fs.unlinkSync(tempPath);
 
       setTimeout(() => {
         restartApp();
@@ -251,8 +222,22 @@ export function registerSystemHandlers(): void {
     })
   );
 
-  ipcMain.handle('log:list', (_event, params: { page?: number; pageSize?: number; module?: string; action?: string }) =>
-    wrap(async () => {
+  ipcMain.handle('system:previewBackup', wrap(async (_event, backupPath: string) => {
+      const preview = await previewZipBackup(backupPath);
+      if (!preview) {
+        return { success: false, error: '无法预览备份文件' };
+      }
+      return JSON.parse(JSON.stringify(preview));
+    })
+  );
+
+  ipcMain.handle('system:listBackups', wrap(async () => {
+      const backups = await listBackups();
+      return JSON.parse(JSON.stringify(backups));
+    })
+  );
+
+  ipcMain.handle('log:list', wrap(async (_event, params: { page?: number; pageSize?: number; module?: string; action?: string }) => {
       const db = getDb();
       const page = params.page || 1;
       const pageSize = params.pageSize || 50;
@@ -281,15 +266,13 @@ export function registerSystemHandlers(): void {
   );
 
   // Dialog handlers
-  ipcMain.handle('dialog:showOpenDialog', (_event, options) =>
-    wrap(async () => {
+  ipcMain.handle('dialog:showOpenDialog', wrap(async (_event, options) => {
       const result = await dialog.showOpenDialog(options);
       return result;
     })
   );
 
-  ipcMain.handle('dialog:showSaveDialog', (_event, options) =>
-    wrap(async () => {
+  ipcMain.handle('dialog:showSaveDialog', wrap(async (_event, options) => {
       const result = await dialog.showSaveDialog(options);
       return result;
     })

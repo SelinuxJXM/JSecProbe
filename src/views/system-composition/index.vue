@@ -51,6 +51,10 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             导入资产
           </button>
+          <button class="toolbar-btn" @click="handleDownloadTemplate">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+            下载导入模板
+          </button>
           <button class="toolbar-btn" @click="handleExport">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             导出资产
@@ -859,6 +863,17 @@ async function handleExportAll() {
     ElMessage.success('导出成功');
   } else if (res.error?.message !== '用户取消') {
     ElMessage.error(res.error?.message || '导出失败');
+  }
+}
+
+// 下载导入模板
+async function handleDownloadTemplate() {
+  const projectId = route.params.id as string;
+  const res = await window.api.asset.downloadTemplate(projectId);
+  if (res.success && res.data) {
+    ElMessage.success('模板下载成功');
+  } else if (res.error?.message !== '用户取消') {
+    ElMessage.error(res.error?.message || '下载模板失败');
   }
 }
 

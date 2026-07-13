@@ -45,6 +45,8 @@ const api: ApiBridge = {
       ipcRenderer.invoke('asset:importExcel', projectId, filePath),
     exportExcel: (projectId, category) =>
       ipcRenderer.invoke('asset:exportExcel', projectId, category),
+    downloadTemplate: (projectId) =>
+      ipcRenderer.invoke('asset:downloadTemplate', projectId),
   },
   standard: {
     list: () =>
@@ -123,6 +125,8 @@ const api: ApiBridge = {
       ipcRenderer.invoke('issue:updateEvidence', id, evidenceFiles),
     importExcel: (projectId, filePath) =>
       ipcRenderer.invoke('issue:importExcel', projectId, filePath),
+    downloadTemplate: (projectId) =>
+      ipcRenderer.invoke('issue:downloadTemplate', projectId),
   },
   report: {
     generate: (projectId) =>
@@ -185,8 +189,12 @@ const api: ApiBridge = {
       ipcRenderer.invoke('system:saveFile', defaultPath, filters),
     backupData: (customPath?: string) =>
       ipcRenderer.invoke('system:backupData', customPath),
-    restoreData: (backupPath) =>
-      ipcRenderer.invoke('system:restoreData', backupPath),
+    restoreData: (backupPath, options?: { incremental?: boolean; projectIds?: string[] }) =>
+      ipcRenderer.invoke('system:restoreData', backupPath, options),
+    previewBackup: (backupPath) =>
+      ipcRenderer.invoke('system:previewBackup', backupPath),
+    listBackups: () =>
+      ipcRenderer.invoke('system:listBackups'),
     changeDataPath: (newPath) =>
       ipcRenderer.invoke('system:changeDataPath', newPath),
   },

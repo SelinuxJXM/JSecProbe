@@ -8,24 +8,9 @@ import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import * as path from 'path';
 import * as fs from 'fs';
-import type { ProjectListParams, ProjectListResult } from '../../shared/types';
+import type { ProjectListParams } from '../../shared/types';
 import { writeOperationLog } from '../utils/operation-log';
-
-function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
-  return Promise.resolve()
-    .then(fn)
-    .then((data) => ({ success: true, data }))
-    .catch((error) => {
-      log.error('Project IPC Error:', error);
-      return {
-        success: false,
-        error: {
-          code: error.code || 'INTERNAL_ERROR',
-          message: error.message || '操作失败',
-        },
-      };
-    });
-}
+import { wrap } from '../utils/ipc-wrapper';
 
 async function calcProjectProgress(projectId: string): Promise<number> {
   try {
@@ -61,8 +46,7 @@ async function calcProjectProgress(projectId: string): Promise<number> {
 }
 
 export function registerProjectHandlers(): void {
-  ipcMain.handle('project:list', (_event, params: ProjectListParams) =>
-    wrap<ProjectListResult>(async () => {
+  ipcMain.handle('project:list', wrap(async (_event, params: ProjectListParams) => {
       const db = getDb();
       const { page = 1, pageSize = 20, keyword, status, level, excludeArchived } = params;
 
@@ -125,8 +109,7 @@ export function registerProjectHandlers(): void {
     })
   );
 
-  ipcMain.handle('project:get', (_event, id: string) =>
-    wrap(async () => {
+  ipcMain.handle('project:get', wrap(async (_event, id: string) => {
       const db = getDb();
       const project = await db.query.projects.findFirst({
         where: eq(schema.projects.id, id),
@@ -136,8 +119,7 @@ export function registerProjectHandlers(): void {
     })
   );
 
-  ipcMain.handle('project:create', (_event, data: any) =>
-    wrap(async () => {
+  ipcMain.handle('project:create', wrap(async (_event, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
       const id = randomUUID();
@@ -236,6 +218,7 @@ export function registerProjectHandlers(): void {
       // 尝试从多个位置查找模板文件
       const possiblePaths = [
         path.join(process.cwd(), templateFileName),
+        path.join(process.cwd(), 'resources', templateFileName),
         path.join(app.getAppPath(), templateFileName),
         path.join(path.dirname(app.getAppPath()), templateFileName),
         path.join(path.dirname(app.getAppPath()), 'resources', templateFileName),
@@ -405,8 +388,7 @@ export function registerProjectHandlers(): void {
     }
   }
 
-  ipcMain.handle('project:update', (_event, id: string, data: any) =>
-    wrap(async () => {
+  ipcMain.handle('project:update', wrap(async (_event, id: string, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
 
@@ -441,8 +423,7 @@ export function registerProjectHandlers(): void {
     })
   );
 
-  ipcMain.handle('project:remove', (_event, id: string) =>
-    wrap<void>(async () => {
+  ipcMain.handle('project:remove', wrap(async (_event, id: string) => {
       const db = getDb();
       const project = await db.query.projects.findFirst({
         where: eq(schema.projects.id, id),

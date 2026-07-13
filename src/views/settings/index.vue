@@ -386,12 +386,69 @@
         </el-table>
       </div>
     </template>
+
+    <el-dialog
+      v-model="showRestoreDialog"
+      title="数据恢复"
+      width="420px"
+      :close-on-click-modal="false"
+      @close="clearAllProjects"
+    >
+      <div class="restore-dialog-content">
+        <div v-if="backupPreview" class="backup-preview-section">
+          <div class="preview-time">备份时间: {{ formatBackupTime(backupPreview.manifest?.timestamp) }}</div>
+          <div class="preview-summary">
+            包含 {{ backupPreview.projects?.length || 0 }} 个项目，{{ backupPreview.totalRecords || 0 }} 条测评记录
+          </div>
+        </div>
+
+        <div class="restore-mode-section">
+          <el-radio-group v-model="restoreMode">
+            <el-radio value="incremental">
+              <span class="mode-name">增量恢复</span>
+              <span class="mode-tag recommended">推荐</span>
+            </el-radio>
+            <el-radio value="full">
+              <span class="mode-name">完全恢复</span>
+              <span class="mode-tag dangerous">危险</span>
+            </el-radio>
+          </el-radio-group>
+        </div>
+
+        <div v-if="backupPreview?.projects?.length" class="project-selection">
+          <div class="selection-title">选择项目:</div>
+          <el-checkbox-group v-model="selectedProjectIds" class="project-checkboxes">
+            <el-checkbox
+              v-for="project in backupPreview.projects"
+              :key="project.id"
+              :label="project.id"
+              :disabled="restoreMode === 'full'"
+            >
+              <span class="project-name">{{ project.name }}</span>
+              <span class="project-level">({{ project.level }}级)</span>
+              <span class="project-count">{{ project.recordCount }}条记录</span>
+            </el-checkbox>
+          </el-checkbox-group>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="showRestoreDialog = false; clearAllProjects()">取消</el-button>
+        <el-button
+          type="primary"
+          :disabled="restoreMode === 'incremental' && selectedProjectIds.length === 0"
+          @click="confirmRestore"
+        >
+          确认恢复
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus';
 import { Download, Upload, InfoFilled, Plus, Refresh, Search } from '@element-plus/icons-vue';
 import type { UpdateStatus } from '../../../shared/types';
 
@@ -489,13 +546,19 @@ function applyTheme(mode: string) {
   }
 }
 
+const backupPreview = ref<any>(null);
+const showRestoreDialog = ref(false);
+const selectedBackupPath = ref('');
+const restoreMode = ref<'full' | 'incremental'>('full');
+const selectedProjectIds = ref<string[]>([]);
+
 async function handleBackup() {
   try {
     const now = new Date();
-    const defaultFileName = `mlps_backup_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}.db`;
+    const defaultFileName = `JSecProbe_backup_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}.zip`;
     
     const saveRes = await window.api.system.saveFile(defaultFileName, [
-      { name: '备份文件', extensions: ['db'] },
+      { name: '备份文件', extensions: ['zip'] },
     ]);
     
     if (!saveRes.success || !saveRes.data) {
@@ -515,33 +578,92 @@ async function handleBackup() {
 
 async function handleRestore() {
   try {
-    await ElMessageBox.confirm(
-      '恢复数据将覆盖当前所有数据，此操作不可撤销，确定继续吗？',
-      '确认恢复',
-      {
-        type: 'warning',
-        confirmButtonText: '确定恢复',
-        cancelButtonText: '取消',
-      }
-    );
-    
     const fileRes = await window.api.system.selectFile([
-      { name: '备份文件', extensions: ['db', 'sqlite', 'sqlite3'] },
+      { name: '备份文件', extensions: ['zip', 'db', 'sqlite', 'sqlite3'] },
     ]);
     
     if (!fileRes.success || !fileRes.data) {
       return;
     }
     
-    const restoreRes = await window.api.system.restoreData(fileRes.data);
+    const filePath = String(fileRes.data);
+    selectedBackupPath.value = filePath;
+    backupPreview.value = null;
+    selectedProjectIds.value = [];
+    restoreMode.value = 'full';
+    
+    if (filePath.endsWith('.zip')) {
+      const previewRes = await window.api.system.previewBackup(filePath);
+      if (previewRes.success && previewRes.data) {
+        backupPreview.value = previewRes.data;
+      }
+    }
+    
+    showRestoreDialog.value = true;
+  } catch {
+    // User cancelled
+  }
+}
+
+function formatBackupTime(timestamp?: string): string {
+  if (!timestamp) return '未知';
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+watch(restoreMode, (newMode) => {
+  if (!backupPreview.value?.projects) return;
+  
+  if (newMode === 'full') {
+    selectedProjectIds.value = backupPreview.value.projects.map((p: any) => p.id);
+  } else if (newMode === 'incremental' && selectedProjectIds.value.length === 0) {
+    selectedProjectIds.value = backupPreview.value.projects.length > 0 
+      ? [backupPreview.value.projects[0].id] 
+      : [];
+  }
+});
+
+async function confirmRestore() {
+  try {
+    const confirmMessage = restoreMode.value === 'full' 
+      ? '完整恢复将覆盖当前所有数据，此操作不可撤销，确定继续吗？'
+      : '增量恢复将合并备份中的项目数据，确定继续吗？';
+    
+    await ElMessageBox.confirm(confirmMessage, '确认恢复', {
+      type: 'warning',
+      confirmButtonText: '确定恢复',
+      cancelButtonText: '取消',
+    });
+    
+    let options: { incremental: boolean; projectIds?: string[] } | undefined;
+    if (restoreMode.value === 'incremental') {
+      options = {
+        incremental: true,
+        projectIds: selectedProjectIds.value.length > 0 
+          ? JSON.parse(JSON.stringify(selectedProjectIds.value)) 
+          : undefined,
+      };
+    }
+    
+    const backupPath = String(selectedBackupPath.value);
+    
+    const restoreRes = await window.api.system.restoreData(backupPath, options);
     if (restoreRes.success) {
+      showRestoreDialog.value = false;
       ElMessage.success('恢复成功，应用即将重启...');
     } else {
       ElMessage.error(restoreRes.error?.message || '恢复失败');
     }
-  } catch {
-    // User cancelled
+  } catch (err: any) {
+    if (err !== 'cancel' && err?.message !== 'cancel') {
+      console.error('Restore error:', err);
+      ElMessage.error(err?.message || '恢复失败');
+    }
   }
+}
+
+function clearAllProjects() {
+  selectedProjectIds.value = [];
 }
 
 async function handleOpenDataFolder() {
@@ -657,6 +779,15 @@ function initUpdateListener() {
       ElMessage.success('当前已是最新版本');
     } else if (status.status === 'downloaded') {
       ElMessage.success('更新包下载完成');
+    } else if (status.status === 'available') {
+      const releaseNotesText = status.releaseNotes ? `\n\n更新内容：\n${status.releaseNotes}` : '';
+      ElNotification({
+        title: '发现新版本',
+        message: `新版本 v${status.version} 已发布${releaseNotesText}`,
+        type: 'info',
+        duration: 10000,
+        position: 'bottom-right',
+      });
     }
   });
 }
@@ -1038,6 +1169,95 @@ onUnmounted(() => {
     padding: 12px;
     background: var(--bg-hover);
     border-radius: 6px;
+  }
+}
+
+.restore-dialog-content {
+  padding: 8px 0;
+}
+
+.backup-preview-section {
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-color);
+
+  .preview-time {
+    font-size: 14px;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+  }
+
+  .preview-summary {
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+}
+
+.restore-mode-section {
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-color);
+
+  :deep(.el-radio) {
+    display: block;
+    margin-bottom: 10px;
+
+    .mode-name {
+      font-size: 14px;
+      color: var(--text-primary);
+      margin-right: 8px;
+    }
+
+    .mode-tag {
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+
+      &.recommended {
+        background: #f0f9ff;
+        color: #3b82f6;
+      }
+
+      &.dangerous {
+        background: #fef2f2;
+        color: #ef4444;
+      }
+    }
+  }
+}
+
+.project-selection {
+  .selection-title {
+    font-size: 13px;
+    color: var(--text-primary);
+    margin-bottom: 10px;
+  }
+
+  .project-checkboxes {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 200px;
+    overflow-y: auto;
+
+    :deep(.el-checkbox) {
+      .project-name {
+        font-size: 14px;
+        color: var(--text-primary);
+        margin-right: 6px;
+      }
+
+      .project-level {
+        font-size: 12px;
+        color: var(--color-primary);
+        margin-right: 8px;
+      }
+
+      .project-count {
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+    }
   }
 }
 </style>

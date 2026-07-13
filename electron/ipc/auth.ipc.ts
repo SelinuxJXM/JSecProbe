@@ -7,26 +7,10 @@ import bcrypt from 'bcryptjs';
 import { randomUUID } from 'crypto';
 import type { LoginResult } from '../../shared/types';
 import { writeOperationLog } from '../utils/operation-log';
-
-function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
-  return Promise.resolve()
-    .then(fn)
-    .then((data) => ({ success: true, data }))
-    .catch((error) => {
-      log.error('Auth IPC Error:', error);
-      return {
-        success: false,
-        error: {
-          code: error.code || 'INTERNAL_ERROR',
-          message: error.message || '操作失败',
-        },
-      };
-    });
-}
+import { wrap } from '../utils/ipc-wrapper';
 
 export function registerAuthHandlers(): void {
-  ipcMain.handle('auth:login', (_event, username: string, password: string) =>
-    wrap<LoginResult>(async () => {
+  ipcMain.handle('auth:login', wrap(async (_event, username: string, password: string): Promise<LoginResult> => {
       const db = getDb();
       const user = await db.query.users.findFirst({
         where: eq(schema.users.username, username),
@@ -98,35 +82,29 @@ export function registerAuthHandlers(): void {
     })
   );
 
-  ipcMain.handle('auth:logout', () =>
-    wrap<void>(async () => {
-      log.info('用户登出');
-      await writeOperationLog({
-        action: 'logout',
-        module: 'auth',
-        description: '用户登出系统',
-      });
-    })
-  );
+  ipcMain.handle('auth:logout', wrap(async () => {
+    log.info('用户登出');
+    await writeOperationLog({
+      action: 'logout',
+      module: 'auth',
+      description: '用户登出系统',
+    });
+  }));
 
-  ipcMain.handle('auth:getCurrentUser', () =>
-    wrap(() => null)
-  );
+  ipcMain.handle('auth:getCurrentUser', wrap(async () => null));
 
-  ipcMain.handle('auth:changePassword', (_event, userId: string, oldPassword: string, newPassword: string) =>
-    wrap<void>(async () => {
-      const db = getDb();
-      const user = await db.query.users.findFirst({
-        where: eq(schema.users.id, userId),
-      });
-      if (!user) throw new Error('用户不存在');
-      const valid = bcrypt.compareSync(oldPassword, user.passwordHash);
-      if (!valid) throw new Error('旧密码错误');
-      const newHash = bcrypt.hashSync(newPassword, 12);
-      const now = new Date().toISOString();
-      await db.update(schema.users)
-        .set({ passwordHash: newHash, mustChangePassword: 0, updatedAt: now })
-        .where(eq(schema.users.id, userId));
-    })
-  );
+  ipcMain.handle('auth:changePassword', wrap(async (_event, userId: string, oldPassword: string, newPassword: string) => {
+    const db = getDb();
+    const user = await db.query.users.findFirst({
+      where: eq(schema.users.id, userId),
+    });
+    if (!user) throw new Error('用户不存在');
+    const valid = bcrypt.compareSync(oldPassword, user.passwordHash);
+    if (!valid) throw new Error('旧密码错误');
+    const newHash = bcrypt.hashSync(newPassword, 12);
+    const now = new Date().toISOString();
+    await db.update(schema.users)
+      .set({ passwordHash: newHash, mustChangePassword: 0, updatedAt: now })
+      .where(eq(schema.users.id, userId));
+  }));
 }

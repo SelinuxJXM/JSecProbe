@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -46,7 +46,9 @@ export const projectMembers = sqliteTable('project_members', {
   role: text('role').notNull().default('assessor'),
   assignedDomains: text('assigned_domains'),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  projectUserIdIdx: uniqueIndex('project_user_idx').on(table.projectId, table.userId),
+}));
 
 export const assets = sqliteTable('assets', {
   id: text('id').primaryKey(),
@@ -69,7 +71,10 @@ export const assets = sqliteTable('assets', {
   sortOrder: integer('sort_order').notNull().default(0),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => ({
+  projectCategoryIdx: index('asset_project_category_idx').on(table.projectId, table.category),
+  projectIdIdx: index('asset_project_idx').on(table.projectId),
+}));
 
 export const standards = sqliteTable('standards', {
   id: text('id').primaryKey(),
@@ -97,7 +102,10 @@ export const assessmentItems = sqliteTable('assessment_items', {
   isHighRisk: integer('is_high_risk').notNull().default(0),
   sortOrder: integer('sort_order').notNull().default(0),
   parentId: text('parent_id'),
-});
+}, (table) => ({
+  standardDomainIdx: index('item_standard_domain_idx').on(table.standardId, table.domain),
+  standardIdIdx: index('item_standard_idx').on(table.standardId),
+}));
 
 export const assessmentRecords = sqliteTable('assessment_records', {
   id: text('id').primaryKey(),
@@ -114,7 +122,11 @@ export const assessmentRecords = sqliteTable('assessment_records', {
   screenshotPaths: text('screenshot_paths'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => ({
+  projectItemIdx: index('record_project_item_idx').on(table.projectId, table.itemId),
+  projectAssetIdx: index('record_project_asset_idx').on(table.projectId, table.assetId),
+  projectIdIdx: index('record_project_idx').on(table.projectId),
+}));
 
 export const issues = sqliteTable('issues', {
   id: text('id').primaryKey(),
@@ -137,7 +149,11 @@ export const issues = sqliteTable('issues', {
   evidenceFiles: text('evidence_files'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => ({
+  projectStatusIdx: index('issue_project_status_idx').on(table.projectId, table.status),
+  projectRiskIdx: index('issue_project_risk_idx').on(table.projectId, table.riskLevel),
+  projectIdIdx: index('issue_project_idx').on(table.projectId),
+}));
 
 export const knowledgeCategories = sqliteTable('knowledge_categories', {
   id: text('id').primaryKey(),
