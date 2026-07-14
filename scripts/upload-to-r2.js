@@ -1,7 +1,6 @@
-const { S3Client, PutObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
-const path = require('path');
 const fs = require('fs');
-const crypto = require('crypto');
+const path = require('path');
+const { S3Client, PutObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 
 const ROOT = path.resolve(__dirname, '..');
 const DIST_DIR = path.join(ROOT, 'dist');
@@ -9,46 +8,24 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const config = {
   accountId: process.env.R2_ACCOUNT_ID || '5916e35f85cd5615d987c9b8a35398f8',
   accessKeyId: process.env.R2_ACCESS_KEY_ID,
-  accessKeySecret: process.env.R2_ACCESS_KEY_SECRET || '',
+  secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
   bucket: process.env.R2_BUCKET || 'secporbe',
   baseUrl: process.env.R2_BASE_URL || 'https://data.semove.ccwu.cc',
 };
-
-if (!config.accessKeyId) {
-  console.error('❌ 请设置环境变量:');
-  console.error('  set R2_ACCESS_KEY_ID=your_api_token');
-  console.error('  参考 .env.example 文件配置');
-  process.exit(1);
-}
 
 function getPkgVersion() {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
   return pkg.version;
 }
 
-function generateLatestYml(installerPath) {
-  const version = getPkgVersion();
-  const stats = fs.statSync(installerPath);
-  const fileBuffer = fs.readFileSync(installerPath);
-  const sha512 = crypto.createHash('sha512').update(fileBuffer).digest('base64');
-  const urlFilename = `JSecProbe Setup ${version}.exe`;
+async function main() {
+  if (!config.accessKeyId || !config.secretAccessKey) {
+    console.error('❌ 请设置环境变量:');
+    console.error('  set R2_ACCESS_KEY_ID=your_access_key_id');
+    console.error('  set R2_SECRET_ACCESS_KEY=your_secret_access_key');
+    process.exit(1);
+  }
 
-  const yml = [
-    `version: ${version}`,
-    'files:',
-    `  - url: ${urlFilename}`,
-    `    sha512: ${sha512}`,
-    `    size: ${stats.size}`,
-    `path: ${urlFilename}`,
-    `sha512: ${sha512}`,
-    `releaseDate: '${new Date().toISOString()}'`,
-    '',
-  ].join('\n');
-
-  return { yml, urlFilename };
-}
-
-async function upload() {
   const version = getPkgVersion();
   console.log(`=== 上传 v${version} 更新文件到 Cloudflare R2 ===\n`);
 
@@ -57,71 +34,72 @@ async function upload() {
     endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
     credentials: {
       accessKeyId: config.accessKeyId,
-      secretAccessKey: config.accessKeySecret || ' ',
+      secretAccessKey: config.secretAccessKey,
     },
-    forcePathStyle: true,
   });
 
+  // 测试连接：列出桶中的对象
   try {
-    await client.send(new HeadObjectCommand({ Bucket: config.bucket, Key: 'latest.yml' }));
-    console.log('✅ R2 连接成功\n');
-  } catch {
-    console.log('ℹ️ 首次上传或文件不存在\n');
+    console.log('测试 R2 连接...');
+    const listResult = await client.send(new ListObjectsV2Command({
+      Bucket: config.bucket,
+      MaxKeys: 1,
+    }));
+    console.log(`连接成功! 桶中已有 ${listResult.KeyCount || 0} 个对象\n`);
+  } catch (err) {
+    console.error(`❌ 连接失败: ${err.message}`);
+    process.exit(1);
   }
 
-  const installerName = `JSecProbe Setup ${version}.exe`;
-  const blockmapName = `JSecProbe Setup ${version}.exe.blockmap`;
+  const files = [
+    {
+      local: path.join(DIST_DIR, `JSecProbe Setup ${version}.exe`),
+      remote: `JSecProbe-Setup-${version}.exe`,
+      contentType: 'application/octet-stream',
+    },
+    {
+      local: path.join(DIST_DIR, `JSecProbe Setup ${version}.exe.blockmap`),
+      remote: `JSecProbe-Setup-${version}.exe.blockmap`,
+      contentType: 'application/json',
+    },
+    {
+      local: path.join(DIST_DIR, 'latest.yml'),
+      remote: 'latest.yml',
+      contentType: 'text/yaml',
+    },
+  ];
 
-  const installerPath = path.join(DIST_DIR, installerName);
-  const blockmapPath = path.join(DIST_DIR, blockmapName);
+  for (const file of files) {
+    if (!fs.existsSync(file.local)) {
+      console.warn(`⚠ 文件不存在，跳过: ${file.local}`);
+      continue;
+    }
 
-  const filesToUpload = [];
-
-  if (fs.existsSync(installerPath)) {
-    filesToUpload.push({ local: installerPath, remote: installerName });
-  } else {
-    console.warn(`⚠ 安装包不存在: ${installerName}`);
-  }
-
-  if (fs.existsSync(blockmapPath)) {
-    filesToUpload.push({ local: blockmapPath, remote: blockmapName });
-  } else {
-    console.warn(`⚠ 差异更新文件不存在: ${blockmapName}`);
-  }
-
-  const { yml } = generateLatestYml(installerPath);
-  const ymlPath = path.join(DIST_DIR, 'latest-r2.yml');
-  fs.writeFileSync(ymlPath, yml, 'utf-8');
-  filesToUpload.push({ local: ymlPath, remote: 'latest.yml' });
-
-  for (const file of filesToUpload) {
-    const fileSize = (fs.statSync(file.local).size / 1024 / 1024).toFixed(1);
+    const fileBuffer = fs.readFileSync(file.local);
+    const fileSize = (fileBuffer.length / 1024 / 1024).toFixed(2);
     process.stdout.write(`上传 ${file.remote} (${fileSize} MB)... `);
+
     try {
-      const fileBuffer = fs.readFileSync(file.local);
       await client.send(new PutObjectCommand({
         Bucket: config.bucket,
         Key: file.remote,
         Body: fileBuffer,
-        ContentType: file.remote.endsWith('.exe') ? 'application/octet-stream' :
-                    file.remote.endsWith('.blockmap') ? 'application/json' :
-                    'text/yaml',
-        ACL: 'public-read',
+        ContentType: file.contentType,
       }));
       console.log('✅');
     } catch (err) {
-      console.log('❌ 失败:', err.message);
-      throw err;
+      console.log(`❌ ${err.message}`);
     }
   }
 
-  fs.unlinkSync(ymlPath);
-
-  console.log(`\n🎉 上传完成！`);
-  console.log(`  更新地址: ${config.baseUrl}/latest.yml`);
+  console.log(`\n✅ 上传完成！`);
+  console.log(`\n📌 访问地址:`);
+  for (const file of files) {
+    console.log(`  ${config.baseUrl}/${file.remote}`);
+  }
 }
 
-upload().catch(err => {
+main().catch((err) => {
   console.error('\n❌ 上传失败:', err.message);
   process.exit(1);
 });

@@ -780,13 +780,14 @@ function initUpdateListener() {
     } else if (status.status === 'downloaded') {
       ElMessage.success('更新包下载完成');
     } else if (status.status === 'available') {
-      const releaseNotesText = status.releaseNotes ? `\n\n更新内容：\n${status.releaseNotes}` : '';
+      const releaseNotesHtml = status.releaseNotes ? `<br/><br/>更新内容：<br/>${status.releaseNotes}` : '';
       ElNotification({
         title: '发现新版本',
-        message: `新版本 v${status.version} 已发布${releaseNotesText}`,
+        message: `新版本 v${status.version} 已发布${releaseNotesHtml}`,
         type: 'info',
         duration: 10000,
         position: 'bottom-right',
+        dangerouslyUseHTMLString: true,
       });
     }
   });

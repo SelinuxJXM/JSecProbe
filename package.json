@@ -17,7 +17,6 @@
     "preview": "vite preview",
     "db:generate": "drizzle-kit generate:sqlite --schema=electron/db/schema.ts --out=electron/db/migrations",
     "db:migrate": "tsx electron/db/migrate.ts",
-    "upload:oss": "node scripts/upload-to-oss.js",
     "upload:r2": "node scripts/upload-to-r2.js"
   },
   "dependencies": {
