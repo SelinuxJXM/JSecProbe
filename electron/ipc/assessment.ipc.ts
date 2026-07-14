@@ -2,7 +2,7 @@ import { ipcMain, dialog } from 'electron';
 import log from 'electron-log';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, and, desc, count, sql, inArray, lte, or } from 'drizzle-orm';
+import { eq, and, desc, count, sql, inArray, lte, or, like } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
@@ -11,6 +11,7 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { styleCell, getRowMaxHeight } from '../utils/excel-helper';
 import { wrap } from '../utils/ipc-wrapper';
+import { validateUuid, validateNotEmpty, validateComplianceStatus, sanitizeInput } from '../utils/validation';
 
 export function registerAssessmentHandlers(): void {
   // 根据项目等级和扩展类型筛选测评项
@@ -154,10 +155,23 @@ export function registerAssessmentHandlers(): void {
   );
 
   ipcMain.handle('assessment:saveRecord', wrap(async (_event, data: any) => {
+      validateNotEmpty(data.projectId, '项目ID');
+      validateNotEmpty(data.itemId, '测评项ID');
+      if (data.result) {
+        validateComplianceStatus(data.result);
+      }
+      if (data.evidence) {
+        data.evidence = sanitizeInput(data.evidence, 5000);
+      }
+      if (data.findings) {
+        data.findings = sanitizeInput(data.findings, 10000);
+      }
+
       const db = getDb();
       const now = new Date().toISOString();
 
       if (data.id) {
+        validateUuid(data.id, '记录ID');
         await db.update(schema.assessmentRecords)
           .set({ ...data, updatedAt: now })
           .where(eq(schema.assessmentRecords.id, data.id));
@@ -590,7 +604,7 @@ export function registerAssessmentHandlers(): void {
       });
       
       if (!project) {
-        return { success: false, error: { message: '项目不存在' } };
+        throw new Error('项目不存在');
       }
       
       const DOMAIN_NAMES: Record<string, string> = {
@@ -977,36 +991,28 @@ export function registerAssessmentHandlers(): void {
   });
 
   // 导入评估记录
-  ipcMain.handle('assessment:importExcel', async (_event, projectId: string, filePath: string) => {
+  ipcMain.handle('assessment:importExcel', wrap(async (_event, projectId: string, filePath: string, domainIds?: string[], assetIds?: string[]) => {
     try {
       if (!fs.existsSync(filePath)) {
-        return { success: false, error: { message: '文件不存在' } };
+        throw new Error('文件不存在');
       }
-      
+
       const db = getDb();
-      
+
       const project = await db.query.projects.findFirst({
         where: eq(schema.projects.id, projectId),
       });
-      
       if (!project) {
-        return { success: false, error: { message: '项目不存在' } };
+        throw new Error('项目不存在');
       }
-      
+
       const workbook = XLSX.readFile(filePath);
-      
-      const SHEET_TO_DOMAIN: Record<string, string> = {
+
+      const DOMAIN_NAMES: Record<string, string> = {
         '安全物理环境': 'secure_physical',
         '安全通信网络': 'secure_communication',
-        '安全区域边界-XX边界': 'secure_boundary',
         '安全区域边界': 'secure_boundary',
-        '安全计算环境-XX服务器': 'secure_computing',
-        '安全计算环境-XX网络设备': 'secure_computing',
-        '安全计算环境-XX安全设备': 'secure_computing',
-        '安全计算环境-XX应用系统': 'secure_computing',
-        '安全计算环境-XX管理平台': 'secure_computing',
-        '安全计算环境-XX数据库': 'secure_computing',
-        '安全计算环境-XX终端': 'secure_computing',
+        '安全计算环境': 'secure_computing',
         '安全管理中心': 'secure_management',
         '安全管理制度': 'security_management',
         '安全管理机构': 'security_organization',
@@ -1014,7 +1020,7 @@ export function registerAssessmentHandlers(): void {
         '安全建设管理': 'security_construction',
         '安全运维管理': 'security_maintenance',
       };
-      
+
       const resultMap: Record<string, string> = {
         '符合': 'conform',
         '部分符合': 'partial',
@@ -1023,100 +1029,317 @@ export function registerAssessmentHandlers(): void {
         '待判定': 'untested',
         '': 'untested',
       };
-      
+
       let totalCount = 0;
       const now = new Date().toISOString();
-      
-      const allItems = await db.query.assessmentItems.findMany();
-      const itemMap = new Map<string, any>();
-      for (const item of allItems) {
-        const key = `${item.domain}||${item.controlPoint}||${item.requirement}`;
-        itemMap.set(key, item);
-      }
-      
+
+      const selectedDomainIds = domainIds && domainIds.length > 0 ? domainIds : null;
+      const selectedAssetIds = assetIds && assetIds.length > 0 ? assetIds : null;
+      const hasSelection = selectedDomainIds || selectedAssetIds;
+
+      const excelDataMap = new Map<string, {result: string, resultRecord: string, evidence: string, assetId: string | null, domainKey: string}>();
+
       for (const sheetName of workbook.SheetNames) {
-        const domainKey = SHEET_TO_DOMAIN[sheetName];
+        let domainKey: string | null = null;
+        let assetId: string | null = null;
+
+        // 解析sheet名：{层面名}_{全局层面/资产名}
+        for (const [baseName, dKey] of Object.entries(DOMAIN_NAMES)) {
+          const prefix = baseName + '_';
+          if (sheetName.startsWith(prefix)) {
+            domainKey = dKey;
+            const suffix = sheetName.substring(prefix.length).trim();
+
+            if (suffix === '全局层面') {
+              // 全局层面sheet
+            } else {
+              // 资产sheet
+              const assetName = suffix;
+              if (assetName) {
+                const asset = await db.query.assets.findFirst({
+                  where: and(
+                    eq(schema.assets.projectId, projectId),
+                    eq(schema.assets.name, assetName)
+                  ),
+                });
+                if (asset) {
+                  assetId = asset.id;
+                } else {
+                  const fuzzyAssets = await db.query.assets.findMany({
+                    where: and(
+                      eq(schema.assets.projectId, projectId),
+                      like(schema.assets.name, `%${assetName}%`)
+                    ),
+                    limit: 1,
+                  });
+                  if (fuzzyAssets.length > 0) assetId = fuzzyAssets[0].id;
+                }
+              }
+            }
+            break;
+          }
+        }
         if (!domainKey) continue;
-        
+
+        // 过滤选中的内容
+        if (hasSelection) {
+          if (assetId) {
+            // 资产sheet：检查资产是否在选中列表中
+            if (selectedAssetIds && !selectedAssetIds.includes(assetId)) {
+              continue;
+            }
+            // 如果只选了层面没选资产，且该层面未被选中，也跳过
+            if (!selectedAssetIds && selectedDomainIds && !selectedDomainIds.includes(domainKey)) {
+              continue;
+            }
+          } else {
+            // 全局层面sheet：检查层面是否在选中的全局层面列表中
+            if (selectedDomainIds && !selectedDomainIds.includes(domainKey)) {
+              continue;
+            }
+            // 如果只选了资产没选层面，全局层面不导入
+            if (!selectedDomainIds && selectedAssetIds) {
+              continue;
+            }
+          }
+        }
+
         const worksheet = workbook.Sheets[sheetName];
         const rows: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-        
         if (rows.length === 0) continue;
-        
+
+        let lastControlPoint = '';
+
         for (let i = 1; i < rows.length; i++) {
           const row = rows[i];
           if (!row || row.length === 0) continue;
-          
+
           const colA = row[0] ? String(row[0]).trim() : '';
           const colB = row[1] ? String(row[1]).trim() : '';
           const colC = row[2] ? String(row[2]).trim() : '';
           const colD = row[3] ? String(row[3]).trim() : '';
           const colE = row[4] ? String(row[4]).trim() : '';
-          
+          const colF = row[5] ? String(row[5]).trim() : '';
+
+          // 跳过扩展分组行（如"安全通用要求"、"云计算安全扩展要求"等）
+          const extGroupLabels = ['安全通用要求', '云计算安全扩展要求', '移动互联安全扩展要求', '物联网安全扩展要求', '工业控制系统安全扩展要求', '大数据安全扩展要求'];
+          if (colA && extGroupLabels.some(label => colA.includes(label))) {
+            lastControlPoint = '';
+            continue;
+          }
+
+          // 跳过非数据行（A列非数字）
           if (!colA || isNaN(parseInt(colA))) continue;
-          
-          const controlPoint = colB;
+
+          // 控制点列合并处理：如果为空，使用上一个有效控制点名称
+          const controlPoint = colB || lastControlPoint;
+          if (colB) lastControlPoint = colB;
+
           const requirement = colC;
+          if (!requirement) continue;
+
           const resultRecord = colD;
           const compliance = colE;
-          
-          if (!requirement) continue;
-          
-          const key = `${domainKey}||${controlPoint}||${requirement}`;
-          let item = itemMap.get(key);
-          
-          if (!item) {
-            for (const [k, v] of itemMap) {
-              if (k.startsWith(`${domainKey}||${controlPoint}||`) && v.requirement.includes(requirement.substring(0, 20))) {
-                item = v;
-                break;
-              }
-            }
-          }
-          
-          if (!item) continue;
-          
-          const existing = await db.query.assessmentRecords.findFirst({
-            where: and(
-              eq(schema.assessmentRecords.projectId, projectId),
-              eq(schema.assessmentRecords.itemId, item.id)
-            ),
-          });
+          const evidence = colF;
           
           const resultValue = resultMap[compliance] || 'untested';
-          
-          const recordData = {
-            projectId,
-            itemId: item.id,
+
+          const key = `${domainKey}||${assetId || 'null'}||${controlPoint}||${requirement}`;
+          excelDataMap.set(key, {
             result: resultValue,
-            method: 'check',
-            commandOutput: '',
-            evidence: resultRecord,
-            findings: resultRecord,
-            assessor: '',
-            assessmentDate: now,
-          };
-          
-          if (existing) {
-            await db.update(schema.assessmentRecords)
-              .set({ ...recordData, updatedAt: now })
-              .where(eq(schema.assessmentRecords.id, existing.id));
-          } else {
-            await db.insert(schema.assessmentRecords).values({
-              ...recordData,
-              id: randomUUID(),
-              createdAt: now,
-              updatedAt: now,
-            });
-          }
-          totalCount++;
+            resultRecord,
+            evidence,
+            assetId,
+            domainKey,
+          });
         }
       }
-      
-      return { success: true, data: { count: totalCount } };
+
+      // 第二步：查询项目信息，建立扩展分组过滤
+      const DOMAIN_SHEETS = [
+        { domain: 'secure_physical', sheetName: '安全物理环境' },
+        { domain: 'secure_communication', sheetName: '安全通信网络' },
+        { domain: 'secure_boundary', sheetName: '安全区域边界' },
+        { domain: 'secure_computing', sheetName: '安全计算环境' },
+        { domain: 'secure_management', sheetName: '安全管理中心' },
+        { domain: 'security_management', sheetName: '安全管理制度' },
+        { domain: 'security_organization', sheetName: '安全管理机构' },
+        { domain: 'security_personnel', sheetName: '安全管理人员' },
+        { domain: 'security_construction', sheetName: '安全建设管理' },
+        { domain: 'security_maintenance', sheetName: '安全运维管理' },
+      ];
+
+      const EXTENSION_GROUPS = [
+        { key: 'general', label: '安全通用要求' },
+        { key: 'cloud', label: '云计算安全扩展要求' },
+        { key: 'mobile', label: '移动互联安全扩展要求' },
+        { key: 'iot', label: '物联网安全扩展要求' },
+        { key: 'industrial', label: '工业控制系统安全扩展要求' },
+        { key: 'bigdata', label: '大数据安全扩展要求（国标附录）' },
+      ];
+
+      const EXT_TYPE_MAP: Record<string, string> = {
+        '安全通用要求': 'general', '云计算安全扩展要求': 'cloud',
+        '移动互联安全扩展要求': 'mobile', '物联网安全扩展要求': 'iot',
+        '工业控制系统安全扩展要求': 'industrial',
+        '大数据安全扩展要求': 'bigdata',
+        '大数据安全扩展要求（国标附录）': 'bigdata',
+        '关键信息基础设施安全扩展要求': 'cii',
+      };
+
+      const projectExtCodes: string[] = [];
+      if (project.extensionType) {
+        for (const t of project.extensionType.split(',').filter(Boolean)) {
+          const code = EXT_TYPE_MAP[t.trim()] || t.trim();
+          if (!projectExtCodes.includes(code)) projectExtCodes.push(code);
+        }
+      }
+      const activeExtGroups = EXTENSION_GROUPS.filter(g => g.key === 'general' || projectExtCodes.includes(g.key));
+
+      // 第三步：确定需要遍历的层面
+      // 如果有选中的资产，需要包含这些资产所在的层面
+      const CATEGORY_TO_DOMAIN_MAP: Record<string, string> = {
+        machine_room: 'secure_physical',
+        network_boundary: 'secure_boundary',
+        network_device: 'secure_computing',
+        security_device: 'secure_computing',
+        server_storage: 'secure_computing',
+        dbms: 'secure_computing',
+        business_app: 'secure_computing',
+        terminal: 'secure_computing',
+        data_resource: 'secure_computing',
+        management_platform: 'secure_computing',
+      };
+
+      let domainsToImport = DOMAIN_SHEETS;
+      if (hasSelection) {
+        const domainSet = new Set<string>();
+        if (selectedDomainIds) {
+          for (const d of selectedDomainIds) domainSet.add(d);
+        }
+        if (selectedAssetIds) {
+          // 查询选中资产所属的层面（通过category映射）
+          const assets = await db.query.assets.findMany({
+            where: and(
+              eq(schema.assets.projectId, projectId),
+              inArray(schema.assets.id, selectedAssetIds)
+            ),
+            columns: { category: true }
+          });
+          for (const a of assets) {
+            const domainId = CATEGORY_TO_DOMAIN_MAP[a.category] || 'secure_computing';
+            domainSet.add(domainId);
+          }
+        }
+        domainsToImport = DOMAIN_SHEETS.filter(d => domainSet.has(d.domain));
+      }
+
+      for (const { domain: domainKey } of domainsToImport) {
+        const extOrConditions = [eq(schema.assessmentItems.extensionType, 'general')];
+        for (const ext of projectExtCodes) extOrConditions.push(eq(schema.assessmentItems.extensionType, ext));
+        const extOr = or(...extOrConditions);
+
+        const items = await db.query.assessmentItems.findMany({
+          where: and(
+            eq(schema.assessmentItems.domain, domainKey),
+            eq(schema.assessmentItems.standardId, project.standardId),
+            extOr,
+          ),
+          orderBy: schema.assessmentItems.sortOrder,
+        });
+        if (items.length === 0) continue;
+
+        const sortedItems = [...items.filter(i => i.extensionType === 'general'), ...items.filter(i => i.extensionType !== 'general')];
+
+        // 第四步：按扩展分组遍历（与导出完全一致）
+        for (const extGroup of activeExtGroups) {
+          const extItems = sortedItems.filter(i => i.extensionType === extGroup.key);
+          if (extItems.length === 0) continue;
+
+          for (const item of extItems) {
+            // 需要处理的目标列表：选中的资产 + 全局层面（如果选中）
+            const targetAssetIds: Array<string | null> = [];
+            
+            if (selectedAssetIds && selectedAssetIds.length > 0) {
+              targetAssetIds.push(...selectedAssetIds);
+            }
+            
+            if (selectedDomainIds && selectedDomainIds.includes(domainKey)) {
+              targetAssetIds.push(null);
+            }
+            
+            if (!hasSelection) {
+              targetAssetIds.push(null);
+            }
+            
+            for (const targetAssetId of targetAssetIds) {
+              const key = `${domainKey}||${targetAssetId || 'null'}||${item.controlPoint}||${item.requirement}`;
+              const data = excelDataMap.get(key);
+              
+              if (!data) continue;
+              if (!data.resultRecord && data.result === 'untested') continue;
+
+              // 按选择过滤
+              if (hasSelection) {
+                if (data.assetId) {
+                  if (selectedAssetIds && !selectedAssetIds.includes(data.assetId)) {
+                    continue;
+                  }
+                } else {
+                  if (!selectedDomainIds || !selectedDomainIds.includes(domainKey)) {
+                    continue;
+                  }
+                }
+              }
+
+              const existingConditions = [
+                eq(schema.assessmentRecords.projectId, projectId),
+                eq(schema.assessmentRecords.itemId, item.id),
+              ];
+              if (data.assetId) {
+                existingConditions.push(eq(schema.assessmentRecords.assetId, data.assetId));
+              } else {
+                existingConditions.push(sql`${schema.assessmentRecords.assetId} IS NULL`);
+              }
+              const existing = await db.query.assessmentRecords.findFirst({
+                where: and(...existingConditions),
+              });
+
+              const recordData: any = {
+                projectId,
+                assetId: data.assetId,
+                itemId: item.id,
+                result: data.result || 'untested',
+                method: 'check',
+                commandOutput: '',
+                evidence: data.evidence || '',
+                findings: data.resultRecord || '',
+                assessor: '',
+                assessmentDate: now,
+                updatedAt: now,
+              };
+
+              if (existing) {
+                await db.update(schema.assessmentRecords)
+                  .set(recordData)
+                  .where(eq(schema.assessmentRecords.id, existing.id));
+              } else {
+                await db.insert(schema.assessmentRecords).values({
+                  id: randomUUID(),
+                  ...recordData,
+                  createdAt: now,
+                });
+              }
+              totalCount++;
+            }
+          }
+        }
+      }
+
+      return { count: totalCount };
     } catch (error: any) {
       log.error('导入评估记录失败:', error);
-      return { success: false, error: { message: error.message || '导入失败' } };
+      throw error;
     }
-  });
+  }));
 }

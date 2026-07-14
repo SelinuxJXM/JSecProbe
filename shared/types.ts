@@ -367,7 +367,7 @@ export interface ApiBridge {
     listDomains: (standardId?: string) => Promise<IpcResponse<{ id: string; name: string; count: number }[]>>;
     exportExcel: (projectId: string, domain?: string) => Promise<IpcResponse<{ path: string }>>;
     exportExcelByAssets: (projectId: string, assetIds: string[], domainIds: string[]) => Promise<IpcResponse<{ path: string }>>;
-    importExcel: (projectId: string, filePath: string) => Promise<IpcResponse<{ count: number }>>;
+    importExcel: (projectId: string, filePath: string, domainIds?: string[], assetIds?: string[]) => Promise<IpcResponse<{ count: number }>>;
   };
   screenshot: {
     upload: (params: { projectId: string; itemId: string; filePath: string }) => Promise<IpcResponse<{ path: string; name: string }>>;

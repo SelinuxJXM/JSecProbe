@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { spawn } from 'child_process';
+import { wrap } from '../utils/ipc-wrapper';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -14,18 +15,21 @@ export interface UpdateStatus {
   releaseDate?: string;
   releaseNotes?: string;
   downloadProgress?: number;
+  downloadSpeed?: number;
+  downloadTransferred?: number;
+  downloadTotal?: number;
   error?: string;
 }
 
 let currentStatus: UpdateStatus = { status: 'idle' };
 
-const OSS_CONFIG = {
-  baseUrl: 'https://secprobe.oss-cn-beijing.aliyuncs.com',
+const R2_CONFIG = {
+  baseUrl: 'https://data.semove.ccwu.cc',
 };
 
-let updateSource: 'github' | 'oss' | null = null;
-let ossUpdateInfo: { version: string; sha512: string; size: number } | null = null;
-let ossInstallerPath: string | null = null;
+let updateSource: 'github' | 'r2' | null = null;
+let r2UpdateInfo: { version: string; sha512: string; size: number } | null = null;
+let r2InstallerPath: string | null = null;
 
 function sendStatusToWindow(status: UpdateStatus) {
   currentStatus = status;
@@ -75,40 +79,40 @@ function parseLatestYml(yml: string): { version: string; sha512: string; size: n
   return { version, sha512, size };
 }
 
-async function checkOssForUpdates(): Promise<{ version: string; sha512: string; size: number } | null> {
+async function checkR2ForUpdates(): Promise<{ version: string; sha512: string; size: number } | null> {
   try {
-    log.info('[更新-OSS] 正在检查阿里云 OSS 更新源...');
-    const response = await net.fetch(`${OSS_CONFIG.baseUrl}/latest.yml`, { method: 'GET' });
+    log.info('[更新-R2] 正在检查 Cloudflare R2 更新源...');
+    const response = await net.fetch(`${R2_CONFIG.baseUrl}/latest.yml`, { method: 'GET' });
     if (!response.ok) {
-      log.warn(`[更新-OSS] 获取 latest.yml 失败: HTTP ${response.status}`);
+      log.warn(`[更新-R2] 获取 latest.yml 失败: HTTP ${response.status}`);
       return null;
     }
     const ymlText = await response.text();
     const info = parseLatestYml(ymlText);
     if (!info) {
-      log.warn('[更新-OSS] 解析 latest.yml 失败');
+      log.warn('[更新-R2] 解析 latest.yml 失败');
       return null;
     }
     const currentVersion = app.getVersion();
-    log.info(`[更新-OSS] 当前版本: ${currentVersion}, OSS 版本: ${info.version}`);
+    log.info(`[更新-R2] 当前版本: ${currentVersion}, R2 版本: ${info.version}`);
     if (compareVersions(info.version, currentVersion) <= 0) {
-      log.info('[更新-OSS] OSS 上无新版本');
+      log.info('[更新-R2] R2 上无新版本');
       return null;
     }
     return info;
   } catch (error: any) {
-    log.warn('[更新-OSS] 检查失败:', error.message);
+    log.warn('[更新-R2] 检查失败:', error.message);
     return null;
   }
 }
 
-async function downloadFromOss(version: string, expectedSha512: string): Promise<string> {
+async function downloadFromR2(version: string, expectedSha512: string): Promise<string> {
   const installerName = `JSecProbe Setup ${version}.exe`;
-  const downloadUrl = `${OSS_CONFIG.baseUrl}/${encodeURIComponent(installerName)}`;
+  const downloadUrl = `${R2_CONFIG.baseUrl}/${encodeURIComponent(installerName)}`;
   const tempDir = app.getPath('temp');
   const destPath = path.join(tempDir, installerName);
 
-  log.info(`[更新-OSS] 开始下载: ${downloadUrl}`);
+  log.info(`[更新-R2] 开始下载: ${downloadUrl}`);
   const response = await net.fetch(downloadUrl, { method: 'GET' });
   if (!response.ok) {
     throw new Error(`下载失败: HTTP ${response.status}`);
@@ -119,30 +123,45 @@ async function downloadFromOss(version: string, expectedSha512: string): Promise
   const writeStream = fs.createWriteStream(destPath);
 
   let received = 0;
+  let lastTime = Date.now();
+  let lastReceived = 0;
+  let speed = 0;
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     writeStream.write(Buffer.from(value));
     received += value.length;
+
+    const now = Date.now();
+    if (now - lastTime >= 500) {
+      speed = (received - lastReceived) / ((now - lastTime) / 1000);
+      lastTime = now;
+      lastReceived = received;
+    }
+
     if (contentLength > 0) {
       const percent = Math.min(Math.round((received / contentLength) * 100), 100);
       sendStatusToWindow({
         status: 'downloading',
         downloadProgress: percent,
+        downloadSpeed: speed,
+        downloadTransferred: received,
+        downloadTotal: contentLength,
         version,
       });
     }
   }
   writeStream.end();
 
-  log.info('[更新-OSS] 校验文件完整性...');
+  log.info('[更新-R2] 校验文件完整性...');
   const fileBuffer = fs.readFileSync(destPath);
   const actualSha512 = crypto.createHash('sha512').update(fileBuffer).digest('base64');
   if (actualSha512 !== expectedSha512) {
     fs.unlinkSync(destPath);
     throw new Error('SHA512 校验失败，下载文件可能已损坏');
   }
-  log.info('[更新-OSS] SHA512 校验通过');
+  log.info('[更新-R2] SHA512 校验通过');
 
   return destPath;
 }
@@ -161,7 +180,7 @@ export function initAutoUpdater(window: BrowserWindow) {
   autoUpdater.on('update-available', (info) => {
     log.info('[更新] 发现新版本:', info.version);
     updateSource = 'github';
-    ossUpdateInfo = null;
+    r2UpdateInfo = null;
     sendStatusToWindow({
       status: 'available',
       version: info.version,
@@ -186,6 +205,9 @@ export function initAutoUpdater(window: BrowserWindow) {
       ...currentStatus,
       status: 'downloading',
       downloadProgress: progressObj.percent,
+      downloadSpeed: progressObj.bytesPerSecond,
+      downloadTransferred: progressObj.transferred,
+      downloadTotal: progressObj.total,
     });
   });
 
@@ -211,13 +233,13 @@ export function initAutoUpdater(window: BrowserWindow) {
     if (!process.env.VITE_DEV_SERVER_URL) {
       autoUpdater.checkForUpdates().catch((err: any) => {
         log.warn('[更新] 自动检查更新失败:', err.message);
-        checkOssForUpdates().then((ossInfo) => {
-          if (ossInfo) {
-            updateSource = 'oss';
-            ossUpdateInfo = ossInfo;
+        checkR2ForUpdates().then((r2Info) => {
+          if (r2Info) {
+            updateSource = 'r2';
+            r2UpdateInfo = r2Info;
             sendStatusToWindow({
               status: 'available',
-              version: ossInfo.version,
+              version: r2Info.version,
             });
           }
         }).catch(() => {});
@@ -227,91 +249,81 @@ export function initAutoUpdater(window: BrowserWindow) {
 }
 
 export function registerUpdateHandlers() {
-  ipcMain.handle('update:check', async () => {
+  ipcMain.handle('update:check', wrap(async () => {
+    if (process.env.VITE_DEV_SERVER_URL) {
+      log.info('[更新] 开发模式下跳过更新检查');
+      sendStatusToWindow({ status: 'notavailable', version: app.getVersion() });
+      return;
+    }
+
+    log.info('[更新] 检查更新');
+    updateSource = null;
+    r2UpdateInfo = null;
+    r2InstallerPath = null;
+
     try {
-      if (process.env.VITE_DEV_SERVER_URL) {
-        log.info('[更新] 开发模式下跳过更新检查');
-        sendStatusToWindow({ status: 'notavailable', version: app.getVersion() });
-        return { success: true, message: '开发模式下不检查更新' };
-      }
-
-      log.info('[更新] 检查更新');
-      updateSource = null;
-      ossUpdateInfo = null;
-      ossInstallerPath = null;
-
       await autoUpdater.checkForUpdates();
-      return { success: true };
     } catch (error: any) {
       log.error('[更新] GitHub 检查更新失败:', error.message);
 
       if (isNetworkError(error)) {
-        log.info('[更新] 网络错误，尝试阿里云 OSS 备用更新源...');
-        const ossInfo = await checkOssForUpdates();
-        if (ossInfo) {
-          updateSource = 'oss';
-          ossUpdateInfo = ossInfo;
+        log.info('[更新] 网络错误，尝试 Cloudflare R2 备用更新源...');
+        const r2Info = await checkR2ForUpdates();
+        if (r2Info) {
+          updateSource = 'r2';
+          r2UpdateInfo = r2Info;
           sendStatusToWindow({
             status: 'available',
-            version: ossInfo.version,
+            version: r2Info.version,
           });
-          return { success: true, message: `从阿里云 OSS 发现新版本 v${ossInfo.version}` };
+          return;
         }
-        log.info('[更新-OSS] 备用源也无更新可用');
+        log.info('[更新-R2] 备用源也无更新可用');
       }
 
       sendStatusToWindow({ status: 'error', error: error.message || '检查更新失败' });
-      return { success: false, error: error.message };
+      throw error;
     }
-  });
+  }, 'update'));
 
-  ipcMain.handle('update:download', async () => {
-    try {
-      if (updateSource === 'oss') {
-        log.info('[更新-OSS] 开始从阿里云 OSS 下载更新');
-        if (!ossUpdateInfo) {
-          const info = await checkOssForUpdates();
-          if (!info) throw new Error('无法获取更新信息，请重新检查更新');
-          ossUpdateInfo = info;
-        }
-        const destPath = await downloadFromOss(ossUpdateInfo.version, ossUpdateInfo.sha512);
-        ossInstallerPath = destPath;
-        sendStatusToWindow({ status: 'downloaded', version: ossUpdateInfo.version });
-        return { success: true };
+  ipcMain.handle('update:download', wrap(async () => {
+    if (updateSource === 'r2') {
+      log.info('[更新-R2] 开始从 Cloudflare R2 下载更新');
+      if (!r2UpdateInfo) {
+        const info = await checkR2ForUpdates();
+        if (!info) throw new Error('无法获取更新信息，请重新检查更新');
+        r2UpdateInfo = info;
       }
-
-      log.info('[更新] 开始下载更新');
-      await autoUpdater.downloadUpdate();
-      return { success: true };
-    } catch (error: any) {
-      log.error('[更新] 下载更新失败:', error);
-      sendStatusToWindow({ status: 'error', error: error.message || '下载更新失败' });
-      return { success: false, error: error.message };
+      const destPath = await downloadFromR2(r2UpdateInfo.version, r2UpdateInfo.sha512);
+      r2InstallerPath = destPath;
+      sendStatusToWindow({ status: 'downloaded', version: r2UpdateInfo.version });
+      return;
     }
-  });
 
-  ipcMain.handle('update:install', async () => {
-    try {
-      if (updateSource === 'oss' && ossInstallerPath) {
-        log.info('[更新-OSS] 安装更新:', ossInstallerPath);
-        spawn(ossInstallerPath, ['/S'], {
-          detached: true,
-          stdio: 'ignore',
-        }).unref();
-        app.quit();
-        return { success: true };
-      }
+    log.info('[更新] 开始下载更新');
+    await autoUpdater.downloadUpdate();
+  }, 'update'));
 
-      log.info('[更新] 安装更新并重启');
-      autoUpdater.quitAndInstall(false, true);
-      return { success: true };
-    } catch (error: any) {
-      log.error('[更新] 安装更新失败:', error);
-      return { success: false, error: error.message };
+  ipcMain.handle('update:install', wrap(async () => {
+    if (updateSource === 'r2' && r2InstallerPath) {
+      log.info('[更新-R2] 安装更新:', r2InstallerPath);
+      spawn(r2InstallerPath, ['/S'], {
+        detached: true,
+        stdio: 'ignore',
+      }).unref();
+      app.quit();
+      return;
     }
-  });
 
-  ipcMain.handle('update:getStatus', () => currentStatus);
+    log.info('[更新] 安装更新并重启');
+    autoUpdater.quitAndInstall(false, true);
+  }, 'update'));
 
-  ipcMain.handle('update:getCurrentVersion', () => app.getVersion());
+  ipcMain.handle('update:getStatus', wrap(() => {
+    return currentStatus;
+  }, 'update'));
+
+  ipcMain.handle('update:getCurrentVersion', wrap(() => {
+    return app.getVersion();
+  }, 'update'));
 }
