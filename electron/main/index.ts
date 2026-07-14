@@ -14,6 +14,7 @@ log.transports.console.level = 'debug';
 
 let mainWindow: BrowserWindow | null = null;
 let isQuitting = false;
+let backupIntervalId: NodeJS.Timeout | null = null;
 
 function showErrorAndQuit(title: string, message: string, detail?: string) {
   dialog.showErrorBox(title, `${message}\n\n${detail || ''}`);
@@ -245,17 +246,23 @@ async function checkAndPerformAutoBackup(): Promise<void> {
 }
 
 function setupAutoBackup(): void {
-  // 启动后立即检查一次
   setTimeout(() => {
     checkAndPerformAutoBackup();
   }, 10000);
 
-  // 每6小时检查一次
-  setInterval(() => {
+  backupIntervalId = setInterval(() => {
     checkAndPerformAutoBackup();
   }, 6 * 60 * 60 * 1000);
 
   log.info('自动备份定时器已启动，每6小时检查一次');
+}
+
+function cleanupAutoBackup(): void {
+  if (backupIntervalId) {
+    clearInterval(backupIntervalId);
+    backupIntervalId = null;
+    log.info('自动备份定时器已清理');
+  }
 }
 
 app.whenReady().then(initApp).catch((err) => {
@@ -279,4 +286,5 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  cleanupAutoBackup();
 });

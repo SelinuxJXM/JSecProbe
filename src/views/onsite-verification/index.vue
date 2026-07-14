@@ -110,6 +110,10 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           <span>同步问题</span>
         </el-button>
+        <el-button class="toolbar-btn" @click="handleImportExcel">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <span>导入测评结果</span>
+        </el-button>
         <el-button type="primary" class="toolbar-btn primary" @click="triggerManualSave" :loading="saveStatus === 'saving'">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
           <span>保存</span>
@@ -548,7 +552,68 @@
       </template>
     </el-dialog>
 
-<!-- 文件预览弹窗 -->
+<!-- 导入选择弹窗 -->
+    <el-dialog
+      v-model="importDialogVisible"
+      title="选择导入内容"
+      width="520px"
+      class="export-dialog"
+      :close-on-click-modal="false"
+    >
+      <div class="export-tree-container">
+        <div class="export-tree-header">
+          <label class="checkbox-label">
+            <input type="checkbox" 
+              :checked="isImportAllSelected"
+              :indeterminate="isImportIndeterminate"
+              @change="toggleImportSelectAll" />
+            <span>全选</span>
+          </label>
+          <span class="selected-count">{{ selectedImportItems.length }} / {{ importTotalCount }}</span>
+        </div>
+        <div class="export-tree">
+          <div v-for="domain in importTreeData" :key="domain.id" class="tree-group">
+            <!-- 全局层面（无子节点） -->
+            <div v-if="!domain.children || domain.children.length === 0" class="tree-leaf">
+              <label class="tree-item-label">
+                <input type="checkbox" :value="`domain:${domain.id}`" v-model="selectedImportItems" />
+                <span class="item-text">{{ domain.label }}</span>
+              </label>
+            </div>
+            <!-- 有子节点的层面（可展开） -->
+            <div v-else class="tree-node">
+              <div class="tree-node-header" @click="toggleImportDomain(domain.id)">
+                <svg class="tree-chevron" :class="{ expanded: expandedImportDomains.includes(domain.id) }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+                <label class="tree-item-label" @click.stop>
+                  <input type="checkbox" 
+                    :checked="isImportDomainAllSelected(domain)"
+                    :indeterminate="isImportDomainIndeterminate(domain)"
+                    @change="toggleImportDomainSelectAll(domain)" />
+                </label>
+                <span class="item-text parent-text">{{ domain.label }}</span>
+                <span class="item-count">{{ getImportDomainSelectedCount(domain) }}/{{ domain.children.length }}</span>
+              </div>
+              <div v-show="expandedImportDomains.includes(domain.id)" class="tree-children">
+                <div v-for="child in domain.children" :key="child.id" class="tree-leaf child-leaf">
+                  <label class="tree-item-label">
+                    <input type="checkbox" :value="`asset:${child.id}`" v-model="selectedImportItems" />
+                    <span class="item-text">{{ child.label }}</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="importDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="importing" @click="confirmImport" :disabled="selectedImportItems.length === 0">
+          选择文件导入
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 文件预览弹窗 -->
     <el-dialog v-model="previewDialogVisible" width="800px" :title="previewFile?.name || '文件预览'" class="file-preview-dialog" :show-close="true">
       <div class="file-preview-container">
         <div v-if="previewLoading" class="preview-loading">正在加载文件...</div>
@@ -2409,6 +2474,12 @@ const selectedExportItems = ref<string[]>([]);
 const expandedExportDomains = ref<string[]>([]);
 const exporting = ref(false);
 
+// 导入选择弹窗
+const importDialogVisible = ref(false);
+const selectedImportItems = ref<string[]>([]);
+const expandedImportDomains = ref<string[]>([]);
+const importing = ref(false);
+
 const exportTreeData = computed(() => {
   return treeData.value.map(domain => ({
     id: domain.id,
@@ -2530,6 +2601,125 @@ function loadExportSelection() {
   expandedExportDomains.value = domainsWithAssets.map(d => d.id);
 }
 
+// 导入选择相关
+const importTreeData = computed(() => {
+  return treeData.value.map(domain => ({
+    id: domain.id,
+    label: domain.label,
+    children: domain.children || [],
+  }));
+});
+
+const importTotalCount = computed(() => {
+  let count = 0;
+  for (const domain of importTreeData.value) {
+    if (!domain.children || domain.children.length === 0) {
+      count++;
+    } else {
+      count += domain.children.length;
+    }
+  }
+  return count;
+});
+
+const isImportAllSelected = computed(() => {
+  return selectedImportItems.value.length === importTotalCount.value && importTotalCount.value > 0;
+});
+
+const isImportIndeterminate = computed(() => {
+  return selectedImportItems.value.length > 0 && selectedImportItems.value.length < importTotalCount.value;
+});
+
+function toggleImportSelectAll() {
+  if (isImportAllSelected.value) {
+    selectedImportItems.value = [];
+  } else {
+    const allItems: string[] = [];
+    for (const domain of importTreeData.value) {
+      if (!domain.children || domain.children.length === 0) {
+        allItems.push(`domain:${domain.id}`);
+      } else {
+        for (const child of domain.children) {
+          allItems.push(`asset:${child.id}`);
+        }
+      }
+    }
+    selectedImportItems.value = allItems;
+  }
+}
+
+function isImportDomainAllSelected(domain: any) {
+  if (!domain.children || domain.children.length === 0) {
+    return selectedImportItems.value.includes(`domain:${domain.id}`);
+  }
+  return domain.children.every((child: any) => selectedImportItems.value.includes(`asset:${child.id}`));
+}
+
+function isImportDomainIndeterminate(domain: any) {
+  if (!domain.children || domain.children.length === 0) return false;
+  const selected = domain.children.filter((child: any) => selectedImportItems.value.includes(`asset:${child.id}`)).length;
+  return selected > 0 && selected < domain.children.length;
+}
+
+function getImportDomainSelectedCount(domain: any) {
+  if (!domain.children || domain.children.length === 0) return 0;
+  return domain.children.filter((child: any) => selectedImportItems.value.includes(`asset:${child.id}`)).length;
+}
+
+function toggleImportDomainSelectAll(domain: any) {
+  if (!domain.children || domain.children.length === 0) {
+    const key = `domain:${domain.id}`;
+    const idx = selectedImportItems.value.indexOf(key);
+    if (idx > -1) {
+      selectedImportItems.value.splice(idx, 1);
+    } else {
+      selectedImportItems.value.push(key);
+    }
+  } else {
+    const allSelected = isImportDomainAllSelected(domain);
+    if (allSelected) {
+      for (const child of domain.children) {
+        const key = `asset:${child.id}`;
+        const idx = selectedImportItems.value.indexOf(key);
+        if (idx > -1) selectedImportItems.value.splice(idx, 1);
+      }
+    } else {
+      for (const child of domain.children) {
+        const key = `asset:${child.id}`;
+        if (!selectedImportItems.value.includes(key)) {
+          selectedImportItems.value.push(key);
+        }
+      }
+    }
+  }
+}
+
+function toggleImportDomain(domainId: string) {
+  const idx = expandedImportDomains.value.indexOf(domainId);
+  if (idx > -1) {
+    expandedImportDomains.value.splice(idx, 1);
+  } else {
+    expandedImportDomains.value.push(domainId);
+  }
+}
+
+function loadImportSelection() {
+  const allItems: string[] = [];
+  for (const domain of importTreeData.value) {
+    if (!domain.children || domain.children.length === 0) {
+      allItems.push(`domain:${domain.id}`);
+    } else {
+      for (const child of domain.children) {
+        allItems.push(`asset:${child.id}`);
+      }
+    }
+  }
+  selectedImportItems.value = allItems;
+  
+  const domainsWithAssets = importTreeData.value.filter(d => d.children && d.children.length > 0);
+  expandedImportDomains.value = domainsWithAssets.map(d => d.id);
+}
+
 async function confirmExport() {
   if (selectedExportItems.value.length === 0) {
     ElMessage.warning('请至少选择一项导出内容');
@@ -2564,6 +2754,57 @@ async function confirmExport() {
     ElMessage.error(error?.message || error?.toString() || '导出失败');
   } finally {
     exporting.value = false;
+  }
+}
+
+// 导入测评结果
+function handleImportExcel() {
+  importDialogVisible.value = true;
+  loadImportSelection();
+}
+
+async function confirmImport() {
+  if (selectedImportItems.value.length === 0) {
+    ElMessage.warning('请至少选择一项导入内容');
+    return;
+  }
+
+  const projectId = route.params.id as string;
+  if (!projectId || !window.api) {
+    ElMessage.error('项目ID缺失或API未初始化');
+    return;
+  }
+
+  try {
+    const fileRes = await window.api.system.selectFile([
+      { name: 'Excel文件', extensions: ['xlsx', 'xls'] },
+    ]);
+    if (!fileRes.success || !fileRes.data) return;
+
+    const domainIds: string[] = [];
+    const assetIds: string[] = [];
+    for (const item of selectedImportItems.value) {
+      if (item.startsWith('domain:')) {
+        domainIds.push(item.substring(7));
+      } else if (item.startsWith('asset:')) {
+        assetIds.push(item.substring(6));
+      }
+    }
+
+    importing.value = true;
+    const res = await window.api.assessment.importExcel(projectId, fileRes.data, domainIds, assetIds);
+    importing.value = false;
+
+    if (res.success && res.data) {
+      ElMessage.success(`成功导入 ${res.data.count} 条记录`);
+      importDialogVisible.value = false;
+      await loadProject();
+      await loadAssetTree();
+      await loadProgress();
+    }
+  } catch (error: any) {
+    importing.value = false;
+    ElMessage.error(error.message || '导入失败');
   }
 }
 

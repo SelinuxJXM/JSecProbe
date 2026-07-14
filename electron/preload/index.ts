@@ -83,8 +83,8 @@ const api: ApiBridge = {
       ipcRenderer.invoke('assessment:exportExcel', projectId, domain),
     exportExcelByAssets: (projectId, assetIds, domainIds) =>
       ipcRenderer.invoke('assessment:exportExcelByAssets', projectId, assetIds, domainIds),
-    importExcel: (projectId, filePath) =>
-      ipcRenderer.invoke('assessment:importExcel', projectId, filePath),
+    importExcel: (projectId, filePath, domainIds?, assetIds?) =>
+      ipcRenderer.invoke('assessment:importExcel', projectId, filePath, domainIds, assetIds),
   },
   screenshot: {
     upload: ({ projectId, itemId, filePath }) =>

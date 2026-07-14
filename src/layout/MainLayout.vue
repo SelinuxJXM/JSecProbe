@@ -64,7 +64,7 @@
       
       <div class="sidebar-footer" v-if="!appStore.sidebarCollapsed">
         <div class="sidebar-footer-card">
-          <div class="sf-version">v1.2.9</div>
+          <div class="sf-version">v2.0.0</div>
           <a href="https://github.com/SelinuxJXM/JSecProbe" target="_blank" class="sf-github" title="访问 GitHub 仓库">
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
@@ -101,7 +101,10 @@
         </div>
         
         <div class="header-right">
-          <el-icon class="header-icon"><Bell /></el-icon>
+          <div class="notification-bell" @click="showUpdateDialog = true">
+            <el-icon class="header-icon"><Bell /></el-icon>
+            <span v-if="hasUpdate" class="bell-badge"></span>
+          </div>
           <el-icon class="header-icon"><QuestionFilled /></el-icon>
           <el-dropdown trigger="click">
             <div class="user-info">
@@ -131,11 +134,137 @@
         </router-view>
       </main>
     </div>
+
+    <!-- 更新通知对话框 -->
+    <el-dialog
+      v-model="showUpdateDialog"
+      title="系统更新"
+      width="480px"
+      :close-on-click-modal="false"
+      :show-close="true"
+      class="update-dialog"
+    >
+      <div v-if="updateStatus.status === 'idle' || updateStatus.status === 'notavailable'" class="update-content">
+        <div class="update-icon no-update">
+          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#67C23A" stroke-width="1.5">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+        </div>
+        <h3>当前已是最新版本</h3>
+        <p>当前版本：v{{ currentVersion }}</p>
+        <el-button type="primary" @click="checkForUpdates">检查更新</el-button>
+      </div>
+
+      <div v-else-if="updateStatus.status === 'checking'" class="update-content">
+        <div class="update-icon checking">
+          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#409EFF" stroke-width="1.5" class="spin">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+          </svg>
+        </div>
+        <h3>正在检查更新...</h3>
+        <p>请稍候，正在连接服务器检查新版本</p>
+      </div>
+
+      <div v-else-if="updateStatus.status === 'available'" class="update-content">
+        <div class="update-icon available">
+          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#E6A23C" stroke-width="1.5">
+            <path d="M12 2v4"/>
+            <path d="M12 18v4"/>
+            <path d="M4.93 4.93l2.83 2.83"/>
+            <path d="M16.24 16.24l2.83 2.83"/>
+            <path d="M2 12h4"/>
+            <path d="M18 12h4"/>
+            <path d="M6.34 17.66l2.83-2.83"/>
+            <path d="M13.41 6.59l2.83-2.83"/>
+          </svg>
+        </div>
+        <h3>发现新版本！</h3>
+        <p>当前版本：v{{ currentVersion }}</p>
+        <p>最新版本：v{{ updateStatus.version }}</p>
+        <div v-if="updateStatus.releaseNotes" class="release-notes">
+          <h4>更新内容：</h4>
+          <pre>{{ updateStatus.releaseNotes }}</pre>
+        </div>
+        <el-button type="primary" @click="downloadUpdate">下载更新</el-button>
+      </div>
+
+      <div v-else-if="updateStatus.status === 'downloading'" class="update-content">
+        <div class="download-header">
+          <div class="download-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#409EFF" stroke-width="1.5">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+          </div>
+          <div class="download-info">
+            <h3>正在下载更新</h3>
+            <p class="download-version">版本 v{{ updateStatus.version }}</p>
+          </div>
+        </div>
+
+        <div class="download-progress-container">
+          <div class="progress-bar-wrapper">
+            <div class="progress-bar-track">
+              <div 
+                class="progress-bar-fill" 
+                :style="{ width: (updateStatus.downloadProgress || 0) + '%' }"
+              ></div>
+            </div>
+            <span class="progress-percent">{{ Math.round(updateStatus.downloadProgress || 0) }}%</span>
+          </div>
+
+          <div class="download-stats">
+            <div class="stat-item">
+              <span class="stat-label">下载速度</span>
+              <span class="stat-value">{{ formatSpeed(updateStatus.downloadSpeed) }}</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">已下载</span>
+              <span class="stat-value">{{ formatSize(updateStatus.downloadTransferred) }} / {{ formatSize(updateStatus.downloadTotal) }}</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">剩余时间</span>
+              <span class="stat-value">{{ formatRemainingTime(updateStatus.downloadSpeed, updateStatus.downloadTotal, updateStatus.downloadTransferred) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <p class="download-tip">下载过程中请不要关闭应用，下载完成后将自动安装</p>
+      </div>
+
+      <div v-else-if="updateStatus.status === 'downloaded'" class="update-content">
+        <div class="update-icon downloaded">
+          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#67C23A" stroke-width="1.5">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+        </div>
+        <h3>更新包已下载完成</h3>
+        <p>最新版本：v{{ updateStatus.version }}</p>
+        <p>点击下方按钮安装更新并重启应用</p>
+        <el-button type="primary" @click="installUpdate">立即安装并重启</el-button>
+      </div>
+
+      <div v-else-if="updateStatus.status === 'error'" class="update-content">
+        <div class="update-icon error">
+          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#F56C6C" stroke-width="1.5">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+        </div>
+        <h3>检查更新失败</h3>
+        <p>{{ updateStatus.error }}</p>
+        <el-button type="primary" @click="checkForUpdates">重试</el-button>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAppStore } from '@/stores/app';
 import { useUserStore } from '@/stores/user';
@@ -161,6 +290,107 @@ const route = useRoute();
 const router = useRouter();
 const appStore = useAppStore();
 const userStore = useUserStore();
+
+// 更新相关状态
+const showUpdateDialog = ref(false);
+const currentVersion = ref('');
+const updateStatus = ref<{
+  status: 'idle' | 'checking' | 'downloading' | 'available' | 'notavailable' | 'downloaded' | 'error';
+  version?: string;
+  releaseDate?: string;
+  releaseNotes?: string;
+  downloadProgress?: number;
+  downloadSpeed?: number;
+  downloadTransferred?: number;
+  downloadTotal?: number;
+  error?: string;
+}>({ status: 'idle' });
+
+const hasUpdate = computed(() => updateStatus.value.status === 'available');
+
+function formatSize(bytes?: number): string {
+  if (!bytes || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = bytes;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex++;
+  }
+  return `${size.toFixed(unitIndex === 0 ? 0 : 2)} ${units[unitIndex]}`;
+}
+
+function formatSpeed(bytesPerSecond?: number): string {
+  if (!bytesPerSecond || bytesPerSecond <= 0) return '计算中...';
+  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+  let speed = bytesPerSecond;
+  let unitIndex = 0;
+  while (speed >= 1024 && unitIndex < units.length - 1) {
+    speed /= 1024;
+    unitIndex++;
+  }
+  return `${speed.toFixed(unitIndex === 0 ? 0 : 2)} ${units[unitIndex]}`;
+}
+
+function formatRemainingTime(speed?: number, total?: number, transferred?: number): string {
+  if (!speed || !total || !transferred || speed <= 0) return '计算中...';
+  const remainingBytes = total - transferred;
+  if (remainingBytes <= 0) return '即将完成';
+  const remainingSeconds = Math.ceil(remainingBytes / speed);
+  if (remainingSeconds < 60) return `${remainingSeconds} 秒`;
+  if (remainingSeconds < 3600) return `${Math.ceil(remainingSeconds / 60)} 分钟`;
+  return `${(remainingSeconds / 3600).toFixed(1)} 小时`;
+}
+
+async function checkForUpdates() {
+  if (!window.api) return;
+  const res = await window.api.update.check();
+  if (!res.success) {
+    ElMessage.error(res.error?.message || '检查更新失败');
+  }
+}
+
+async function downloadUpdate() {
+  if (!window.api) return;
+  const res = await window.api.update.download();
+  if (!res.success) {
+    ElMessage.error(res.error?.message || '下载更新失败');
+  }
+}
+
+async function installUpdate() {
+  if (!window.api) return;
+  const res = await window.api.update.install();
+  if (!res.success) {
+    ElMessage.error(res.error?.message || '安装更新失败');
+  }
+}
+
+function handleUpdateStatus(status: any) {
+  updateStatus.value = status;
+}
+
+let unsubscribe: () => void;
+
+onMounted(async () => {
+  if (window.api) {
+    const versionRes = await window.api.update.getCurrentVersion();
+    if (versionRes.success && versionRes.data) {
+      currentVersion.value = versionRes.data;
+    }
+    const statusRes = await window.api.update.getStatus();
+    if (statusRes.success && statusRes.data) {
+      updateStatus.value = statusRes.data;
+    }
+    unsubscribe = window.api.update.onStatusChange(handleUpdateStatus);
+  }
+});
+
+onUnmounted(() => {
+  if (unsubscribe) {
+    unsubscribe();
+  }
+});
 
 const activeMenu = computed(() => {
   const path = route.path;
@@ -556,5 +786,214 @@ function handleLogout() {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+.notification-bell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-xs);
+  border-radius: var(--radius-sm);
+  
+  &:hover {
+    background: var(--color-bg-hover);
+    
+    .header-icon {
+      color: var(--color-text-primary);
+    }
+  }
+  
+  .bell-badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #F56C6C;
+  }
+}
+
+.update-dialog {
+  :deep(.el-dialog__body) {
+    padding: 0;
+  }
+  
+  .update-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 30px 20px;
+    
+    .update-icon {
+      margin-bottom: 20px;
+      
+      .spin {
+        animation: spin 1s linear infinite;
+      }
+    }
+    
+    h3 {
+      margin: 0 0 10px 0;
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--color-text-primary);
+    }
+    
+    p {
+      margin: 5px 0;
+      font-size: 14px;
+      color: var(--color-text-secondary);
+    }
+    
+    .release-notes {
+      width: 100%;
+      margin-top: 15px;
+      padding: 15px;
+      background: var(--color-bg-hover);
+      border-radius: var(--radius-base);
+      
+      h4 {
+        margin: 0 0 10px 0;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--color-text-primary);
+      }
+      
+      pre {
+        margin: 0;
+        padding: 0;
+        font-size: 13px;
+        color: var(--color-text-secondary);
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-height: 150px;
+        overflow-y: auto;
+      }
+    }
+    
+    .el-button {
+      margin-top: 20px;
+    }
+    
+    .el-progress {
+      width: 100%;
+      max-width: 300px;
+      margin-top: 10px;
+    }
+    
+    // 下载进度样式
+    .download-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      width: 100%;
+      margin-bottom: 24px;
+      
+      .download-icon {
+        width: 56px;
+        height: 56px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--color-primary-light-9);
+        border-radius: var(--radius-base);
+      }
+      
+      .download-info {
+        flex: 1;
+        
+        h3 {
+          margin: 0 0 4px 0;
+          font-size: 16px;
+          font-weight: 600;
+          color: var(--color-text-primary);
+        }
+        
+        .download-version {
+          margin: 0;
+          font-size: 13px;
+          color: var(--color-text-secondary);
+        }
+      }
+    }
+    
+    .download-progress-container {
+      width: 100%;
+      
+      .progress-bar-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 16px;
+        
+        .progress-bar-track {
+          flex: 1;
+          height: 8px;
+          background: var(--color-bg-hover);
+          border-radius: 4px;
+          overflow: hidden;
+          
+          .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #409EFF 0%, #67C23A 100%);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+          }
+        }
+        
+        .progress-percent {
+          min-width: 50px;
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--color-text-primary);
+          text-align: right;
+        }
+      }
+      
+      .download-stats {
+        display: flex;
+        justify-content: space-between;
+        padding: 12px 16px;
+        background: var(--color-bg-hover);
+        border-radius: var(--radius-base);
+        
+        .stat-item {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 4px;
+          
+          .stat-label {
+            font-size: 12px;
+            color: var(--color-text-secondary);
+          }
+          
+          .stat-value {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--color-text-primary);
+          }
+        }
+      }
+    }
+    
+    .download-tip {
+      margin-top: 20px;
+      font-size: 12px;
+      color: var(--color-text-secondary);
+      text-align: center;
+    }
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>
