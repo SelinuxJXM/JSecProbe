@@ -184,7 +184,7 @@
         <p>最新版本：v{{ updateStatus.version }}</p>
         <div v-if="updateStatus.releaseNotes" class="release-notes">
           <h4>更新内容：</h4>
-          <pre>{{ updateStatus.releaseNotes }}</pre>
+          <div class="release-notes-content" v-html="updateStatus.releaseNotes"></div>
         </div>
         <el-button type="primary" @click="downloadUpdate">下载更新</el-button>
       </div>
@@ -848,30 +848,43 @@ function handleLogout() {
     }
     
     .release-notes {
-      width: 100%;
-      margin-top: 15px;
-      padding: 15px;
-      background: var(--color-bg-hover);
-      border-radius: var(--radius-base);
-      
-      h4 {
-        margin: 0 0 10px 0;
-        font-size: 14px;
-        font-weight: 600;
-        color: var(--color-text-primary);
+        width: 100%;
+        margin-top: 15px;
+        padding: 15px;
+        background: var(--color-bg-hover);
+        border-radius: var(--radius-base);
+        
+        h4 {
+          margin: 0 0 10px 0;
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--color-text-primary);
+        }
+        
+        .release-notes-content {
+          font-size: 13px;
+          color: var(--color-text-secondary);
+          max-height: 180px;
+          overflow-y: auto;
+          line-height: 1.8;
+          
+          :deep(h2) {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--color-text-primary);
+            margin: 10px 0 8px 0;
+          }
+          
+          :deep(ul) {
+            margin: 0;
+            padding-left: 20px;
+          }
+          
+          :deep(li) {
+            margin: 4px 0;
+          }
+        }
       }
-      
-      pre {
-        margin: 0;
-        padding: 0;
-        font-size: 13px;
-        color: var(--color-text-secondary);
-        white-space: pre-wrap;
-        word-break: break-all;
-        max-height: 150px;
-        overflow-y: auto;
-      }
-    }
     
     .el-button {
       margin-top: 20px;
