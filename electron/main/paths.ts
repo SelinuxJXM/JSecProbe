@@ -9,8 +9,7 @@ const CONFIG_FILE_NAME = 'app-config.json';
 
 export function getDefaultBasePath(): string {
   if (app.isPackaged) {
-    const execDir = process.execPath.substring(0, process.execPath.lastIndexOf('\\'));
-    return join(execDir, 'JSecProbeData');
+    return 'C:\\JSecProbeData';
   }
   return join(process.cwd(), 'JSecProbeData');
 }
@@ -47,6 +46,23 @@ export async function getAppDataPath(): Promise<string> {
   const config = readConfig();
   let basePath = config.dataPath || getDefaultBasePath();
   basePath = resolve(basePath);
+  
+  // 数据迁移：如果新路径不存在，检查旧路径（程序目录/JSecProbeData）是否有数据
+  if (!existsSync(basePath) && app.isPackaged) {
+    const execDir = process.execPath.substring(0, process.execPath.lastIndexOf('\\'));
+    const oldPath = join(execDir, 'JSecProbeData');
+    if (existsSync(oldPath)) {
+      log.info(`检测到旧版数据目录，正在迁移: ${oldPath} -> ${basePath}`);
+      try {
+        const { cpSync } = await import('fs');
+        cpSync(oldPath, basePath, { recursive: true });
+        log.info('数据迁移完成');
+      } catch (e) {
+        log.error('数据迁移失败:', e);
+        basePath = oldPath;
+      }
+    }
+  }
   
   appDataPath = basePath;
   
