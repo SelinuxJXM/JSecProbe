@@ -2252,7 +2252,14 @@ async function executeAiAnalyze(row: any) {
     
     let res;
     try {
-      res = await window.api.ai.analyzeAssessment(params);
+      const timeoutMs = 120000;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('AI分析超时，请检查网络连接或稍后重试')), timeoutMs);
+      });
+      res = await Promise.race([
+        window.api.ai.analyzeAssessment(params),
+        timeoutPromise,
+      ]);
     } catch (ipcError: any) {
       console.error('[aiAnalyze] IPC调用失败:', ipcError.message, ipcError.stack);
       throw ipcError;

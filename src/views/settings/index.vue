@@ -193,7 +193,7 @@
             <div class="settings-section-title" style="margin-bottom: 0">用户列表</div>
           </div>
           <div class="toolbar-right">
-            <el-button type="primary" :icon="Plus" @click="showUserDialog = true">
+            <el-button type="primary" :icon="Plus" @click="handleNewUser">
               新增用户
             </el-button>
           </div>
@@ -805,6 +805,17 @@ async function loadUsers() {
   } finally {
     userLoading.value = false;
   }
+}
+
+function handleNewUser() {
+  editingUser.value = null;
+  userForm.username = '';
+  userForm.password = '';
+  userForm.realName = '';
+  userForm.email = '';
+  userForm.phone = '';
+  userForm.role = 'assessor';
+  showUserDialog.value = true;
 }
 
 function handleEditUser(user: any) {
