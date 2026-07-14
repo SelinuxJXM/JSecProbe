@@ -1,5 +1,6 @@
 import { ipcMain } from 'electron';
 import log from 'electron-log';
+import bcrypt from 'bcryptjs';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
@@ -46,8 +47,7 @@ export function registerUserHandlers(): void {
       const db = getDb();
       const id = randomUUID();
       const now = new Date().toISOString();
-      const crypto = await import('crypto');
-      const passwordHash = crypto.createHash('sha256').update(data.password).digest('hex');
+      const passwordHash = bcrypt.hashSync(data.password, 12);
       await db.insert(schema.users).values({
         id,
         username: data.username,
@@ -75,8 +75,7 @@ export function registerUserHandlers(): void {
       if (data.role !== undefined) updateData.role = data.role;
       if (data.isActive !== undefined) updateData.isActive = data.isActive ? 1 : 0;
       if (data.password) {
-        const crypto = await import('crypto');
-        updateData.passwordHash = crypto.createHash('sha256').update(data.password).digest('hex');
+        updateData.passwordHash = bcrypt.hashSync(data.password, 12);
       }
       await db.update(schema.users).set(updateData).where(eq(schema.users.id, id));
     })
