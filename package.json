@@ -1,6 +1,6 @@
 {
   "name": "mlps-assessment-tool",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "JSecProbe - 等级保护现场测评系统",
   "main": "dist-electron/main/index.js",
   "author": "景景",
@@ -116,7 +116,8 @@
       "installerHeaderIcon": "build/icon.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "JSecProbe"
+      "shortcutName": "JSecProbe",
+      "include": "build/installer.nsh"
     }
   }
 }
