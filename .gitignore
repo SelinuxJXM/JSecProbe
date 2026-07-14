@@ -43,6 +43,7 @@ Thumbs.db
 upload.ps1
 upload-release.ps1
 scripts/upload-release.js
+passwd.md
 
 # Local data directory
 JSecProbeData

@@ -491,18 +491,43 @@ export function registerAIHandlers(): void {
         { role: 'user', content: userContent },
       ];
 
-      const response = await fetch(apiUrl, {
+      const requestBody = JSON.stringify({
+          model,
+          messages,
+          temperature,
+        });
+      const bodySizeKB = Buffer.byteLength(requestBody, 'utf8') / 1024;
+      log.info(`[单条AI分析] 请求体大小: ${bodySizeKB.toFixed(1)} KB, 截图数: ${screenshotCount}`);
+
+      const abortController = new AbortController();
+      const timeoutMs = 120000;
+      const timeout = setTimeout(() => {
+        log.warn(`[单条AI分析] 请求超时(${timeoutMs}ms)，终止请求`);
+        abortController.abort(new Error('请求超时'));
+      }, timeoutMs);
+
+      let response;
+      try {
+        const fetchStartTime = Date.now();
+        response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${config.apiKey}`,
         },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature,
-        }),
+        body: requestBody,
+        signal: abortController.signal,
       });
+        const elapsed = Date.now() - fetchStartTime;
+        log.info(`[单条AI分析] fetch收到响应，耗时: ${elapsed}ms, 状态: ${response.status}`);
+      } catch (fetchError: any) {
+        if (fetchError.name === 'AbortError' || fetchError.message.includes('请求超时')) {
+          throw new Error('AI分析超时，请检查网络连接或稍后重试');
+        }
+        throw fetchError;
+      } finally {
+        clearTimeout(timeout);
+      }
 
       if (!response.ok) {
         const errorBody = await response.text().catch(() => '');
@@ -693,7 +718,7 @@ ${itemsJson}
       const fetchStartTime = Date.now();
 
       const abortController = new AbortController();
-      const timeoutMs = 90000;
+      const timeoutMs = 120000;
       const timeout = setTimeout(() => {
         log.warn(`[批量AI分析] 请求超时(${timeoutMs}ms)，终止请求`);
         abortController.abort(new Error('请求超时'));
