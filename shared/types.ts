@@ -175,6 +175,7 @@ export interface AssessmentProgress {
   total: number;
   tested: number;
   compliant: number;
+  na: number;
   complianceRate: number;
   untested: number;
 }
@@ -331,6 +332,18 @@ export interface ApiBridge {
   project: {
     list: (params: ProjectListParams) => Promise<IpcResponse<ProjectListResult>>;
     get: (id: string) => Promise<IpcResponse<Project>>;
+    getStatistics: () => Promise<IpcResponse<{
+      projectCount: number;
+      inProgressCount: number;
+      completedCount: number;
+      draftCount: number;
+      archivedCount: number;
+      level2Count: number;
+      level3Count: number;
+      level4Count: number;
+      otherLevelCount: number;
+      assetCount: number;
+    }>>;
     create: (data: Partial<Project>) => Promise<IpcResponse<Project>>;
     update: (id: string, data: Partial<Project>) => Promise<IpcResponse<Project>>;
     remove: (id: string) => Promise<IpcResponse<void>>;
@@ -393,7 +406,13 @@ export interface ApiBridge {
     downloadTemplate: (projectId: string) => Promise<IpcResponse<string>>;
   };
   report: {
-    generate: (projectId: string) => Promise<IpcResponse<string>>;
+    generate: (options: {
+      format: 'pdf' | 'docx';
+      template: 'standard' | 'detailed' | 'simple';
+      includeSections: string[];
+      projectId: string;
+      savePath: string;
+    }) => Promise<IpcResponse<{ filePath: string }>>;
   };
   knowledge: {
     listCategories: () => Promise<IpcResponse<KnowledgeCategory[]>>;
@@ -418,6 +437,13 @@ export interface ApiBridge {
     referenceDocument: (data: { documentId: string; targetId: string; targetType: string }) => Promise<IpcResponse<void>>;
     importSingleDocument: (data: { categoryId: string; title: string; type: string; description: string; version: string; tags: string; filePath: string }) => Promise<IpcResponse<{ id: string }>>;
     listDirectoryFiles: (dirPath: string) => Promise<IpcResponse<{ name: string; path: string; size: number; isFile: boolean }[]>>;
+    readExcelFile: (filePath: string, sheetName?: string) => Promise<IpcResponse<{ sheetNames: string[]; columns: string[]; data: any[] }>>;
+    readWordFile: (filePath: string) => Promise<IpcResponse<{ html: string }>>;
+  };
+  file: {
+    exists: (filePath: string) => Promise<IpcResponse<boolean>>;
+    readAsArrayBuffer: (filePath: string) => Promise<IpcResponse<ArrayBuffer>>;
+    readAsText: (filePath: string) => Promise<IpcResponse<string>>;
   };
   system: {
     getInfo: () => Promise<IpcResponse<SystemInfo>>;
@@ -446,6 +472,7 @@ export interface ApiBridge {
     getConfig: () => Promise<IpcResponse<any>>;
     saveConfig: (config: { apiBase: string; apiKey: string; model: string; temperature: number; privacyMode?: number; sensitiveWords?: string }) => Promise<IpcResponse<void>>;
     testConnection: (params?: { apiBase?: string; apiKey?: string; model?: string }) => Promise<IpcResponse<any>>;
+    getProgress: () => Promise<IpcResponse<{ stage: string; message: string; percent: number; timestamp: number } | null>>;
     onAnalysisProgress: (callback: (data: { stage: string; message: string; percent: number }) => void) => () => void;
   };
   document: {

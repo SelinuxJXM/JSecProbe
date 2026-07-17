@@ -260,6 +260,18 @@
         <div class="footer-left">
           <span class="total-text">共 {{ pagination.total }} 条</span>
           <span v-if="modifiedCount > 0" class="modified-badge">{{ modifiedCount }} 项已修改</span>
+          <span v-if="saveStatus === 'saving'" class="save-status saving">
+            <span class="save-dot"></span>保存中...
+          </span>
+          <span v-else-if="saveStatus === 'saved' && lastSavedTime" class="save-status saved">
+            <span class="save-dot"></span>已保存 {{ formatSaveTime(lastSavedTime) }}
+          </span>
+          <span v-else-if="saveStatus === 'unsaved'" class="save-status unsaved">
+            <span class="save-dot"></span>有未保存的修改
+          </span>
+          <span v-else-if="saveStatus === 'error'" class="save-status error">
+            <span class="save-dot"></span>保存失败
+          </span>
         </div>
         <div class="pagination-btns">
           <button class="page-btn" :disabled="pagination.page <= 1" @click="pagination.page--; loadAssets()">
@@ -361,6 +373,7 @@ import {
   ArrowLeft,
 } from '@element-plus/icons-vue';
 import type { Asset, AssetCategory, AssetListResult } from '@shared/types';
+import { useAssetAutoSave } from './composables/useAssetAutoSave';
 
 const route = useRoute();
 const router = useRouter();
@@ -381,6 +394,17 @@ const keyword = ref('');
 const modifiedRows = reactive(new Set<string>());
 const deletedIds = reactive(new Set<string>());
 const modifiedCount = computed(() => modifiedRows.size + deletedIds.size);
+
+// 自动保存
+const autoSave = useAssetAutoSave({
+  assetList,
+  modifiedRows,
+  deletedIds,
+  currentCategory,
+  route,
+  loadAssets,
+});
+const { saveStatus, lastSavedTime, debounceAutoSave, startPeriodicSave, formatSaveTime, cleanup } = autoSave;
 
 const pagination = reactive({
   page: 1,
@@ -749,79 +773,20 @@ function addEmptyRow() {
 function markModified(row: Asset) {
   if (row.id) {
     modifiedRows.add(String(row.id));
+    debounceAutoSave();
   }
 }
 
 // 保存所有修改
 async function saveAllChanges() {
-  const projectId = route.params.id as string;
   saving.value = true;
-  let created = 0;
-  let updated = 0;
-  let deleted = 0;
   try {
-    // 先执行待删除操作
-    for (const id of deletedIds) {
-      const res = await window.api.asset.remove(id);
-      if (res.success) deleted++;
-    }
-    deletedIds.clear();
-
-    for (const row of assetList.value) {
-      const modified = modifiedRows.has(String(row.id));
-      const isNewRow = String(row.id).startsWith('temp_');
-      if (!modified && !isNewRow) continue;
-      
-      if (isNewRow) {
-        // 新增行
-        if (!row.name.trim()) continue;
-        const res = await window.api.asset.create({
-          projectId: row.projectId || projectId,
-          category: row.category || currentCategory.value,
-          name: row.name.trim(),
-          os: row.os,
-          version: row.version,
-          deviceUsage: row.deviceUsage,
-          description: row.description,
-          quantity: row.quantity,
-          ip: row.ip,
-          importance: row.importance,
-          isVirtual: row.isVirtual,
-          dbSystem: row.dbSystem || undefined,
-          middleware: row.middleware || undefined,
-          isAssessmentTarget: row.isAssessmentTarget,
-        });
-        if (res.success) created++;
-      } else {
-        // 已有行更新
-        const res = await window.api.asset.update(row.id, {
-          name: row.name,
-          os: row.os,
-          version: row.version,
-          deviceUsage: row.deviceUsage,
-          description: row.description,
-          quantity: row.quantity,
-          ip: row.ip,
-          importance: row.importance,
-          isVirtual: row.isVirtual,
-          dbSystem: row.dbSystem || undefined,
-          middleware: row.middleware || undefined,
-          isAssessmentTarget: row.isAssessmentTarget,
-        });
-        if (res.success) updated++;
-      }
-    }
-    const messages: string[] = [];
-    if (created > 0) messages.push(`新增 ${created} 条`);
-    if (updated > 0) messages.push(`更新 ${updated} 条`);
-    if (deleted > 0) messages.push(`删除 ${deleted} 条`);
-    if (messages.length > 0) {
-      ElMessage.success(messages.join('，'));
+    const success = await autoSave.saveAllChanges();
+    if (success) {
+      ElMessage.success('保存成功');
     } else {
       ElMessage.info('没有需要保存的修改');
     }
-    modifiedRows.clear();
-    await loadAssets();
   } finally {
     saving.value = false;
   }
@@ -974,6 +939,7 @@ let pasteHandler: ((e: Event) => void) | null = null;
 onMounted(() => {
   loadProject();
   loadAssets();
+  startPeriodicSave();
   
   nextTick(() => {
     pasteHandler = (e: Event) => {
@@ -986,6 +952,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  cleanup();
   if (pasteHandler && tableWrapperRef.value) {
     tableWrapperRef.value.removeEventListener('paste', pasteHandler as EventListener);
   }
@@ -1366,6 +1333,44 @@ onUnmounted(() => {
         font-size: 11px;
         font-weight: 500;
       }
+
+      .save-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 500;
+
+        .save-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          display: inline-block;
+        }
+
+        &.saving {
+          background: #EFF6FF;
+          color: #2563EB;
+          .save-dot { background: #2563EB; animation: pulse 1s infinite; }
+        }
+        &.saved {
+          background: #ECFDF5;
+          color: #059669;
+          .save-dot { background: #059669; }
+        }
+        &.unsaved {
+          background: #FFFBEB;
+          color: #D97706;
+          .save-dot { background: #D97706; }
+        }
+        &.error {
+          background: #FEF2F2;
+          color: #DC2626;
+          .save-dot { background: #DC2626; }
+        }
+      }
     }
 
     .pagination-btns {
@@ -1483,5 +1488,10 @@ onUnmounted(() => {
   :deep(.el-form-item) {
     margin-bottom: 16px;
   }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 </style>

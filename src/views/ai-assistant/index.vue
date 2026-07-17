@@ -365,7 +365,6 @@
 <script setup lang="ts">
 import { ref, reactive, computed, nextTick, onMounted } from 'vue';
 import { ElMessage } from 'element-plus';
-import { evaluateByRules } from '@/utils/rule-engine';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 
@@ -421,6 +420,7 @@ const isConfigured = computed(() => aiSettings.apiKey.length > 0);
 
 const testLoading = ref(false);
 const testResult = ref<any>(null);
+const settingsLoaded = ref(false);
 
 async function handleTestConnection() {
   if (!window.api) return;
@@ -537,6 +537,8 @@ async function loadSettings() {
     }
   } catch (e) {
     console.error('Failed to load AI settings', e);
+  } finally {
+    settingsLoaded.value = true;
   }
 }
 
@@ -568,48 +570,6 @@ async function saveSettings() {
   }
 }
 
-function mockAIResponse(prompt: string): { content: string; suggestions: string[] } {
-  if (prompt.includes('分析') || prompt.includes('测评结果')) {
-    return {
-      content: `<strong>测评结果分析</strong><br><br>根据当前项目的测评数据，我为您进行以下分析：<br><br><strong>1. 整体情况</strong><br>项目整体符合率约为 78.5%，处于中等偏上水平。主要问题集中在安全计算环境和安全运维管理两个方面。<br><br><strong>2. 高风险问题分布</strong><br>- 安全计算环境：5项<br>- 安全区域边界：3项<br>- 安全运维管理：2项<br><br><strong>3. 重点关注领域</strong><br>身份鉴别和访问控制是最常见的不符合项，建议优先整改。<br><br><strong>4. 建议</strong><br>建议优先整改高风险问题，然后逐步完善中低风险项。`,
-      suggestions: ['生成整改优先级建议', '生成详细整改方案', '分析高风险问题原因'],
-    };
-  }
-  
-  if (prompt.includes('整改') || prompt.includes('建议')) {
-    return {
-      content: `<strong>整改建议生成</strong><br><br>针对当前发现的高风险问题，建议如下整改措施：<br><br><strong>1. 身份鉴别类问题</strong><br>- 启用强口令策略，要求长度≥8位，包含大小写字母、数字和特殊字符<br>- 配置登录失败锁定策略，建议5次失败锁定15分钟<br>- 启用会话超时自动退出，建议15分钟无操作自动登出<br><br><strong>2. 访问控制类问题</strong><br>- 清理冗余账户和过期账户<br>- 实施最小权限原则，按需分配权限<br>- 定期审计权限分配情况<br><br><strong>3. 安全审计类问题</strong><br>- 启用操作系统安全审计功能<br>- 配置集中日志收集系统<br>- 确保日志保存期限不少于6个月<br><br>以上建议仅供参考，具体整改方案请结合实际情况制定。`,
-      suggestions: ['生成整改计划时间表', '生成责任分配表', '生成整改验收标准'],
-    };
-  }
-  
-  if (prompt.includes('结论') || prompt.includes('报告')) {
-    return {
-      content: `<strong>测评结论</strong><br><br>本次测评依据《GB/T 22239-2019 信息安全技术 网络安全等级保护基本要求》第三级要求，对被测系统进行了全面检测。<br><br><strong>测评结果：</strong><br>本次测评共检测 109 项控制要求，其中符合 85 项，部分符合 15 项，不符合 9 项，整体符合率为 78.5%。<br><br><strong>主要不符合项：</strong><br>1. 安全计算环境-身份鉴别：部分系统未配置强口令策略<br>2. 安全区域边界-访问控制：防火墙策略存在冗余规则<br>3. 安全运维管理-漏洞和风险管理：未建立定期漏洞扫描机制<br><br><strong>综合结论：</strong><br>被测系统基本符合第三级等级保护要求，但仍存在一些安全隐患。建议被测单位按照整改建议限期完成整改工作，并在整改完成后进行复测。<br><br><em>（注：此结论为AI生成，仅供参考，最终结论请以人工审核为准）</em>`,
-      suggestions: ['优化结论表述', '生成整改报告模板', '生成风险评估报告'],
-    };
-  }
-  
-  if (prompt.includes('风险') || prompt.includes('评估')) {
-    return {
-      content: `<strong>风险等级评估</strong><br><br>基于当前发现的问题，进行风险评估如下：<br><br><strong>高风险问题（5项）：</strong><br>1. 默认账户未禁用 - 可能导致未授权访问<br>2. 弱口令策略 - 存在口令被暴力破解风险<br>3. 未启用审计日志 - 安全事件无法追溯<br>4. 防火墙any-to-any规则 - 网络边界防护失效<br>5. 未定期漏洞扫描 - 系统漏洞无法及时发现<br><br><strong>风险等级：中高风险</strong><br><br><strong>建议处置优先级：</strong><br>紧急（立即处理）：第1、4项<br>高（一周内）：第2、3、5项<br>中（一月内）：中风险问题<br>低（季度内）：低风险问题<br><br>建议制定详细的整改计划，明确责任人和完成时间。`,
-      suggestions: ['生成风险矩阵图', '生成风险处置计划', '生成残余风险评估'],
-    };
-  }
-  
-  if (prompt.includes('截图') || prompt.includes('图片') || prompt.includes('分析')) {
-    return {
-      content: `<strong>截图分析结果</strong><br><br>根据您提供的截图，我分析到以下信息：<br><br><strong>界面类型识别：</strong>操作系统设置界面<br><br><strong>安全配置分析：</strong><br>1. 口令策略：已配置基本策略，但复杂度要求不足<br>2. 账户锁定：未配置登录失败锁定<br>3. 审计策略：部分审计项未启用<br><br><strong>存在的问题：</strong><br>- 口令最小长度为6位，建议增加到8位以上<br>- 未配置口令过期时间<br>- 未启用账户锁定策略<br><br><strong>建议：</strong><br>按照等保三级要求，完善口令策略和账户锁定配置。<br><br><em>（注：此分析为模拟结果，实际使用时将调用真实AI进行图像识别）</em>`,
-      suggestions: ['生成整改建议', '与标准条款对比', '生成问题描述'],
-    };
-  }
-  
-  return {
-    content: `您好！我是AI智能助手，可以为您提供以下帮助：<br><br>1. <strong>测评结果分析</strong> - 分析当前项目的测评数据<br>2. <strong>整改建议生成</strong> - 针对问题生成整改方案<br>3. <strong>测评结论撰写</strong> - 生成专业的测评结论<br>4. <strong>风险等级评估</strong> - 评估问题风险等级<br>5. <strong>截图分析</strong> - 上传截图进行AI识别<br><br>请问有什么可以帮助您的？`,
-    suggestions: ['分析测评结果', '生成整改建议', '撰写测评结论'],
-  };
-}
-
 async function sendMessage(customMessage?: string, context?: string) {
   if (!window.api) {
     ElMessage.warning('应用未初始化，请在 Electron 环境中运行');
@@ -618,6 +578,31 @@ async function sendMessage(customMessage?: string, context?: string) {
 
   const content = customMessage || inputMessage.value.trim();
   if (!content || loading.value) return;
+
+  // 等待设置加载完成
+  if (!settingsLoaded.value) {
+    loading.value = true;
+    let waitCount = 0;
+    while (!settingsLoaded.value && waitCount < 50) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      waitCount++;
+    }
+    loading.value = false;
+  }
+
+  // 重新检查配置
+  if (!isConfigured.value) {
+    messages.value.push({
+      role: 'user',
+      content,
+    });
+    messages.value.push({
+      role: 'assistant',
+      content: 'AI 未配置，无法进行分析。请点击右上角的「AI设置」按钮配置 API Key。',
+      suggestions: ['配置AI API Key', '查看使用帮助'],
+    });
+    return;
+  }
   
   messages.value.push({
     role: 'user',
@@ -663,56 +648,14 @@ async function sendMessage(customMessage?: string, context?: string) {
     }
   }
 
-  // 未配置AI，使用本地规则引擎
-  setTimeout(() => {
-    try {
-      const requirement = content;
-      const commandParts = content.split('\n').filter(l => l.trim());
-      const lastLine = commandParts[commandParts.length - 1] || '';
-
-      const ruleResult = evaluateByRules(requirement, lastLine);
-
-      const result = ruleResult || {
-        result: 'partial',
-        confidence: 0.3,
-        evidence: '无法确定测评结果',
-        findings: '请补充更多信息',
-      };
-
-      const response = {
-        content: `## 本地规则引擎判定结果
-
-**判定结果**：${result.result === 'compliant' ? '✅ 符合' : result.result === 'partial' ? '⚠️ 部分符合' : '❌ 不符合'}
-**置信度**：${Math.round(result.confidence * 100)}%
-**证据描述**：${result.evidence}
-**分析结论**：${result.findings}
-
-> 🔔 当前使用本地规则引擎进行分析（AI ${
-  isConfigured.value ? '连接异常，已降级' : '未配置，已降级'
-}）。如需更精确的分析，请在AI设置中配置API Key。`,
-        suggestions: [
-          '补充更多命令输出结果',
-          '上传相关截图证据',
-          '配置AI API Key获取深度分析',
-        ],
-      };
-
-      messages.value.push({
-        role: 'assistant',
-        content: response.content,
-        suggestions: response.suggestions,
-      });
-    } catch (error) {
-      console.error('规则引擎执行失败:', error);
-      messages.value.push({
-        role: 'assistant',
-        content: '抱歉，分析过程中出现了错误，请稍后重试。',
-      });
-    } finally {
-      loading.value = false;
-      nextTick(() => scrollToBottom());
-    }
-  }, 500);
+  // 未配置AI，提示用户配置
+  messages.value.push({
+    role: 'assistant',
+    content: 'AI 未配置，无法进行分析。请点击右上角的「AI设置」按钮配置 API Key。',
+    suggestions: ['配置AI API Key', '查看使用帮助'],
+  });
+  loading.value = false;
+  nextTick(() => scrollToBottom());
 }
 
 async function quickAction(action: string) {
@@ -775,22 +718,59 @@ async function analyzeScreenshot() {
   
   loading.value = true;
   
-  setTimeout(() => {
-    const response = mockAIResponse('截图分析');
+  try {
+    if (isConfigured.value && window.api) {
+      const base64Data = screenshotPreview.value.split(',')[1];
+      const saveResult = await window.api.screenshot.saveFromBase64({
+        projectId: 'ai-analysis',
+        itemId: 'screenshot',
+        base64Data,
+      });
+      
+      if (saveResult.success && saveResult.data) {
+        const res = await window.api.ai.analyzeAssessment({
+          controlPoint: '截图安全配置分析',
+          requirement: '请分析截图中的系统安全配置情况，包括口令策略、访问控制、审计配置等',
+          command: '',
+          result: '请根据截图内容进行分析',
+          screenshots: [saveResult.data.path],
+        });
+        
+        if (res.success && res.data) {
+          messages.value.push({
+            role: 'assistant',
+            content: res.data.content || 'AI分析完成，但未返回具体内容',
+            suggestions: ['进一步分析', '生成整改建议', '保存分析结果'],
+          });
+        } else {
+          throw new Error(res.error?.message || 'AI分析失败');
+        }
+      } else {
+        throw new Error('截图保存失败');
+      }
+    } else {
+      messages.value.push({
+        role: 'assistant',
+        content: '请先配置AI API Key，然后才能使用截图分析功能。',
+        suggestions: ['配置AI API Key', '查看使用帮助'],
+      });
+    }
+  } catch (error: any) {
     messages.value.push({
       role: 'assistant',
-      content: response.content,
-      suggestions: response.suggestions,
+      content: `截图分析失败：${error.message || '未知错误'}`,
+      suggestions: ['重试', '检查AI配置'],
     });
+  } finally {
     loading.value = false;
     analyzing.value = false;
     screenshotPreview.value = '';
     nextTick(() => scrollToBottom());
-  }, 1500);
+  }
 }
 
-onMounted(() => {
-  loadSettings();
+onMounted(async () => {
+  await loadSettings();
   loadProjects();
 });
 </script>
@@ -1460,4 +1440,64 @@ onMounted(() => {
   margin: 1em 0;
 }
 
+// 深色主题覆盖
+:root.dark {
+  .required {
+    color: var(--color-danger);
+  }
+
+  .setting-hint {
+    background: rgba(59, 130, 246, 0.1);
+    color: var(--color-primary);
+  }
+
+  .test-result {
+    &.test-success {
+      background: rgba(24, 169, 87, 0.15);
+      color: #34D399;
+      border-color: rgba(24, 169, 87, 0.3);
+    }
+
+    &.test-error {
+      background: rgba(229, 57, 53, 0.15);
+      color: #F87171;
+      border-color: rgba(229, 57, 53, 0.3);
+    }
+
+    .test-details {
+      background: rgba(0, 0, 0, 0.3);
+      color: var(--color-text-secondary);
+    }
+  }
+
+  .markdown-body {
+    blockquote {
+      border-left-color: var(--color-primary);
+      background: rgba(59, 130, 246, 0.08);
+      color: var(--color-text-secondary);
+    }
+
+    code {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--color-text-primary);
+    }
+
+    pre {
+      background: #0F172A;
+      color: #E2E8F0;
+    }
+
+    th, td {
+      border-color: var(--color-border-base);
+    }
+
+    a {
+      color: var(--color-primary);
+    }
+
+    hr {
+      border-top-color: var(--color-border-base);
+    }
+  }
+}
 </style>

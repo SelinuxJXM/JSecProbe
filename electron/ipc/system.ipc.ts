@@ -120,7 +120,11 @@ export function registerSystemHandlers(): void {
 
   ipcMain.handle('shell:openPath', wrap(async (_event, filePath: string) => {
       const safePath = await validatePath(filePath);
-      shell.openPath(safePath);
+      const result = await shell.openPath(safePath);
+      if (result) {
+        // result is empty string on success, error message on failure
+        throw new Error(result);
+      }
     })
   );
 
