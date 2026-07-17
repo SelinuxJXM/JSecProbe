@@ -27,6 +27,13 @@ export function closeDb(): void {
   }
 }
 
+export function walCheckpoint(): void {
+  if (sqliteInstance) {
+    sqliteInstance.pragma('wal_checkpoint(TRUNCATE)');
+    log.info('WAL checkpoint 完成');
+  }
+}
+
 export async function initDatabase(): Promise<void> {
   try {
     const dbPath = getDbPath();
@@ -753,11 +760,24 @@ async function initKnowledgeBase(): Promise<void> {
     const { getKnowledgeSeed } = await import('./seeds/knowledge');
     const seed = getKnowledgeSeed();
     
-    // 始终清空并重新初始化知识库，确保种子数据更新生效
-    log.info('初始化知识库：清空旧数据并重新导入种子数据...');
-    await dbInstance.delete(schema.knowledgeDocuments);
-    await dbInstance.delete(schema.knowledgeCategories);
+    // 检查知识库是否已有数据，避免重复初始化
+    const existingCategories = await dbInstance
+      .select({ count: count() })
+      .from(schema.knowledgeCategories);
+    const existingDocs = await dbInstance
+      .select({ count: count() })
+      .from(schema.knowledgeDocuments);
     
+    const categoryCount = existingCategories[0]?.count || 0;
+    const docCount = existingDocs[0]?.count || 0;
+    
+    // 如果已有数据，跳过初始化（保留用户上传的文档）
+    if (categoryCount > 0 || docCount > 0) {
+      log.info(`知识库已存在(${categoryCount}个分类，${docCount}篇文档)，跳过初始化`);
+      return;
+    }
+    
+    log.info('初始化知识库：导入种子数据...');
     log.info('初始化知识库:', seed.categories.length + '个分类，' + seed.documents.length + '篇文档');
     
     if (seed.categories.length > 0) {

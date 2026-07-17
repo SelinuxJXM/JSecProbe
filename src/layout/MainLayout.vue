@@ -11,9 +11,6 @@
           :default-active="activeMenu"
           :collapse="appStore.sidebarCollapsed"
           :collapse-transition="false"
-          background-color="#1A1D2E"
-          text-color="#A0AEC0"
-          active-text-color="#FFFFFF"
           @select="handleMenuSelect"
         >
           <el-menu-item index="/dashboard">
@@ -64,7 +61,7 @@
       
       <div class="sidebar-footer" v-if="!appStore.sidebarCollapsed">
         <div class="sidebar-footer-card">
-          <div class="sf-version">v2.0.3</div>
+          <div class="sf-version">v2.0.4</div>
           <a href="https://github.com/SelinuxJXM/JSecProbe" target="_blank" class="sf-github" title="访问 GitHub 仓库">
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
@@ -117,6 +114,7 @@
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item @click="router.push('/personal-center')">个人中心</el-dropdown-item>
+                <el-dropdown-item @click="onboardingRef?.restart()">查看引导</el-dropdown-item>
                 <el-dropdown-item divided @click="handleLogout">退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -126,14 +124,15 @@
       
       <main class="main-content">
         <router-view v-slot="{ Component }">
-          <keep-alive>
-            <transition name="fade" mode="out-in">
-              <component :is="Component" />
-            </transition>
-          </keep-alive>
+          <transition name="page-fade" mode="out-in">
+            <component :is="Component" :key="route.fullPath" />
+          </transition>
         </router-view>
       </main>
     </div>
+
+    <!-- 新手引导 -->
+    <OnboardingGuide ref="onboardingRef" />
 
     <!-- 更新通知对话框 -->
     <el-dialog
@@ -259,6 +258,11 @@
         <p>{{ updateStatus.error }}</p>
         <el-button type="primary" @click="checkForUpdates">重试</el-button>
       </div>
+
+      <div class="update-footer">
+        <img src="@/assets/wechat-qr.png" alt="微信联系" class="wechat-qr" />
+        <p class="qr-text">扫码联系开发者</p>
+      </div>
     </el-dialog>
   </div>
 </template>
@@ -285,11 +289,13 @@ import {
   Fold,
   Expand,
 } from '@element-plus/icons-vue';
+import OnboardingGuide from '@/components/OnboardingGuide/index.vue';
 
 const route = useRoute();
 const router = useRouter();
 const appStore = useAppStore();
 const userStore = useUserStore();
+const onboardingRef = ref<InstanceType<typeof OnboardingGuide>>();
 
 // 更新相关状态
 const showUpdateDialog = ref(false);
@@ -384,6 +390,11 @@ onMounted(async () => {
     }
     unsubscribe = window.api.update.onStatusChange(handleUpdateStatus);
   }
+
+  // 启动新手引导
+  setTimeout(() => {
+    onboardingRef.value?.start();
+  }, 500);
 });
 
 onUnmounted(() => {
@@ -444,7 +455,7 @@ function handleLogout() {
 
 .sidebar {
   width: var(--sidebar-width);
-  background: #1A1D2E;
+  background: var(--color-sidebar-bg);
   display: flex;
   flex-direction: column;
   transition: width 0.3s ease;
@@ -456,6 +467,9 @@ function handleLogout() {
 
   // el-menu active bar styling
   :deep(.el-menu) {
+    --el-menu-bg-color: var(--color-sidebar-bg);
+    --el-menu-text-color: var(--color-sidebar-text);
+    --el-menu-active-color: var(--color-sidebar-text-active);
     border-right: none;
 
     .el-menu-item {
@@ -467,7 +481,7 @@ function handleLogout() {
       position: relative;
 
       &.is-active {
-        background: rgba(255,255,255,0.08);
+        background: var(--color-sidebar-bg-active);
 
         &::before {
           content: '';
@@ -477,13 +491,13 @@ function handleLogout() {
           transform: translateY(-50%);
           width: 3px;
           height: 18px;
-          background: #1B5FD9;
+          background: var(--color-primary);
           border-radius: 0 2px 2px 0;
         }
       }
 
       &:hover {
-        background: #252840 !important;
+        background: var(--color-sidebar-bg-hover) !important;
       }
     }
   }
@@ -509,7 +523,7 @@ function handleLogout() {
   
   .logo-text {
     margin-left: var(--spacing-sm);
-    color: #fff;
+    color: var(--color-sidebar-text-active);
     font-size: var(--font-size-md);
     font-weight: var(--font-weight-semibold);
     white-space: nowrap;
@@ -622,7 +636,7 @@ function handleLogout() {
       &:hover {
         opacity: 1;
         background: rgba(255, 255, 255, 0.1);
-        color: #fff;
+        color: var(--color-sidebar-text-active);
         
         svg {
           opacity: 1;
@@ -778,14 +792,25 @@ function handleLogout() {
   background: var(--color-bg-base);
 }
 
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.2s ease;
+.page-fade-enter-active,
+.page-fade-leave-active {
+  transition: opacity 0.3s ease, transform 0.3s ease;
 }
 
-.fade-enter-from,
-.fade-leave-to {
+.page-fade-enter-from {
   opacity: 0;
+  transform: translateX(-30px);
+}
+
+.page-fade-leave-to {
+  opacity: 0;
+  transform: translateX(30px);
+}
+
+.page-fade-enter-to,
+.page-fade-leave-from {
+  opacity: 1;
+  transform: translateX(0);
 }
 
 .notification-bell {
@@ -1007,6 +1032,30 @@ function handleLogout() {
   }
   to {
     transform: rotate(360deg);
+  }
+}
+
+.update-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 20px;
+  border-top: 1px solid var(--color-border-light);
+  margin-top: 10px;
+  
+  .wechat-qr {
+    width: 100px;
+    height: 100px;
+    border-radius: var(--radius-base);
+    border: 2px solid var(--color-border-light);
+    background: white;
+    object-fit: contain;
+  }
+  
+  .qr-text {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--color-text-secondary);
   }
 }
 </style>

@@ -200,38 +200,146 @@ export function registerAssessmentHandlers(): void {
   ipcMain.handle('assessment:getProgress', wrap(async (_event, projectId: string, standardId: string) => {
       const db = getDb();
 
-      const totalItems = await db
-        .select({ value: count() })
-        .from(schema.assessmentItems)
-        .where(eq(schema.assessmentItems.standardId, standardId));
+      const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
+      if (!project) {
+        return { total: 0, tested: 0, compliant: 0, na: 0, complianceRate: 0, untested: 0 };
+      }
 
+      // 解析项目扩展类型（中文逗号分隔字符串 -> 英文代码数组）
+      const EXT_TYPE_MAP: Record<string, string> = {
+        '安全通用要求': 'general',
+        '云计算安全扩展要求': 'cloud',
+        '移动互联安全扩展要求': 'mobile',
+        '物联网安全扩展要求': 'iot',
+        '工业控制系统安全扩展要求': 'industrial',
+        '大数据安全扩展要求': 'bigdata',
+        '大数据安全扩展要求（国标附录）': 'bigdata',
+        '关键信息基础设施安全扩展要求': 'cii',
+      };
+      const projectExtCodes: string[] = [];
+      if (project.extensionType) {
+        for (const t of project.extensionType.split(',').filter(Boolean)) {
+          const code = EXT_TYPE_MAP[t.trim()] || t.trim();
+          if (!projectExtCodes.includes(code)) projectExtCodes.push(code);
+        }
+      }
+
+      // 构建扩展类型过滤条件：通用要求 + 项目选择的扩展要求
+      const extOrConditions = [eq(schema.assessmentItems.extensionType, 'general')];
+      for (const ext of projectExtCodes) {
+        extOrConditions.push(eq(schema.assessmentItems.extensionType, ext));
+      }
+      const extOr = or(...extOrConditions);
+
+      // 按资产统计总项数：每个资产的适用项数相加
+      // 获取项目所有测评对象（按层面分组）
+      const assets = await db.query.assets.findMany({
+        where: and(
+          eq(schema.assets.projectId, projectId),
+          eq(schema.assets.isAssessmentTarget, 1),
+        ),
+      });
+
+      // 按层面统计资产数量
+      const CATEGORY_TO_DOMAIN: Record<string, string> = {
+        'server_storage': 'secure_computing',
+        'dbms': 'secure_computing',
+        'network_device': 'secure_computing',
+        'security_device': 'secure_computing',
+        'business_app': 'secure_computing',
+        'terminal': 'secure_computing',
+        'management_platform': 'secure_computing',
+        'machine_room': 'secure_physical',
+        'data_resource': 'secure_computing',
+        'network_boundary': 'secure_boundary',
+        'data_category': 'secure_computing',
+      };
+      const domainAssetCounts: Record<string, number> = {};
+      for (const asset of assets) {
+        const domainId = CATEGORY_TO_DOMAIN[asset.category] || 'secure_computing';
+        domainAssetCounts[domainId] = (domainAssetCounts[domainId] || 0) + 1;
+      }
+
+      // 获取全局层面的测评项（assetId为空的项）
+      const globalItems = await db.query.assessmentItems.findMany({
+        where: and(
+          eq(schema.assessmentItems.standardId, standardId),
+          extOr,
+          ...(project.level ? [lte(schema.assessmentItems.minLevel, project.level)] : [])
+        ),
+        columns: { domain: true },
+      });
+
+      // 按层面统计测评项数量
+      const domainItemCounts: Record<string, number> = {};
+      for (const item of globalItems) {
+        domainItemCounts[item.domain] = (domainItemCounts[item.domain] || 0) + 1;
+      }
+
+      // 总项数 = 每个层面的（资产数 × 该层面测评项数）之和
+      let total = 0;
+      for (const [domainId, assetCount] of Object.entries(domainAssetCounts)) {
+        const itemCount = domainItemCounts[domainId] || 0;
+        total += assetCount * itemCount;
+      }
+
+      // 构建适用范围条件（用于子查询过滤itemId）
+      const applicableConditions = [
+        eq(schema.assessmentItems.standardId, standardId),
+        extOr,
+      ];
+      if (project.level) {
+        applicableConditions.push(lte(schema.assessmentItems.minLevel, project.level));
+      }
+
+      // 只统计适用范围的项的记录（子查询过滤itemId）
+      const itemIdsSubquery = db
+        .select({ id: schema.assessmentItems.id })
+        .from(schema.assessmentItems)
+        .where(and(...applicableConditions));
+
+      // 已测评：有记录且结果为已判定（符合/部分符合/不符合）
       const testedRecords = await db
         .select({ value: count() })
         .from(schema.assessmentRecords)
         .where(and(
           eq(schema.assessmentRecords.projectId, projectId),
-          sql`result NOT IN ('untested', '')`
+          inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
+          sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform')`
         ));
 
+      // 符合：结果为符合（不包含部分符合）
       const compliantRecords = await db
         .select({ value: count() })
         .from(schema.assessmentRecords)
         .where(and(
           eq(schema.assessmentRecords.projectId, projectId),
+          inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
           sql`result IN ('compliant', 'conform')`
         ));
 
-      const total = totalItems[0]?.value || 0;
+      // 不适用
+      const naRecords = await db
+        .select({ value: count() })
+        .from(schema.assessmentRecords)
+        .where(and(
+          eq(schema.assessmentRecords.projectId, projectId),
+          inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
+          sql`result = 'not_applicable'`
+        ));
+
       const tested = testedRecords[0]?.value || 0;
       const compliant = compliantRecords[0]?.value || 0;
-      const complianceRate = tested > 0 ? Math.round((compliant / tested) * 100) : 0;
+      const na = naRecords[0]?.value || 0;
+      const complianceRate = (tested + na) > 0 ? Math.round((compliant / (tested + na)) * 100) : 0;
 
       return {
         total,
         tested,
         compliant,
+        na,
         complianceRate,
-        untested: Math.max(0, total - tested),
+        untested: Math.max(0, total - tested - na),
       };
     })
   );
@@ -332,6 +440,7 @@ export function registerAssessmentHandlers(): void {
         { key: 'iot', label: '物联网安全扩展要求' },
         { key: 'industrial', label: '工业控制系统安全扩展要求' },
         { key: 'bigdata', label: '大数据安全扩展要求（国标附录）' },
+        { key: 'cii', label: '关键信息基础设施安全扩展要求' },
       ];
 
       // 解析项目扩展类型
@@ -627,6 +736,7 @@ export function registerAssessmentHandlers(): void {
         { key: 'iot', label: '物联网安全扩展要求' },
         { key: 'industrial', label: '工业控制系统安全扩展要求' },
         { key: 'bigdata', label: '大数据安全扩展要求（国标附录）' },
+        { key: 'cii', label: '关键信息基础设施安全扩展要求' },
       ];
       
       // 解析项目扩展类型（中文逗号分隔字符串 -> 英文代码数组）
@@ -701,12 +811,17 @@ export function registerAssessmentHandlers(): void {
         }
 
         const extOr = or(...extOrConditions);
+        const conditions = [
+          eq(schema.assessmentItems.standardId, project!.standardId || 'gb-t-22239-2019-l3'),
+          eq(schema.assessmentItems.domain, domainKey),
+          ...(extOr ? [extOr] : []),
+        ];
+        // 按等级筛选：只显示项目等级范围内的测评项（与前端getItems保持一致）
+        if (project!.level) {
+          conditions.push(lte(schema.assessmentItems.minLevel, project!.level));
+        }
         const items = await db.query.assessmentItems.findMany({
-          where: and(
-            eq(schema.assessmentItems.standardId, project!.standardId),
-            eq(schema.assessmentItems.domain, domainKey),
-            ...(extOr ? [extOr] : [])
-          ),
+          where: and(...conditions),
           orderBy: schema.assessmentItems.sortOrder,
         });
         if (items.length === 0) return;
@@ -934,10 +1049,7 @@ export function registerAssessmentHandlers(): void {
         for (const asset of assets) {
           const domainId = CATEGORY_TO_DOMAIN[asset.category] || 'secure_computing';
           const domainName = DOMAIN_NAMES[domainId] || domainId;
-          let recordMap = assetRecordMaps.get(asset.id);
-          if (!recordMap || recordMap.size === 0) {
-            recordMap = globalRecordMap;
-          }
+          const recordMap = assetRecordMaps.get(asset.id) || new Map<string, any>();
           const sheetName = `${domainName}_${asset.name}`;
           await addSheet(sheetName, domainId, recordMap);
         }
@@ -1176,6 +1288,7 @@ export function registerAssessmentHandlers(): void {
         { key: 'iot', label: '物联网安全扩展要求' },
         { key: 'industrial', label: '工业控制系统安全扩展要求' },
         { key: 'bigdata', label: '大数据安全扩展要求（国标附录）' },
+        { key: 'cii', label: '关键信息基础设施安全扩展要求' },
       ];
 
       const EXT_TYPE_MAP: Record<string, string> = {

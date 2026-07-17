@@ -85,6 +85,25 @@
       <el-col :span="8">
         <div class="card p-md">
           <div class="card-header">
+            <span class="card-title">项目状态分布</span>
+          </div>
+          <v-chart class="chart" :option="statusChartOption" autoresize />
+        </div>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="16" class="content-row">
+      <el-col :span="12">
+        <div class="card p-md">
+          <div class="card-header">
+            <span class="card-title">项目等级分布</span>
+          </div>
+          <v-chart class="chart" :option="levelChartOption" autoresize />
+        </div>
+      </el-col>
+      <el-col :span="12">
+        <div class="card p-md">
+          <div class="card-header">
             <span class="card-title">快捷操作</span>
           </div>
           <div class="quick-actions">
@@ -112,7 +131,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import {
   Folder,
   Loading,
@@ -123,6 +142,13 @@ import {
   MagicStick,
   Setting,
 } from '@element-plus/icons-vue';
+import VChart from 'vue-echarts';
+import { use } from 'echarts/core';
+import { PieChart, BarChart } from 'echarts/charts';
+import { TitleComponent, TooltipComponent, LegendComponent, GridComponent } from 'echarts/components';
+import { CanvasRenderer } from 'echarts/renderers';
+
+use([PieChart, BarChart, TitleComponent, TooltipComponent, LegendComponent, GridComponent, CanvasRenderer]);
 
 const loading = ref(false);
 const recentProjects = ref<any[]>([]);
@@ -130,7 +156,56 @@ const stats = ref({
   projectCount: 0,
   inProgressCount: 0,
   completedCount: 0,
+  draftCount: 0,
+  archivedCount: 0,
+  level2Count: 0,
+  level3Count: 0,
+  level4Count: 0,
+  otherLevelCount: 0,
   assetCount: 0,
+});
+
+const statusChartOption = computed(() => ({
+  tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+  legend: { bottom: '0%', left: 'center' },
+  series: [{
+    type: 'pie',
+    radius: ['40%', '70%'],
+    avoidLabelOverlap: false,
+    itemStyle: { borderRadius: 8, borderColor: '#fff', borderWidth: 2 },
+    label: { show: false },
+    emphasis: {
+      label: { show: true, fontSize: 14, fontWeight: 'bold' },
+    },
+    data: [
+      { value: stats.value.inProgressCount, name: '进行中', itemStyle: { color: '#1B5FD9' } },
+      { value: stats.value.completedCount, name: '已完成', itemStyle: { color: '#18A957' } },
+      { value: stats.value.draftCount, name: '草稿', itemStyle: { color: '#909399' } },
+    ],
+  }],
+}));
+
+const levelChartOption = computed(() => {
+  return {
+    tooltip: { trigger: 'axis' },
+    grid: { left: 60, right: 20, bottom: 30, top: 20 },
+    xAxis: {
+      type: 'category',
+      data: ['二级', '三级', '四级', '其他'],
+    },
+    yAxis: { type: 'value', minInterval: 1 },
+    series: [{
+      type: 'bar',
+      data: [
+        { value: stats.value.level2Count, itemStyle: { color: '#18A957' } },
+        { value: stats.value.level3Count, itemStyle: { color: '#1B5FD9' } },
+        { value: stats.value.level4Count, itemStyle: { color: '#D48806' } },
+        { value: stats.value.otherLevelCount, itemStyle: { color: '#909399' } },
+      ],
+      barWidth: '50%',
+      itemStyle: { borderRadius: [4, 4, 0, 0] },
+    }],
+  };
 });
 
 function statusType(status: string) {
@@ -165,21 +240,32 @@ async function loadData() {
       console.warn('window.api 未定义，跳过加载数据');
       return;
     }
-    const res = await window.api.project.list({ page: 1, pageSize: 5 });
-    if (res.success && res.data) {
-      recentProjects.value = res.data.list;
-      stats.value.projectCount = res.data.total;
-      stats.value.inProgressCount = res.data.list.filter(
-        (p: any) => p.status === 'in_progress'
-      ).length;
-      stats.value.completedCount = res.data.list.filter(
-        (p: any) => p.status === 'completed'
-      ).length;
-      stats.value.assetCount = res.data.list.reduce(
-        (sum: number, p: any) => sum + (p.assetCount || 0),
-        0
-      );
+    
+    const [listRes, statsRes] = await Promise.all([
+      window.api.project.list({ page: 1, pageSize: 5 }),
+      window.api.project.getStatistics(),
+    ]);
+
+    if (listRes.success && listRes.data) {
+      recentProjects.value = listRes.data.list;
     }
+
+    if (statsRes.success && statsRes.data) {
+      stats.value = {
+        projectCount: statsRes.data.projectCount,
+        inProgressCount: statsRes.data.inProgressCount,
+        completedCount: statsRes.data.completedCount,
+        draftCount: statsRes.data.draftCount,
+        archivedCount: statsRes.data.archivedCount,
+        level2Count: statsRes.data.level2Count,
+        level3Count: statsRes.data.level3Count,
+        level4Count: statsRes.data.level4Count,
+        otherLevelCount: statsRes.data.otherLevelCount,
+        assetCount: statsRes.data.assetCount,
+      };
+    }
+  } catch (err) {
+    console.error('加载工作台数据失败:', err);
   } finally {
     loading.value = false;
   }
@@ -276,5 +362,10 @@ onMounted(loadData);
       color: var(--color-text-secondary);
     }
   }
+}
+
+.chart {
+  height: 260px;
+  width: 100%;
 }
 </style>

@@ -327,7 +327,7 @@
     </div>
 
     <!-- 文档查看弹窗 -->
-    <el-dialog v-model="docViewerVisible" title="文档预览" width="800px" top="5vh" destroy-on-close>
+    <el-dialog v-model="docViewerVisible" title="文档预览" width="900px" top="5vh" destroy-on-close>
       <div v-loading="docLoading" class="kb-doc-viewer">
         <h1 class="kb-viewer-title">{{ viewingDoc?.title }}</h1>
         <div class="kb-viewer-meta">
@@ -339,11 +339,17 @@
         <div v-if="viewingDoc?.tags" class="kb-viewer-tags">
           <span v-for="tag in (viewingDoc?.tags || '').split(',')" :key="tag" class="kb-viewer-tag">{{ tag.trim() }}</span>
         </div>
-        <div class="kb-viewer-content" v-html="renderedContent"></div>
+        <!-- 有文件路径时使用文件预览 -->
+        <div v-if="viewingDoc?.filePath" class="kb-viewer-file-preview">
+          <file-preview-dialog ref="filePreviewRef" />
+        </div>
+        <!-- 否则显示文本内容 -->
+        <div v-else class="kb-viewer-content" v-html="renderedContent"></div>
       </div>
       <template #footer>
         <el-button @click="docViewerVisible = false">关闭</el-button>
-        <el-button type="primary">引用到核查</el-button>
+        <el-button v-if="viewingDoc?.filePath" type="primary" @click="openFileWithSystem">使用系统程序打开</el-button>
+        <el-button v-else type="primary">引用到核查</el-button>
       </template>
     </el-dialog>
 
@@ -570,6 +576,7 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { KnowledgeCategory, KnowledgeDocument, KnowledgeCommand } from '../../../shared/types';
+import FilePreviewDialog from '../onsite-verification/components/file-preview-dialog.vue';
 
 const activeTab = ref('documents');
 const loading = ref(false);
@@ -586,6 +593,7 @@ const commandList = ref<KnowledgeCommand[]>([]);
 
 const docViewerVisible = ref(false);
 const viewingDoc = ref<KnowledgeDocument | null>(null);
+const filePreviewRef = ref<InstanceType<typeof FilePreviewDialog>>();
 
 const showCategoryDialog = ref(false);
 const showUploadDialog = ref(false);
@@ -1070,9 +1078,24 @@ async function viewDocument(doc: KnowledgeDocument) {
     const res = await window.api.knowledge.getDocument(doc.id);
     if (res.success && res.data) {
       viewingDoc.value = res.data;
+      // 如果有文件路径，打开文件预览
+      if (res.data.filePath) {
+        setTimeout(() => {
+          filePreviewRef.value?.open(res.data!);
+        }, 100);
+      }
     }
   } finally {
     docLoading.value = false;
+  }
+}
+
+async function openFileWithSystem() {
+  if (viewingDoc.value?.filePath) {
+    const res = await window.api.shell.openPath(viewingDoc.value.filePath);
+    if (!res.success) {
+      ElMessage.error('打开文件失败：' + (res.error?.message || '未知错误'));
+    }
   }
 }
 
@@ -1161,7 +1184,7 @@ async function selectDocumentFile() {
       ],
       properties: ['openFile'],
     });
-    if (res.success && !res.data?.canceled && res.data?.filePaths?.[0]) {
+    if (res.success && res.data && !res.data.canceled && res.data.filePaths?.[0]) {
       uploadForm.filePath = res.data.filePaths[0];
     }
   } catch {
@@ -1281,9 +1304,11 @@ async function handleUploadDocument() {
       });
       loadCategories();
       loadDocuments();
+    } else {
+      ElMessage.error(`上传失败：${res.error?.message || '未知错误'}`);
     }
-  } catch {
-    ElMessage.error('上传失败');
+  } catch (error: any) {
+    ElMessage.error(`上传失败：${error.message || '未知错误'}`);
   }
 }
 
@@ -2232,7 +2257,6 @@ $info-light: var(--color-primary-light);
   font-size: 11px;
   color: $text-secondary;
 }
-
 .kb-viewer-content {
   font-size: 14px;
   line-height: 1.8;
@@ -2279,6 +2303,11 @@ $info-light: var(--color-primary-light);
   strong { font-weight: 600; }
 }
 
+.kb-viewer-file-preview {
+  height: 600px;
+  overflow: hidden;
+}
+
 // 全局覆盖
 :deep(.el-dialog__body) {
   padding: 20px;
@@ -2319,6 +2348,73 @@ $info-light: var(--color-primary-light);
 
     &:hover {
       background: $error-light;
+    }
+  }
+}
+
+// 深色主题覆盖
+:root.dark {
+  .kb-search-input {
+    background: var(--color-bg-card) !important;
+    border-color: var(--color-border-base) !important;
+    color: var(--color-text-primary) !important;
+  }
+
+  .kb-select {
+    background: var(--color-bg-card) !important;
+    border-color: var(--color-border-base) !important;
+    color: var(--color-text-secondary) !important;
+  }
+
+  .kb-table {
+    th {
+      background: var(--color-bg-hover) !important;
+      color: var(--color-text-primary) !important;
+      border-color: var(--color-border-base) !important;
+    }
+
+    td {
+      border-color: var(--color-border-base) !important;
+      color: var(--color-text-primary) !important;
+    }
+
+    tbody tr:hover td {
+      background: var(--color-bg-hover) !important;
+    }
+  }
+
+  .kb-card {
+    background: var(--color-bg-card) !important;
+    border-color: var(--color-border-light) !important;
+  }
+
+  .kb-btn-primary {
+    background: var(--color-primary) !important;
+    border-color: var(--color-primary) !important;
+
+    &:hover {
+      background: var(--color-primary-hover) !important;
+    }
+  }
+
+  .kb-context-menu {
+    background: var(--color-bg-card) !important;
+    border-color: var(--color-border-base) !important;
+  }
+
+  .kb-context-menu-item {
+    color: var(--color-text-primary) !important;
+
+    &:hover {
+      background: var(--color-bg-hover) !important;
+    }
+  }
+
+  .kb-context-menu-danger {
+    color: var(--color-danger) !important;
+
+    &:hover {
+      background: var(--color-danger-light) !important;
     }
   }
 }

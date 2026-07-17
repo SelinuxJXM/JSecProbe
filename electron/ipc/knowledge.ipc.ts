@@ -8,6 +8,24 @@ import { eq, and, desc, like, or, asc, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { getAppDataPath } from '../main/paths';
 
+// 文件读取相关导入
+let XLSX: any = null;
+let mammoth: any = null;
+
+function getXlsx() {
+  if (!XLSX) {
+    XLSX = require('xlsx');
+  }
+  return XLSX;
+}
+
+function getMammoth() {
+  if (!mammoth) {
+    mammoth = require('mammoth');
+  }
+  return mammoth;
+}
+
 async function getAllowedBasePaths(): Promise<string[]> {
   const dataPath = await getAppDataPath();
   return [
@@ -540,25 +558,76 @@ export function registerKnowledgeHandlers(): void {
 
   ipcMain.handle('knowledge:uploadDocument', async (_event, data: { categoryId: string; title: string; type: string; description: string; version: string; tags: string; filePath: string }) => {
     try {
+      // 验证输入
+      if (!data.filePath || !data.title || !data.categoryId) {
+        return { success: false, error: { code: 'INVALID_INPUT', message: '缺少必要参数' } };
+      }
+
+      // 检查源文件是否存在
+      if (!fs.existsSync(data.filePath)) {
+        return { success: false, error: { code: 'FILE_NOT_FOUND', message: '源文件不存在' } };
+      }
+
       const db = getDb();
       const id = randomUUID();
       const now = new Date().toISOString();
 
-      await db.insert(schema.knowledgeDocuments).values({
-        id,
-        categoryId: data.categoryId,
-        title: data.title,
-        type: data.type,
-        description: data.description || '',
-        content: '',
-        version: data.version || '1.0',
-        tags: data.tags || '',
-        filePath: data.filePath,
-        uploadDate: now,
-        referenceCount: 0,
-        createdAt: now,
-        updatedAt: now,
-      });
+      // 将文件复制到应用数据目录下
+      const appDataPath = await getAppDataPath();
+      const knowledgeDir = path.join(appDataPath, 'knowledge', 'documents');
+      
+      try {
+        if (!fs.existsSync(knowledgeDir)) {
+          fs.mkdirSync(knowledgeDir, { recursive: true });
+        }
+      } catch (dirError: any) {
+        log.error('创建目录失败:', dirError);
+        return { success: false, error: { code: 'DIR_ERROR', message: `创建目录失败: ${dirError.message}` } };
+      }
+
+      const ext = path.extname(data.filePath);
+      const fileName = `${id}${ext}`;
+      const destPath = path.join(knowledgeDir, fileName);
+
+      // 复制文件到目标目录
+      try {
+        fs.copyFileSync(data.filePath, destPath);
+        log.info(`文件复制成功: ${data.filePath} -> ${destPath}`);
+      } catch (copyError: any) {
+        log.error('文件复制失败:', copyError);
+        return { success: false, error: { code: 'COPY_ERROR', message: `文件复制失败: ${copyError.message}` } };
+      }
+
+      // 插入数据库
+      try {
+        await db.insert(schema.knowledgeDocuments).values({
+          id,
+          categoryId: data.categoryId,
+          title: data.title,
+          type: data.type,
+          description: data.description || '',
+          content: '',
+          version: data.version || '1.0',
+          tags: data.tags || '',
+          filePath: destPath,
+          uploadDate: now,
+          referenceCount: 0,
+          createdAt: now,
+          updatedAt: now,
+        });
+        log.info(`文档上传成功: ${id}`);
+      } catch (dbError: any) {
+        log.error('数据库插入失败:', dbError);
+        // 如果数据库插入失败，删除已复制的文件
+        try {
+          if (fs.existsSync(destPath)) {
+            fs.unlinkSync(destPath);
+          }
+        } catch (unlinkError) {
+          log.error('删除文件失败:', unlinkError);
+        }
+        return { success: false, error: { code: 'DB_ERROR', message: `数据库操作失败: ${dbError.message}` } };
+      }
 
       return { success: true, data: { id } };
     } catch (error: any) {
@@ -584,25 +653,76 @@ export function registerKnowledgeHandlers(): void {
 
   ipcMain.handle('knowledge:importSingleDocument', async (_event, data: { categoryId: string; title: string; type: string; description: string; version: string; tags: string; filePath: string }) => {
     try {
+      // 验证输入
+      if (!data.filePath || !data.title || !data.categoryId) {
+        return { success: false, error: { code: 'INVALID_INPUT', message: '缺少必要参数' } };
+      }
+
+      // 检查源文件是否存在
+      if (!fs.existsSync(data.filePath)) {
+        return { success: false, error: { code: 'FILE_NOT_FOUND', message: '源文件不存在' } };
+      }
+
       const db = getDb();
       const id = randomUUID();
       const now = new Date().toISOString();
 
-      await db.insert(schema.knowledgeDocuments).values({
-        id,
-        categoryId: data.categoryId,
-        title: data.title,
-        type: data.type,
-        description: data.description || '',
-        content: '',
-        version: data.version || '1.0',
-        tags: data.tags || '',
-        filePath: data.filePath,
-        uploadDate: now,
-        referenceCount: 0,
-        createdAt: now,
-        updatedAt: now,
-      });
+      // 将文件复制到应用数据目录下
+      const appDataPath = await getAppDataPath();
+      const knowledgeDir = path.join(appDataPath, 'knowledge', 'documents');
+      
+      try {
+        if (!fs.existsSync(knowledgeDir)) {
+          fs.mkdirSync(knowledgeDir, { recursive: true });
+        }
+      } catch (dirError: any) {
+        log.error('创建目录失败:', dirError);
+        return { success: false, error: { code: 'DIR_ERROR', message: `创建目录失败: ${dirError.message}` } };
+      }
+
+      const ext = path.extname(data.filePath);
+      const fileName = `${id}${ext}`;
+      const destPath = path.join(knowledgeDir, fileName);
+
+      // 复制文件到目标目录
+      try {
+        fs.copyFileSync(data.filePath, destPath);
+        log.info(`文件复制成功: ${data.filePath} -> ${destPath}`);
+      } catch (copyError: any) {
+        log.error('文件复制失败:', copyError);
+        return { success: false, error: { code: 'COPY_ERROR', message: `文件复制失败: ${copyError.message}` } };
+      }
+
+      // 插入数据库
+      try {
+        await db.insert(schema.knowledgeDocuments).values({
+          id,
+          categoryId: data.categoryId,
+          title: data.title,
+          type: data.type,
+          description: data.description || '',
+          content: '',
+          version: data.version || '1.0',
+          tags: data.tags || '',
+          filePath: destPath,
+          uploadDate: now,
+          referenceCount: 0,
+          createdAt: now,
+          updatedAt: now,
+        });
+        log.info(`文档导入成功: ${id}`);
+      } catch (dbError: any) {
+        log.error('数据库插入失败:', dbError);
+        // 如果数据库插入失败，删除已复制的文件
+        try {
+          if (fs.existsSync(destPath)) {
+            fs.unlinkSync(destPath);
+          }
+        } catch (unlinkError) {
+          log.error('删除文件失败:', unlinkError);
+        }
+        return { success: false, error: { code: 'DB_ERROR', message: `数据库操作失败: ${dbError.message}` } };
+      }
 
       return { success: true, data: { id } };
     } catch (error: any) {
@@ -629,6 +749,81 @@ export function registerKnowledgeHandlers(): void {
     } catch (error: any) {
       log.error('List directory files error:', error);
       return { success: false, error: { code: 'LIST_ERROR', message: error.message } };
+    }
+  });
+
+  // 读取 Excel 文件
+  ipcMain.handle('knowledge:readExcelFile', async (_event, filePath: string, sheetName?: string) => {
+    try {
+      const safePath = await validatePath(filePath);
+      const xlsx = getXlsx();
+      const workbook = xlsx.readFile(safePath);
+      
+      const targetSheet = sheetName || workbook.SheetNames[0];
+      const sheet = workbook.Sheets[targetSheet];
+      const data: any[] = xlsx.utils.sheet_to_json(sheet, { defval: '' });
+      
+      // 获取列名
+      const columns = data.length > 0 ? Object.keys(data[0]) : [];
+      
+      return { 
+        success: true, 
+        data: { 
+          sheetNames: workbook.SheetNames, 
+          columns, 
+          data 
+        } 
+      };
+    } catch (error: any) {
+      log.error('Read Excel file error:', error);
+      return { success: false, error: { code: 'READ_ERROR', message: error.message } };
+    }
+  });
+
+  // 读取 Word 文件
+  ipcMain.handle('knowledge:readWordFile', async (_event, filePath: string) => {
+    try {
+      const safePath = await validatePath(filePath);
+      const m = getMammoth();
+      const result = await m.convertToHtml({ path: safePath });
+      return { success: true, data: { html: result.value } };
+    } catch (error: any) {
+      log.error('Read Word file error:', error);
+      return { success: false, error: { code: 'READ_ERROR', message: error.message } };
+    }
+  });
+
+  // 检查文件是否存在
+  ipcMain.handle('file:exists', async (_event, filePath: string) => {
+    try {
+      const safePath = await validatePath(filePath);
+      return { success: true, data: fs.existsSync(safePath) };
+    } catch (error: any) {
+      return { success: false, error: { code: 'CHECK_ERROR', message: error.message } };
+    }
+  });
+
+  // 读取文件为 ArrayBuffer（用于 PDF）
+  ipcMain.handle('file:readAsArrayBuffer', async (_event, filePath: string) => {
+    try {
+      const safePath = await validatePath(filePath);
+      const buffer = fs.readFileSync(safePath);
+      return { success: true, data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) };
+    } catch (error: any) {
+      log.error('Read file as array buffer error:', error);
+      return { success: false, error: { code: 'READ_ERROR', message: error.message } };
+    }
+  });
+
+  // 读取文件为文本
+  ipcMain.handle('file:readAsText', async (_event, filePath: string) => {
+    try {
+      const safePath = await validatePath(filePath);
+      const content = fs.readFileSync(safePath, 'utf8');
+      return { success: true, data: content };
+    } catch (error: any) {
+      log.error('Read file as text error:', error);
+      return { success: false, error: { code: 'READ_ERROR', message: error.message } };
     }
   });
 }

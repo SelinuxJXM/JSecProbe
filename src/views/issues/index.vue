@@ -41,7 +41,7 @@
           导出问题清单
         </el-button>
         <el-button type="warning" :icon="Document" @click="handleGenerateReport">
-          生成测评报告
+          生成项目报告
         </el-button>
       </div>
     </div>
@@ -374,6 +374,8 @@
         <el-button type="primary" @click="confirmBatchStatus">确认修改</el-button>
       </template>
     </el-dialog>
+
+    <ReportConfigDialog ref="reportDialogRef" />
   </div>
 </template>
 
@@ -399,13 +401,13 @@ import {
   Upload,
 } from '@element-plus/icons-vue';
 import type { Issue, IssueSummary } from '../../../shared/types';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import ReportConfigDialog from './report-config-dialog.vue';
 
 const route = useRoute();
 const router = useRouter();
 const projectId = computed(() => route.params.id as string);
 const project = ref<any>(null);
+const reportDialogRef = ref<InstanceType<typeof ReportConfigDialog> | null>(null);
 
 function goBack() {
   router.back();
@@ -930,87 +932,7 @@ async function handleImport() {
 }
 
 async function handleGenerateReport() {
-  try {
-    await ElMessageBox.confirm(
-      '将根据当前项目的测评数据和问题清单生成PDF格式的测评报告，是否继续？',
-      '生成测评报告',
-      { type: 'info' }
-    );
-
-    const res = await window.api.issue.list({ projectId: projectId.value, page: 1, pageSize: 1000 });
-    if (!res.success || !res.data) {
-      ElMessage.error('获取问题数据失败');
-      return;
-    }
-
-    const issues = res.data.list;
-
-    const doc = new jsPDF('p', 'mm', 'a4');
-
-    doc.setFont('helvetica');
-
-    doc.setFontSize(20);
-    doc.text('Level Protection Assessment Report', 105, 20, { align: 'center' });
-
-    doc.setFontSize(12);
-    doc.text(`Project ID: ${projectId.value}`, 20, 40);
-    doc.text(`Generated: ${new Date().toLocaleString()}`, 20, 50);
-
-    doc.setFontSize(14);
-    doc.text('Summary', 20, 70);
-
-    doc.setFontSize(11);
-    doc.text(`High Risk: ${summary.value.highRisk}`, 20, 80);
-    doc.text(`Medium Risk: ${summary.value.mediumRisk}`, 20, 90);
-    doc.text(`Low Risk: ${summary.value.lowRisk}`, 20, 100);
-    doc.text(`Total Issues: ${summary.value.total}`, 20, 110);
-
-    doc.setFontSize(14);
-    doc.text('Issue List', 20, 130);
-
-    const tableData = issues.map((issue: any) => [
-      getRiskLabel(issue.riskLevel),
-      getStatusLabel(issue.status),
-      issue.securityDomain || '-',
-      issue.controlPoint || '-',
-      issue.issueTitle || '-',
-      issue.issueDescription
-        ? issue.issueDescription.substring(0, 50) + (issue.issueDescription.length > 50 ? '...' : '')
-        : '-',
-    ]);
-
-    autoTable(doc, {
-      startY: 140,
-      head: [['Risk', 'Status', 'Domain', 'Control Point', 'Title', 'Description']],
-      body: tableData,
-      theme: 'grid',
-      headStyles: {
-        fillColor: [27, 95, 217],
-        textColor: [255, 255, 255],
-        fontSize: 10,
-      },
-      bodyStyles: {
-        fontSize: 9,
-      },
-      columnStyles: {
-        0: { cellWidth: 20 },
-        1: { cellWidth: 20 },
-        2: { cellWidth: 30 },
-        3: { cellWidth: 30 },
-        4: { cellWidth: 40 },
-        5: { cellWidth: 60 },
-      },
-    });
-
-    const fileName = `Assessment_Report_${projectId.value}_${new Date().getTime()}.pdf`;
-    doc.save(fileName);
-
-    ElMessage.success('Report generated successfully');
-  } catch (error: any) {
-    if (error !== 'cancel') {
-      ElMessage.error(error?.message || 'Generation failed');
-    }
-  }
+  reportDialogRef.value?.open(projectId.value, project.value?.name || '');
 }
 
 onMounted(() => {

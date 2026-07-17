@@ -2,7 +2,7 @@ import { ipcMain, dialog } from 'electron';
 import log from 'electron-log';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, and, count, sql, like, or, desc, asc, inArray } from 'drizzle-orm';
+import { eq, and, count, sql, like, or, desc, asc, inArray, lte } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import ExcelJS from 'exceljs';
 import * as path from 'path';
@@ -346,12 +346,56 @@ export function registerIssueHandlers(): void {
       const domainCounts: Record<string, number> = {};
       domainStatsResult.forEach((row: any) => { domainCounts[row.securityDomain] = row.count; });
 
+      const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
+
+      // 解析项目扩展类型
+      const EXT_TYPE_MAP: Record<string, string> = {
+        '安全通用要求': 'general',
+        '云计算安全扩展要求': 'cloud',
+        '移动互联安全扩展要求': 'mobile',
+        '物联网安全扩展要求': 'iot',
+        '工业控制系统安全扩展要求': 'industrial',
+        '大数据安全扩展要求': 'bigdata',
+        '大数据安全扩展要求（国标附录）': 'bigdata',
+        '关键信息基础设施安全扩展要求': 'cii',
+      };
+      const projectExtCodes: string[] = [];
+      if (project?.extensionType) {
+        for (const t of project.extensionType.split(',').filter(Boolean)) {
+          const code = EXT_TYPE_MAP[t.trim()] || t.trim();
+          if (!projectExtCodes.includes(code)) projectExtCodes.push(code);
+        }
+      }
+
+      // 构建扩展类型过滤条件
+      const extOrConditions = [eq(schema.assessmentItems.extensionType, 'general')];
+      for (const ext of projectExtCodes) {
+        extOrConditions.push(eq(schema.assessmentItems.extensionType, ext));
+      }
+      const extOr = or(...extOrConditions);
+
+      // 适用范围条件
+      const applicableConditions = [
+        eq(schema.assessmentItems.standardId, project?.standardId || 'gb-t-22239-2019-l3'),
+        extOr,
+      ];
+      if (project?.level) {
+        applicableConditions.push(lte(schema.assessmentItems.minLevel, project.level));
+      }
+
+      // 子查询：适用范围的项ID
+      const itemIdsSubquery = db
+        .select({ id: schema.assessmentItems.id })
+        .from(schema.assessmentItems)
+        .where(and(...applicableConditions));
+
       const testedRecords = await db
         .select({ value: count() })
         .from(schema.assessmentRecords)
         .where(and(
           eq(schema.assessmentRecords.projectId, projectId),
-          sql`result NOT IN ('untested', '')`
+          inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
+          sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform')`
         ));
 
       const compliantRecords = await db
@@ -359,12 +403,23 @@ export function registerIssueHandlers(): void {
         .from(schema.assessmentRecords)
         .where(and(
           eq(schema.assessmentRecords.projectId, projectId),
+          inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
           sql`result IN ('compliant', 'conform')`
+        ));
+
+      const naRecords = await db
+        .select({ value: count() })
+        .from(schema.assessmentRecords)
+        .where(and(
+          eq(schema.assessmentRecords.projectId, projectId),
+          inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
+          sql`result = 'not_applicable'`
         ));
 
       const tested = testedRecords[0]?.value || 0;
       const compliant = compliantRecords[0]?.value || 0;
-      const complianceRate = tested > 0 ? Math.round((compliant / tested) * 100) : undefined;
+      const na = naRecords[0]?.value || 0;
+      const complianceRate = (tested + na) > 0 ? Math.round((compliant / (tested + na)) * 100) : 0;
 
       return {
         total,

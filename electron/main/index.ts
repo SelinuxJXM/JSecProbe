@@ -3,6 +3,7 @@ import { join } from 'path';
 import * as fs from 'fs';
 import log from 'electron-log';
 import { registerIpcHandlers } from './ipc';
+import { getSharedOcrWorker } from '../ipc/ai.ipc';
 import { initDatabase, getDb } from '../db';
 import * as schema from '../db/schema';
 import { getAppDataPath, getBackupPath, getDefaultBasePath } from './paths';
@@ -169,6 +170,14 @@ async function initApp() {
     registerIpcHandlers();
     log.info('IPC处理器注册完成');
     
+    if (process.env.VITE_DEV_SERVER_URL) {
+      getSharedOcrWorker().then(() => {
+        log.info('OCR worker 后台预加载完成');
+      }).catch((err) => {
+        log.warn('OCR worker 后台预加载失败:', err);
+      });
+    }
+    
     createWindow();
     log.info('主窗口创建完成');
     
@@ -288,3 +297,9 @@ app.on('before-quit', () => {
   isQuitting = true;
   cleanupAutoBackup();
 });
+
+function getMainWindow(): BrowserWindow | null {
+  return mainWindow;
+}
+
+export { getMainWindow };

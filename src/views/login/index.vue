@@ -1,5 +1,8 @@
 <template>
   <div class="login-page">
+    <!-- 背景粒子 -->
+    <canvas ref="particleCanvas" class="particle-canvas"></canvas>
+    
     <div class="login-container">
       <div class="login-left">
         <div class="brand">
@@ -58,6 +61,11 @@
                 @keyup.enter="handleLogin"
               />
             </el-form-item>
+
+            <div class="remember-row">
+              <el-checkbox v-model="rememberUsername">记住账号</el-checkbox>
+              <el-checkbox v-model="rememberPassword">记住密码</el-checkbox>
+            </div>
             
             <el-button
               type="primary"
@@ -83,7 +91,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue';
+import { reactive, ref, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus';
 import { User, Lock, CircleCheck } from '@element-plus/icons-vue';
@@ -93,6 +101,9 @@ const router = useRouter();
 const userStore = useUserStore();
 const formRef = ref<FormInstance>();
 const loading = ref(false);
+const particleCanvas = ref<HTMLCanvasElement>();
+const rememberUsername = ref(false);
+const rememberPassword = ref(false);
 
 const form = reactive({
   username: '',
@@ -104,6 +115,130 @@ const rules: FormRules = {
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
 };
 
+// 简单的 Base64 编码/解码
+function encodeBase64(str: string): string {
+  return btoa(encodeURIComponent(str));
+}
+
+function decodeBase64(str: string): string {
+  try {
+    return decodeURIComponent(atob(str));
+  } catch {
+    return '';
+  }
+}
+
+// 加载保存的账号密码
+function loadSavedCredentials() {
+  const savedUsername = localStorage.getItem('jsecprobe_username');
+  const savedPassword = localStorage.getItem('jsecprobe_password');
+  const savedRememberUsername = localStorage.getItem('jsecprobe_remember_username');
+  const savedRememberPassword = localStorage.getItem('jsecprobe_remember_password');
+
+  if (savedRememberUsername === 'true') {
+    rememberUsername.value = true;
+    if (savedUsername) {
+      form.username = decodeBase64(savedUsername);
+    }
+  }
+
+  if (savedRememberPassword === 'true') {
+    rememberPassword.value = true;
+    if (savedPassword) {
+      form.password = decodeBase64(savedPassword);
+    }
+  }
+}
+
+// 保存账号密码
+function saveCredentials() {
+  if (rememberUsername.value) {
+    localStorage.setItem('jsecprobe_username', encodeBase64(form.username));
+    localStorage.setItem('jsecprobe_remember_username', 'true');
+  } else {
+    localStorage.removeItem('jsecprobe_username');
+    localStorage.removeItem('jsecprobe_remember_username');
+  }
+
+  if (rememberPassword.value) {
+    localStorage.setItem('jsecprobe_password', encodeBase64(form.password));
+    localStorage.setItem('jsecprobe_remember_password', 'true');
+  } else {
+    localStorage.removeItem('jsecprobe_password');
+    localStorage.removeItem('jsecprobe_remember_password');
+  }
+}
+
+// 粒子动画
+let animationId: number;
+let particles: Array<{ x: number; y: number; vx: number; vy: number; size: number; opacity: number }> = [];
+
+function initParticles() {
+  const canvas = particleCanvas.value;
+  if (!canvas) return;
+
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+
+  particles = [];
+  const count = Math.floor((canvas.width * canvas.height) / 15000);
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      vx: (Math.random() - 0.5) * 0.5,
+      vy: (Math.random() - 0.5) * 0.5,
+      size: Math.random() * 2 + 1,
+      opacity: Math.random() * 0.5 + 0.2,
+    });
+  }
+}
+
+function animateParticles() {
+  const canvas = particleCanvas.value;
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  for (const p of particles) {
+    p.x += p.vx;
+    p.y += p.vy;
+
+    if (p.x < 0) p.x = canvas.width;
+    if (p.x > canvas.width) p.x = 0;
+    if (p.y < 0) p.y = canvas.height;
+    if (p.y > canvas.height) p.y = 0;
+
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255, 255, 255, ${p.opacity})`;
+    ctx.fill();
+  }
+
+  // 连线
+  for (let i = 0; i < particles.length; i++) {
+    for (let j = i + 1; j < particles.length; j++) {
+      const dx = particles[i].x - particles[j].x;
+      const dy = particles[i].y - particles[j].y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist < 120) {
+        ctx.beginPath();
+        ctx.moveTo(particles[i].x, particles[i].y);
+        ctx.lineTo(particles[j].x, particles[j].y);
+        ctx.strokeStyle = `rgba(255, 255, 255, ${0.1 * (1 - dist / 120)})`;
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+      }
+    }
+  }
+
+  animationId = requestAnimationFrame(animateParticles);
+}
+
 async function handleLogin() {
   if (!formRef.value) return;
   
@@ -114,6 +249,7 @@ async function handleLogin() {
   try {
     const result = await userStore.login(form.username, form.password);
     if (result.success) {
+      saveCredentials();
       if (result.user?.mustChangePassword) {
         router.push('/change-password?userId=' + result.user.id);
       } else {
@@ -127,17 +263,49 @@ async function handleLogin() {
     loading.value = false;
   }
 }
+
+onMounted(() => {
+  loadSavedCredentials();
+  initParticles();
+  animateParticles();
+
+  window.addEventListener('resize', initParticles);
+});
+
+onUnmounted(() => {
+  cancelAnimationFrame(animationId);
+  window.removeEventListener('resize', initParticles);
+});
 </script>
 
 <style lang="scss" scoped>
 .login-page {
   height: 100vh;
   width: 100vw;
-  background: linear-gradient(135deg, #1B5FD9 0%, #0F3D8F 100%);
+  background: linear-gradient(135deg, #1B5FD9 0%, #0F3D8F 50%, #1B5FD9 100%);
+  background-size: 200% 200%;
+  animation: gradientFlow 15s ease infinite;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  position: relative;
+}
+
+.particle-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+
+@keyframes gradientFlow {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
 }
 
 .login-container {
@@ -148,6 +316,20 @@ async function handleLogin() {
   box-shadow: var(--shadow-xl);
   display: flex;
   overflow: hidden;
+  position: relative;
+  z-index: 1;
+  animation: fadeInUp 0.8s ease-out;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .login-left {
@@ -170,6 +352,7 @@ async function handleLogin() {
     padding: 4px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     object-fit: cover;
+    animation: logoBreath 3s ease-in-out infinite;
   }
   
   .brand-title {
@@ -216,6 +399,11 @@ async function handleLogin() {
       }
     }
   }
+}
+
+@keyframes logoBreath {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
 }
 
 .features {
@@ -266,13 +454,52 @@ async function handleLogin() {
   .el-form-item {
     margin-bottom: var(--spacing-md);
   }
+
+  :deep(.el-input__wrapper) {
+    transition: all 0.3s ease;
+    
+    &:hover {
+      box-shadow: 0 0 0 1px var(--color-primary) inset;
+    }
+    
+    &.is-focus {
+      box-shadow: 0 0 0 2px var(--color-primary) inset, 0 0 8px rgba(27, 95, 217, 0.2);
+    }
+  }
+}
+
+.remember-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-lg);
+  padding: 0 4px;
+
+  :deep(.el-checkbox__label) {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+  }
+
+  :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
+    background-color: var(--color-primary);
+    border-color: var(--color-primary);
+  }
 }
 
 .login-btn {
   width: 100%;
   height: 44px;
   font-size: var(--font-size-md);
-  margin-top: var(--spacing-sm);
+  transition: all 0.3s ease;
+  
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(27, 95, 217, 0.4);
+  }
+  
+  &:active {
+    transform: translateY(0);
+  }
 }
 
 .tip {

@@ -109,6 +109,70 @@ export function registerProjectHandlers(): void {
     })
   );
 
+  ipcMain.handle('project:getStatistics', wrap(async () => {
+      const db = getDb();
+
+      const totalResult = await db
+        .select({ value: count() })
+        .from(schema.projects);
+      const total = totalResult[0]?.value || 0;
+
+      const statusGroups = await db
+        .select({
+          status: schema.projects.status,
+          count: count(),
+        })
+        .from(schema.projects)
+        .groupBy(schema.projects.status);
+
+      const statusCounts: Record<string, number> = {
+        draft: 0,
+        in_progress: 0,
+        completed: 0,
+        archived: 0,
+      };
+      for (const row of statusGroups) {
+        statusCounts[row.status] = row.count;
+      }
+
+      const levelGroups = await db
+        .select({
+          level: schema.projects.level,
+          count: count(),
+        })
+        .from(schema.projects)
+        .groupBy(schema.projects.level);
+
+      const levelCounts: Record<number, number> = { 2: 0, 3: 0, 4: 0 };
+      let otherLevelCount = 0;
+      for (const row of levelGroups) {
+        if (row.level >= 2 && row.level <= 4) {
+          levelCounts[row.level] = row.count;
+        } else {
+          otherLevelCount += row.count;
+        }
+      }
+
+      const assetResult = await db
+        .select({ value: sql<number>`coalesce(sum(${schema.projects.assetCount}), 0)` })
+        .from(schema.projects);
+      const assetTotal = Number(assetResult[0]?.value) || 0;
+
+      return {
+        projectCount: total,
+        inProgressCount: statusCounts.in_progress,
+        completedCount: statusCounts.completed,
+        draftCount: statusCounts.draft,
+        archivedCount: statusCounts.archived,
+        level2Count: levelCounts[2],
+        level3Count: levelCounts[3],
+        level4Count: levelCounts[4],
+        otherLevelCount,
+        assetCount: assetTotal,
+      };
+    })
+  );
+
   ipcMain.handle('project:get', wrap(async (_event, id: string) => {
       const db = getDb();
       const project = await db.query.projects.findFirst({

@@ -17,6 +17,8 @@ const api: ApiBridge = {
       ipcRenderer.invoke('project:list', params),
     get: (id) => 
       ipcRenderer.invoke('project:get', id),
+    getStatistics: () =>
+      ipcRenderer.invoke('project:getStatistics'),
     create: (data) => 
       ipcRenderer.invoke('project:create', data),
     update: (id, data) => 
@@ -75,7 +77,7 @@ const api: ApiBridge = {
       ipcRenderer.invoke('assessment:getRecordsByDomain', projectId, domain, projectLevel, extensionType),
     saveRecord: (data) =>
       ipcRenderer.invoke('assessment:saveRecord', data),
-    getProgress: (projectId, standardId) =>
+    getProgress: (projectId: string, standardId: string) =>
       ipcRenderer.invoke('assessment:getProgress', projectId, standardId),
     listDomains: (standardId) =>
       ipcRenderer.invoke('assessment:listDomains', standardId),
@@ -129,8 +131,8 @@ const api: ApiBridge = {
       ipcRenderer.invoke('issue:downloadTemplate', projectId),
   },
   report: {
-    generate: (projectId) =>
-      ipcRenderer.invoke('report:generate', projectId),
+    generate: (options) =>
+      ipcRenderer.invoke('report:generate', options),
   },
   knowledge: {
     listCategories: () =>
@@ -177,6 +179,18 @@ const api: ApiBridge = {
       ipcRenderer.invoke('knowledge:importSingleDocument', data),
     listDirectoryFiles: (dirPath) =>
       ipcRenderer.invoke('knowledge:listDirectoryFiles', dirPath),
+    readExcelFile: (filePath, sheetName?) =>
+      ipcRenderer.invoke('knowledge:readExcelFile', filePath, sheetName),
+    readWordFile: (filePath) =>
+      ipcRenderer.invoke('knowledge:readWordFile', filePath),
+  },
+  file: {
+    exists: (filePath) =>
+      ipcRenderer.invoke('file:exists', filePath),
+    readAsArrayBuffer: (filePath) =>
+      ipcRenderer.invoke('file:readAsArrayBuffer', filePath),
+    readAsText: (filePath) =>
+      ipcRenderer.invoke('file:readAsText', filePath),
   },
   system: {
     getInfo: () => 
@@ -225,6 +239,8 @@ const api: ApiBridge = {
       ipcRenderer.invoke('ai:saveConfig', config),
     testConnection: (params) =>
       ipcRenderer.invoke('ai:testConnection', params),
+    getProgress: () =>
+      ipcRenderer.invoke('ai:getProgress'),
     onAnalysisProgress: (callback: (data: any) => void) => {
       const listener = (_event: unknown, data: unknown) => callback(data as any);
       ipcRenderer.on('ai:analysisProgress', listener);

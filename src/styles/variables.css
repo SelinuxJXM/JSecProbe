@@ -28,6 +28,7 @@
   --color-bg-card: #FFFFFF;
   --color-bg-hover: #F0F4F9;
   --color-bg-active: #E8F0FD;
+  --color-bg-surface-hover: #F5F7FA;
 
   --color-sidebar-bg: #1E2A3B;
   --color-sidebar-bg-hover: #2A394F;
@@ -117,6 +118,7 @@ html[data-theme="dark"] {
   --color-bg-card: #1E293B;
   --color-bg-hover: #334155;
   --color-bg-active: rgba(59, 130, 246, 0.15);
+  --color-bg-surface-hover: #263548;
 
   --color-sidebar-bg: #0F172A;
   --color-sidebar-bg-hover: #1E293B;

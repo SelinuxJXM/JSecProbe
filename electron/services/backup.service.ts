@@ -6,7 +6,7 @@ const compressing = require('compressing');
 const AdmZip = require('adm-zip');
 import Database from 'better-sqlite3';
 import { getDbPath, getAppDataPath } from '../main/paths';
-import { closeDb, getDb } from '../db';
+import { closeDb, getDb, walCheckpoint } from '../db';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
 import log from 'electron-log';
@@ -106,6 +106,8 @@ export async function createFullBackup(customPath?: string): Promise<BackupResul
 
     const dbPath = await getDbPath();
     if (fs.existsSync(dbPath)) {
+      // 强制将 WAL 中的更改写入主数据库文件，保证备份数据的完整性
+      walCheckpoint();
       fs.copyFileSync(dbPath, path.join(tempBackupDir, 'mlps.db'));
       manifest.contents.database = true;
     }
@@ -583,7 +585,16 @@ export async function restoreFromZipBackupIncremental(
           db.update(schema.projects)
             .set({
               name: project.name,
+              projectNo: project.project_no,
               systemName: project.system_name,
+              assessedUnit: project.assessed_unit,
+              standardSystem: project.standard_system,
+              levelCombo: project.level_combo,
+              extensionType: project.extension_type,
+              customerName: project.customer_name,
+              assessor: project.assessor,
+              startDate: project.start_date,
+              endDate: project.end_date,
               description: project.description,
               level: project.level,
               status: project.status,
@@ -600,7 +611,16 @@ export async function restoreFromZipBackupIncremental(
             .values({
               id: project.id,
               name: project.name,
+              projectNo: project.project_no,
               systemName: project.system_name,
+              assessedUnit: project.assessed_unit,
+              standardSystem: project.standard_system,
+              levelCombo: project.level_combo,
+              extensionType: project.extension_type,
+              customerName: project.customer_name,
+              assessor: project.assessor,
+              startDate: project.start_date,
+              endDate: project.end_date,
               description: project.description,
               level: project.level,
               status: project.status,

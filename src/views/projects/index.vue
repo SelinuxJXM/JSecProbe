@@ -1,6 +1,6 @@
 <template>
   <div class="page-container">
-    <div class="card project-card">
+    <div class="card project-card" @click.self="closeStatusDropdown">
       <!-- Tab导航栏 -->
       <div class="card-tabs">
         <button
@@ -66,6 +66,7 @@
               <th class="col-ext">扩展类型</th>
               <th class="col-progress">项目进度</th>
               <th class="col-time">修改时间</th>
+              <th class="col-status">状态</th>
               <th class="col-actions">操作</th>
             </tr>
           </thead>
@@ -73,23 +74,23 @@
             <tr v-for="(row, index) in projectList" :key="row.id" :class="{ active: currentRowIndex === index, new: row.id < 0 }" @click="selectRow(index)" @dblclick="goToDetail(row)">
               <td class="col-index">{{ row.id < 0 ? '新' : index + 1 }}</td>
               <td class="col-no">
-                <input v-if="row.id < 0 || editedRows.has(String(row.id))" v-model="row.projectNo" class="cell-input mono" placeholder="DJCP-001（留空自动生成）" />
-                <span v-else class="mono-text">{{ row.projectNo }}</span>
+                <input v-if="row.id < 0 || editedRows.includes(String(row.id))" v-model="row.projectNo" class="cell-input mono" placeholder="DJCP-001（留空自动生成）" />
+                <span v-else class="mono-text" :title="row.projectNo">{{ row.projectNo }}</span>
               </td>
               <td class="col-name">
-                <input v-if="row.id < 0 || editedRows.has(String(row.id))" v-model="row.name" class="cell-input" placeholder="项目名称" />
-                <span v-else>{{ row.name }}</span>
+                <input v-if="row.id < 0 || editedRows.includes(String(row.id))" v-model="row.name" class="cell-input" placeholder="项目名称" />
+                <span v-else :title="row.name">{{ row.name }}</span>
               </td>
               <td class="col-system">
-                <input v-if="row.id < 0 || editedRows.has(String(row.id))" v-model="row.systemName" class="cell-input" placeholder="系统名称" />
-                <span v-else class="text-secondary">{{ row.systemName }}</span>
+                <input v-if="row.id < 0 || editedRows.includes(String(row.id))" v-model="row.systemName" class="cell-input" placeholder="系统名称" />
+                <span v-else class="text-secondary" :title="row.systemName">{{ row.systemName }}</span>
               </td>
               <td class="col-unit">
-                <input v-if="row.id < 0 || editedRows.has(String(row.id))" v-model="row.assessedUnit" class="cell-input" placeholder="被测单位" />
-                <span v-else class="text-secondary">{{ row.assessedUnit }}</span>
+                <input v-if="row.id < 0 || editedRows.includes(String(row.id))" v-model="row.assessedUnit" class="cell-input" placeholder="被测单位" />
+                <span v-else class="text-secondary" :title="row.assessedUnit">{{ row.assessedUnit }}</span>
               </td>
               <td class="col-standard">
-                <select v-if="row.id < 0 || editedRows.has(String(row.id))" v-model="row.standardSystem" class="cell-select">
+                <select v-if="row.id < 0 || editedRows.includes(String(row.id))" v-model="row.standardSystem" class="cell-select">
                   <option value="新国标-正式版">新国标-正式版</option>
                   <option value="新国标-试行版">新国标-试行版</option>
                   <option value="旧国标">旧国标</option>
@@ -97,11 +98,11 @@
                 <span v-else class="text-secondary">{{ row.standardSystem }}</span>
               </td>
               <td class="col-level">
-                <input v-if="row.id < 0 || editedRows.has(String(row.id))" v-model="row.levelCombo" class="cell-input level-input" placeholder="S3A3G3" />
+                <input v-if="row.id < 0 || editedRows.includes(String(row.id))" v-model="row.levelCombo" class="cell-input level-input" placeholder="S3A3G3" />
                 <span v-else class="level-text">{{ row.levelCombo }}</span>
               </td>
               <td class="col-ext">
-                <div v-if="row.id < 0 || editedRows.has(String(row.id))" class="ext-select-wrapper">
+                <div v-if="row.id < 0 || editedRows.includes(String(row.id))" class="ext-select-wrapper">
                   <span class="ext-display" @click="openExtDialog(row)">{{ formatExtDisplay(row.extensionTypes) }}</span>
                 </div>
                 <span v-else class="text-secondary">{{ formatExtDisplay(row.extensionTypes) }}</span>
@@ -116,6 +117,13 @@
               </td>
               <td class="col-time">
                 <span class="time-text">{{ formatDate(row.updatedAt) }}</span>
+              </td>
+              <td class="col-status">
+                <div class="status-wrapper" @click.stop>
+                  <span class="status-tag" :class="'status-' + row.status" @click.stop.prevent="openStatusDropdown(row, $event)">
+                    {{ statusLabel(row.status) }}
+                  </span>
+                </div>
               </td>
               <td class="col-actions">
                 <button class="action-btn enter" @click.stop="goToDetail(row)" title="进入项目">
@@ -141,6 +149,18 @@
         <div class="footer-left">
           <span class="total-text">共 {{ pagination.total }} 条</span>
           <span v-if="editedCount > 0" class="edited-badge">{{ editedCount }} 项待保存</span>
+          <span v-if="saveStatus === 'saving'" class="save-status saving">
+            <span class="save-dot"></span>保存中...
+          </span>
+          <span v-else-if="saveStatus === 'saved' && lastSavedTime" class="save-status saved">
+            <span class="save-dot"></span>已保存 {{ formatSaveTime(lastSavedTime) }}
+          </span>
+          <span v-else-if="saveStatus === 'unsaved'" class="save-status unsaved">
+            <span class="save-dot"></span>有未保存的修改
+          </span>
+          <span v-else-if="saveStatus === 'error'" class="save-status error">
+            <span class="save-dot"></span>保存失败
+          </span>
         </div>
         <div class="pagination-btns">
           <button class="page-btn" :disabled="pagination.page <= 1" @click="pagination.page--; loadProjects()">
@@ -166,6 +186,29 @@
       </div>
     </div>
 
+    <!-- 状态切换下拉菜单（全局浮动） -->
+    <div
+      v-if="statusDropdownTarget !== null && statusDropdownRow"
+      class="status-floating-dropdown"
+      :style="{ top: statusDropdownRect.top + 'px', left: statusDropdownRect.left + 'px' }"
+    >
+      <div
+        class="status-option"
+        :class="{ active: statusDropdownRow.status === 'draft' }"
+        @click="changeStatus(statusDropdownRow, 'draft')"
+      >草稿</div>
+      <div
+        class="status-option"
+        :class="{ active: statusDropdownRow.status === 'in_progress' }"
+        @click="changeStatus(statusDropdownRow, 'in_progress')"
+      >进行中</div>
+      <div
+        class="status-option"
+        :class="{ active: statusDropdownRow.status === 'completed' }"
+        @click="changeStatus(statusDropdownRow, 'completed')"
+      >已完成</div>
+    </div>
+
     <!-- 扩展类型多选弹窗 -->
     <div v-if="extDialogVisible" class="dialog-overlay" @click.self="closeExtDialog">
       <div class="ext-dialog">
@@ -189,10 +232,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useAppStore } from '@/stores/app';
+import { useProjectAutoSave } from './composables/useProjectAutoSave';
 
 const router = useRouter();
 const appStore = useAppStore();
@@ -205,10 +249,20 @@ const projectList = ref<any[]>([]);
 const stats = reactive({ activeCount: 0, archivedCount: 0 });
 const currentRowIndex = ref(-1);
 
-// 编辑状态追踪
-const editedRows = reactive(new Set<string>());
-const deletedIds = reactive(new Set<string>());
-const editedCount = computed(() => editedRows.size + deletedIds.size);
+// 编辑状态追踪（用数组替代 Set，避免 ref 无法响应 Set 内部变化）
+const editedRows = ref<string[]>([]);
+const deletedIds = ref<string[]>([]);
+const editedCount = computed(() => editedRows.value.length + deletedIds.value.length);
+
+// 自动保存
+const autoSave = useProjectAutoSave({
+  projectList,
+  editedRows,
+  deletedIds,
+  parseLevelFromCombo,
+  loadProjects,
+});
+const { saveStatus, lastSavedTime, debounceAutoSave, startPeriodicSave, formatSaveTime, cleanup } = autoSave;
 
 let tempIdCounter = -1;
 
@@ -243,7 +297,10 @@ function confirmExtDialog() {
   if (extDialogRow.value) {
     extDialogRow.value.extensionTypes = [...extDialogSelected.value];
     // 标记当前行已编辑
-    editedRows.add(String(extDialogRow.value.id));
+    if (!editedRows.value.includes(String(extDialogRow.value.id))) {
+      editedRows.value.push(String(extDialogRow.value.id));
+    }
+    debounceAutoSave();
   }
   closeExtDialog();
 }
@@ -252,6 +309,49 @@ function formatExtDisplay(extTypes: string[] | undefined): string {
   if (!extTypes || extTypes.length === 0) return '—';
   if (extTypes.length <= 2) return extTypes.map(t => t.replace('安全扩展要求', '')).join('、');
   return `${extTypes.slice(0, 2).map(t => t.replace('安全扩展要求', '')).join('、')}等${extTypes.length}项`;
+}
+
+// 状态切换
+const statusDropdownTarget = ref<number | null>(null);
+const statusDropdownRow = ref<any>(null);
+const statusDropdownRect = ref({ top: 0, left: 0 });
+
+function statusLabel(status: string): string {
+  const map: Record<string, string> = {
+    draft: '草稿',
+    in_progress: '进行中',
+    completed: '已完成',
+    archived: '已归档',
+  };
+  return map[status] || status;
+}
+
+function openStatusDropdown(row: any, event: Event) {
+  const target = event.currentTarget as HTMLElement;
+  const rect = target.getBoundingClientRect();
+  statusDropdownRect.value = {
+    top: rect.top + rect.height + 4,
+    left: rect.left,
+  };
+  statusDropdownRow.value = row;
+  statusDropdownTarget.value = row.id;
+}
+
+function changeStatus(row: any, newStatus: string) {
+  if (row.status === newStatus) {
+    closeStatusDropdown();
+    return;
+  }
+  row.status = newStatus;
+  if (!editedRows.value.includes(String(row.id))) {
+    editedRows.value.push(String(row.id));
+  }
+  debounceAutoSave();
+  closeStatusDropdown();
+}
+
+function closeStatusDropdown() {
+  statusDropdownTarget.value = null;
 }
 
 const pagination = reactive({
@@ -297,11 +397,13 @@ function selectRow(index: number) {
 }
 
 function toggleEdit(row: any) {
-  if (editedRows.has(String(row.id))) {
-    editedRows.delete(String(row.id));
+  const id = String(row.id);
+  if (editedRows.value.includes(id)) {
+    editedRows.value = editedRows.value.filter(x => x !== id);
   } else {
-    editedRows.add(String(row.id));
+    editedRows.value.push(id);
   }
+  debounceAutoSave();
 }
 
 function parseLevelFromCombo(levelCombo: string): number {
@@ -331,9 +433,10 @@ function addEmptyRow() {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  editedRows.add(String(newRow.id));
+  editedRows.value.push(String(newRow.id));
   projectList.value.unshift(newRow);
   currentRowIndex.value = 0;
+  debounceAutoSave();
 }
 
 async function loadProjects() {
@@ -360,8 +463,8 @@ async function loadProjects() {
         extensionTypes: row.extensionType ? row.extensionType.split(',').filter(Boolean) : [],
       }));
       pagination.total = res.data.total;
-      editedRows.clear();
-      deletedIds.clear();
+      editedRows.value = [];
+      deletedIds.value = [];
       currentRowIndex.value = -1;
     }
 
@@ -376,53 +479,13 @@ async function loadProjects() {
 
 async function saveAllChanges() {
   saving.value = true;
-  let created = 0, updated = 0, deleted = 0;
   try {
-    for (const id of deletedIds) {
-      const res = await window.api.project.remove(id);
-      if (res.success) deleted++;
+    const success = await autoSave.saveAllChanges();
+    if (success) {
+      ElMessage.success('保存成功');
+    } else {
+      ElMessage.info('没有需要保存的修改');
     }
-    deletedIds.clear();
-
-    for (const row of projectList.value) {
-      const isEdited = editedRows.has(String(row.id));
-      if (!isEdited && row.id > 0) continue;
-
-      if (row.id < 0) {
-        if (!row.name?.trim()) continue;
-        const res = await window.api.project.create({
-          projectNo: row.projectNo || undefined,
-          name: row.name.trim(),
-          systemName: row.systemName,
-          assessedUnit: row.assessedUnit,
-          standardSystem: row.standardSystem,
-          levelCombo: row.levelCombo,
-          extensionType: row.extensionTypes && row.extensionTypes.length > 0 ? row.extensionTypes.join(',') : null,
-          level: parseLevelFromCombo(row.levelCombo),
-        });
-        if (res.success) created++;
-      } else {
-        const res = await window.api.project.update(row.id, {
-          projectNo: row.projectNo,
-          name: row.name,
-          systemName: row.systemName,
-          assessedUnit: row.assessedUnit,
-          standardSystem: row.standardSystem,
-          levelCombo: row.levelCombo,
-          extensionType: row.extensionTypes && row.extensionTypes.length > 0 ? row.extensionTypes.join(',') : null,
-          level: parseLevelFromCombo(row.levelCombo),
-        });
-        if (res.success) updated++;
-      }
-    }
-    const msgs: string[] = [];
-    if (created > 0) msgs.push(`新增 ${created} 条`);
-    if (updated > 0) msgs.push(`更新 ${updated} 条`);
-    if (deleted > 0) msgs.push(`删除 ${deleted} 条`);
-    if (msgs.length > 0) ElMessage.success(msgs.join('，'));
-    else ElMessage.info('没有需要保存的修改');
-    editedRows.clear();
-    await loadProjects();
   } finally {
     saving.value = false;
   }
@@ -436,10 +499,10 @@ async function handleDelete(row: any) {
   }
   if (row.id < 0) {
     projectList.value = projectList.value.filter(r => r.id !== row.id);
-    editedRows.delete(String(row.id));
+    editedRows.value = editedRows.value.filter(x => x !== String(row.id));
   } else {
-    deletedIds.add(String(row.id));
-    editedRows.delete(String(row.id));
+    deletedIds.value.push(String(row.id));
+    editedRows.value = editedRows.value.filter(x => x !== String(row.id));
     projectList.value = projectList.value.filter(r => r.id !== row.id);
   }
 }
@@ -490,7 +553,14 @@ async function handleExport() {
   else if (res.error?.message !== '用户取消') ElMessage.error(res.error?.message || '导出失败');
 }
 
-onMounted(loadProjects);
+onMounted(() => {
+  loadProjects();
+  startPeriodicSave();
+});
+
+onUnmounted(() => {
+  cleanup();
+});
 </script>
 
 <style lang="scss" scoped>
@@ -504,6 +574,36 @@ onMounted(loadProjects);
   background: var(--color-bg-card);
   border-radius: var(--radius-lg, 8px);
   box-shadow: var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.04));
+  position: relative;
+}
+
+.status-floating-dropdown {
+  position: fixed;
+  z-index: 9999;
+  background: #fff;
+  border: 1px solid #E5E7EB;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  padding: 4px;
+  min-width: 88px;
+
+  .status-option {
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--color-text-primary, #111827);
+    transition: background 0.1s;
+
+    &:hover {
+      background: #F3F4F6;
+    }
+
+    &.active {
+      font-weight: 600;
+      color: var(--color-primary, #1B5FD9);
+    }
+  }
 }
 
 .card-tabs {
@@ -663,22 +763,23 @@ onMounted(loadProjects);
         padding: 0 16px;
         font-size: 12px;
         font-weight: 500;
-        color: var(--color-text-secondary, #4B5563);
+        color: var(--color-text-secondary);
         text-align: left;
         border-bottom: 1px solid var(--color-border-default, #E5E7EB);
         white-space: nowrap;
 
         &.col-index { width: 56px; }
-        &.col-no { width: 180px; }
-        &.col-name { min-width: 160px; }
-        &.col-system { min-width: 140px; }
-        &.col-unit { min-width: 140px; }
+        &.col-no { width: 140px; }
+        &.col-name { width: 240px; }
+        &.col-system { width: 220px; }
+        &.col-unit { width: 220px; }
         &.col-standard { width: 120px; }
         &.col-level { width: 100px; }
         &.col-ext { width: 140px; }
         &.col-progress { width: 120px; }
         &.col-time { width: 140px; }
-        &.col-actions { width: 120px; }
+        &.col-status { width: 100px; position: sticky; right: 0; background: var(--color-bg-card, rgba(255, 255, 255, 0.85)); backdrop-filter: blur(8px); z-index: 2; border-left: 1px solid var(--color-border-light, #E5E7EB); border-right: none; }
+        &.col-actions { width: 120px; position: sticky; right: 0; background: var(--color-bg-card, rgba(255, 255, 255, 0.85)); backdrop-filter: blur(8px); z-index: 2; }
       }
     }
 
@@ -686,25 +787,27 @@ onMounted(loadProjects);
       height: 44px;
       cursor: pointer;
       transition: background 0.12s;
+      background: var(--color-bg-card);
 
       &:hover {
         background: var(--color-bg-surface-hover, #FAFBFD);
       }
 
       &.active {
-        background: var(--color-primary-lighter, #F0F5FF);
+        background: var(--color-primary-lighter, rgba(59, 130, 246, 0.12));
       }
 
       &.new {
-        background: var(--color-warning-light);
+        background: var(--color-warning-light, rgba(212, 136, 6, 0.1));
 
         &:hover {
-          background: var(--color-warning-light);
+          background: var(--color-warning-light, rgba(212, 136, 6, 0.1));
         }
       }
 
       td {
-        padding: 0 16px;
+        padding: 10px 16px;
+        box-sizing: border-box;
         font-size: 13px;
         color: var(--color-text-primary, #111827);
         border-bottom: 1px solid var(--color-border-light, #F0F0F3);
@@ -788,10 +891,62 @@ onMounted(loadProjects);
         font-size: 12px;
       }
 
+      .col-status {
+        width: 100px;
+        position: sticky;
+        right: 0;
+        background: var(--color-bg-card);
+        backdrop-filter: blur(8px);
+        z-index: 2;
+        border-left: 1px solid var(--color-border-light);
+
+        .status-wrapper {
+          position: relative;
+          display: inline-block;
+        }
+
+        .status-tag {
+          display: inline-flex;
+          align-items: center;
+          padding: 2px 10px;
+          border-radius: 10px;
+          font-size: 12px;
+          line-height: 20px;
+          cursor: pointer;
+          user-select: none;
+          transition: all 0.15s;
+
+          &.status-draft {
+            background: #F3F4F6;
+            color: #6B7280;
+          }
+
+          &.status-in_progress {
+            background: #E8F0FE;
+            color: #1B5FD9;
+          }
+
+          &.status-completed {
+            background: #E8F5E9;
+            color: #16A34A;
+          }
+
+          &.status-archived {
+            background: #FEF3C7;
+            color: #D97706;
+          }
+        }
+      }
+
       .col-actions {
+        position: sticky;
+        right: 0;
+        background: var(--color-bg-card);
+        backdrop-filter: blur(8px);
+        z-index: 2;
         display: flex;
         align-items: center;
-        gap: 4px;
+        gap: 8px;
 
         .action-btn {
           display: flex;
@@ -913,6 +1068,44 @@ onMounted(loadProjects);
       color: #D97706;
       font-size: 11px;
       font-weight: 500;
+    }
+
+    .save-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+
+      .save-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        display: inline-block;
+      }
+
+      &.saving {
+        background: #EFF6FF;
+        color: #2563EB;
+        .save-dot { background: #2563EB; animation: pulse 1s infinite; }
+      }
+      &.saved {
+        background: #ECFDF5;
+        color: #059669;
+        .save-dot { background: #059669; }
+      }
+      &.unsaved {
+        background: #FFFBEB;
+        color: #D97706;
+        .save-dot { background: #D97706; }
+      }
+      &.error {
+        background: #FEF2F2;
+        color: #DC2626;
+        .save-dot { background: #DC2626; }
+      }
     }
   }
 
@@ -1135,6 +1328,47 @@ onMounted(loadProjects);
   &:hover {
     background: var(--color-primary-light);
     border-radius: 4px;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+/* 深色主题覆盖 */
+:deep(:root.dark) {
+  .project-table tbody tr {
+    background: var(--color-bg-card);
+
+    &:hover {
+      background: var(--color-bg-surface-hover);
+    }
+
+    &.active {
+      background: rgba(59, 130, 246, 0.12);
+    }
+
+    .status-tag {
+      &.status-draft {
+        background: rgba(107, 114, 128, 0.2);
+        color: #9CA3AF;
+      }
+
+      &.status-in_progress {
+        background: rgba(59, 130, 246, 0.2);
+        color: #60A5FA;
+      }
+
+      &.status-completed {
+        background: rgba(22, 163, 74, 0.2);
+        color: #34D399;
+      }
+
+      &.status-archived {
+        background: rgba(217, 119, 6, 0.2);
+        color: #FBBF24;
+      }
+    }
   }
 }
 </style>

@@ -51,3 +51,5 @@ JSecProbeData
 # Screenshots (optional, keep wechat-qrcode for README)
 screenshots/*.png
 !screenshots/wechat-qrcode.png
+.traineddata
+original_index.vue
