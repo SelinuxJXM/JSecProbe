@@ -27,6 +27,8 @@ export function registerDocumentHandlers(): void {
         content = await extractPdfText(filePath);
       } else if (lower.endsWith('.doc') || lower.endsWith('.docx')) {
         content = await extractWordText(filePath);
+      } else if (lower.endsWith('.txt') || lower.endsWith('.md') || lower.endsWith('.csv')) {
+        content = fs.readFileSync(filePath, 'utf-8');
       }
       results.push({ name: fileName, content });
     }

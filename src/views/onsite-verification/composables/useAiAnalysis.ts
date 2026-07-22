@@ -143,16 +143,45 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
       aiStep.value = 5;
       aiLoadingText.value = 'AI正在生成详实测评结论...';
 
+      // 分离图片文件和其他文件
+      const imageFiles: string[] = [];
+      const docFiles: string[] = [];
+      for (const s of (row.screenshots || [])) {
+        if (typeof s !== 'string' || s.length === 0) continue;
+        const lower = s.toLowerCase();
+        if (lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.gif') || lower.endsWith('.bmp')) {
+          imageFiles.push(s);
+        } else if (lower.endsWith('.pdf') || lower.endsWith('.doc') || lower.endsWith('.docx') || lower.endsWith('.md') || lower.endsWith('.txt')) {
+          docFiles.push(s);
+        }
+      }
+
+      // 提取文档文本内容
+      let docTextContent = '';
+      if (docFiles.length > 0) {
+        try {
+          const docRes = await window.api.document.extractText({ filePaths: docFiles });
+          if (docRes.success && docRes.data) {
+            for (const doc of docRes.data) {
+              docTextContent += `\n=== 文档：${doc.name} ===\n${doc.content}\n`;
+            }
+          }
+        } catch (e) {
+          console.warn('[aiAnalyze] 文档文本提取失败:', e);
+        }
+      }
+
       const params = {
         controlPoint: row.controlPoint || '',
         requirement: row.requirement || '',
         command: '',
-        result: row.evidence || '',
-        screenshots: (row.screenshots || []).filter((s: any) => typeof s === 'string' && s.length > 0),
+        result: row.evidence + docTextContent || '',
+        screenshots: imageFiles,
       };
       console.log('[aiAnalyze] 准备调用, params:', JSON.stringify({
         ...params,
         screenshots: params.screenshots.length + ' items',
+        docFiles: docFiles.length + ' items',
       }));
 
       let res;
@@ -177,9 +206,36 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
       if (res.success && res.data) {
         try {
           const content = res.data.content;
-          const jsonMatch = content.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            const analysis = JSON.parse(jsonMatch[0]);
+          console.log('[aiAnalyze] AI返回内容长度:', content.length);
+
+          // 尝试多种方式提取JSON
+          let analysis: any = null;
+
+          // 方法1: 直接解析整个内容
+          try {
+            analysis = JSON.parse(content);
+          } catch (e1) {
+            // 方法2: 使用正则提取JSON对象
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              try {
+                analysis = JSON.parse(jsonMatch[0]);
+              } catch (e2) {
+                // 方法3: 尝试修复常见的JSON格式问题
+                try {
+                  let fixed = jsonMatch[0]
+                    .replace(/,\s*}/g, '}')
+                    .replace(/,\s*]/g, ']')
+                    .replace(/[\r\n]+/g, '\\n');
+                  analysis = JSON.parse(fixed);
+                } catch (e3) {
+                  console.warn('[aiAnalyze] JSON解析失败，使用原始内容');
+                }
+              }
+            }
+          }
+
+          if (analysis) {
             aiAnalysisResult.value = {
               controlPoint: row.controlPoint || '',
               requirement: row.requirement || '',
@@ -387,11 +443,24 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
           }));
         const imagePaths = batchFiles.value.filter(f => f.fileType === 'image').map(s => s.path);
         const docFiles = batchFiles.value.filter(f => f.fileType === 'pdf' || f.fileType === 'word');
+        const textFiles = batchFiles.value.filter(f => f.fileType === 'text');
         let docContents: { name: string; content: string }[] = [];
         if (docFiles.length > 0) {
           const docRes = await window.api.document.extractText({ filePaths: docFiles.map(d => d.path) });
           if (docRes.success && docRes.data) {
             docContents = docRes.data;
+          }
+        }
+        if (textFiles.length > 0) {
+          for (const textFile of textFiles) {
+            try {
+              const res = await window.api.screenshot.readText({ filePath: textFile.path });
+              if (res.success && res.data) {
+                docContents.push({ name: textFile.name, content: res.data.content });
+              }
+            } catch (e) {
+              console.warn('[batchAiAnalyze] 读取文本文件失败:', textFile.path, e);
+            }
           }
         }
 
@@ -403,45 +472,85 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
 
         if (res.success && res.data) {
           const content = res.data.content;
-          const jsonMatch = content.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            try {
-              const analysis = JSON.parse(jsonMatch[0]);
-              const results = analysis.results || [];
-              let appliedCount = 0;
+          console.log('[batchAiAnalyze] AI返回内容长度:', content.length);
+          console.log('[batchAiAnalyze] AI返回内容前500字符:', content.substring(0, 500));
 
-              for (const result of results) {
-                const row = tableRows.value.find(r => r.itemId === result.itemId);
-                if (row) {
-                  const resultMap: Record<string, string> = {
-                    '符合': 'conform',
-                    '部分符合': 'partial',
-                    '不符合': 'nonconform',
-                    '不适用': 'na',
-                  };
-                  const complianceValue = resultMap[result.compliance] || '';
-                  if (complianceValue) {
-                    row.compliance = complianceValue;
+          // 尝试多种方式提取JSON
+          let analysis: any = null;
+          let parseError: any = null;
+
+          // 方法1: 直接解析整个内容
+          try {
+            analysis = JSON.parse(content);
+          } catch (e1) {
+            parseError = e1;
+            // 方法2: 使用正则提取JSON对象（贪婪匹配最外层大括号）
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              try {
+                analysis = JSON.parse(jsonMatch[0]);
+              } catch (e2) {
+                parseError = e2;
+                // 方法3: 尝试修复常见的JSON格式问题
+                try {
+                  let fixed = jsonMatch[0]
+                    .replace(/,\s*}/g, '}')  // 移除尾随逗号
+                    .replace(/,\s*]/g, ']')  // 移除尾随逗号
+                    .replace(/[\r\n]+/g, '\\n')  // 转义换行符
+                    .replace(/(?<!\\)\\"/g, '"')  // 修复转义引号
+                    .replace(/(["\]}])\s*\n\s*([{\["])/g, '$1,$2');  // 添加缺失的逗号
+                  analysis = JSON.parse(fixed);
+                } catch (e3) {
+                  parseError = e3;
+                  // 方法4: 尝试提取results数组部分
+                  try {
+                    const resultsMatch = content.match(/"results"\s*:\s*\[([\s\S]*)\]/);
+                    if (resultsMatch) {
+                      const resultsArray = JSON.parse(`[${resultsMatch[1]}]`);
+                      analysis = { results: resultsArray };
+                    }
+                  } catch (e4) {
+                    parseError = e4;
                   }
-                  if (result.conclusion) {
-                    row.conclusion = result.conclusion;
-                  }
-                  appliedCount++;
                 }
               }
+            }
+          }
 
-              ElMessage.success(`AI分析完成，已自动填入 ${appliedCount} 条测评记录`);
-              try {
-                await saveAllRows();
-              } catch (err: any) {
-                console.error('[batchAiAnalyze] saveAllRows threw:', err);
+          if (analysis) {
+            const results = analysis.results || [];
+            let appliedCount = 0;
+
+            for (const result of results) {
+              const row = tableRows.value.find(r => r.itemId === result.itemId);
+              if (row) {
+                const resultMap: Record<string, string> = {
+                  '符合': 'conform',
+                  '部分符合': 'partial',
+                  '不符合': 'nonconform',
+                  '不适用': 'na',
+                };
+                const complianceValue = resultMap[result.compliance] || '';
+                if (complianceValue) {
+                  row.compliance = complianceValue;
+                }
+                if (result.conclusion) {
+                  row.conclusion = result.conclusion;
+                }
+                appliedCount++;
               }
-            } catch (e) {
-              console.error('[batchAiAnalyze] JSON解析失败:', e);
-              ElMessage.warning('AI返回结果解析失败，请重试');
+            }
+
+            ElMessage.success(`AI分析完成，已自动填入 ${appliedCount} 条测评记录`);
+            try {
+              await saveAllRows();
+            } catch (err: any) {
+              console.error('[batchAiAnalyze] saveAllRows threw:', err);
             }
           } else {
-            ElMessage.error('AI返回格式无法解析');
+            console.error('[batchAiAnalyze] JSON解析失败，所有方法都失败:', parseError);
+            console.error('[batchAiAnalyze] AI返回内容:', content);
+            ElMessage.warning('AI返回结果解析失败，请查看控制台或重试');
           }
         } else {
           ElMessage.error(res.error?.message || 'AI分析失败');

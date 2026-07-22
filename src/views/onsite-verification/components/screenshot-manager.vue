@@ -32,15 +32,7 @@
       <div v-else-if="previewFile?.fileType === 'pdf'" class="preview-pdf-wrapper">
         <iframe :src="previewFileSrc" class="preview-pdf" frameborder="0" />
       </div>
-      <div v-else-if="previewFile?.fileType === 'word'" class="preview-word-wrapper">
-        <div class="word-placeholder">
-          <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="#2B5797" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" fill="#2B5797" fill-opacity="0.1"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-          <p class="word-title">{{ previewFile.name }}</p>
-          <p class="word-desc">Word文档暂不支持在线预览</p>
-          <el-button type="primary" @click="openFileExternal(previewFile)">使用系统程序打开</el-button>
-        </div>
-      </div>
-      <div v-else-if="previewFile?.fileType === 'text'" class="preview-text-wrapper">
+      <div v-else-if="previewFile?.fileType === 'text' || previewFile?.fileType === 'word'" class="preview-text-wrapper">
         <pre class="preview-text-content">{{ previewTextContent }}</pre>
       </div>
       <div v-else class="preview-unsupported">
@@ -224,11 +216,6 @@ async function openFilePreview(fileInfo: { name: string; path: string; fileType:
   previewLoading.value = true;
   previewDialogVisible.value = true;
 
-  if (fileInfo.fileType === 'word') {
-    previewLoading.value = false;
-    return;
-  }
-
   if (fileInfo.fileType === 'text') {
     try {
       const res = await window.api.screenshot.readText({ filePath: fileInfo.path });
@@ -239,6 +226,22 @@ async function openFilePreview(fileInfo: { name: string; path: string; fileType:
       }
     } catch {
       previewError.value = '无法读取文本文件';
+    } finally {
+      previewLoading.value = false;
+    }
+    return;
+  }
+
+  if (fileInfo.fileType === 'word') {
+    try {
+      const res = await window.api.screenshot.readWord({ filePath: fileInfo.path });
+      if (res.success && res.data) {
+        previewTextContent.value = res.data.content;
+      } else {
+        previewError.value = res.error?.message || '无法读取Word文档';
+      }
+    } catch (err: any) {
+      previewError.value = err.message || '无法读取Word文档';
     } finally {
       previewLoading.value = false;
     }

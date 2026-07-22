@@ -92,6 +92,7 @@ const api = {
     getBase64: ipc<{ base64: string; mimeType: string }>('screenshot:getBase64'),
     uploadFile: ipc<{ path: string; name: string }>('screenshot:uploadFile'),
     readText: ipc<{ content: string }>('screenshot:readText'),
+    readWord: ipc<{ content: string }>('screenshot:readWord'),
     deleteFile: ipc<void>('screenshot:deleteFile'),
   },
   issue: {
