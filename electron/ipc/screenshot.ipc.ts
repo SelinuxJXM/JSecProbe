@@ -4,35 +4,7 @@ import * as path from 'path';
 import log from 'electron-log';
 import crypto from 'crypto';
 import { wrap } from '../utils/ipc-wrapper';
-import { getAppDataPath as getConfiguredAppDataPath } from '../main/paths';
-
-async function getAllowedBasePaths(): Promise<string[]> {
-  const dataPath = await getConfiguredAppDataPath();
-  return [
-    dataPath,
-    path.join(dataPath, 'screenshots'),
-    path.join(dataPath, 'evidence'),
-    path.join(dataPath, 'knowledge'),
-    path.join(dataPath, 'temp'),
-  ];
-}
-
-async function validatePath(inputPath: string): Promise<string> {
-  const resolved = path.resolve(inputPath);
-  const allowedPaths = await getAllowedBasePaths();
-  const isAllowed = allowedPaths.some(base => {
-    const resolvedBase = path.resolve(base);
-    return resolved === resolvedBase || resolved.startsWith(resolvedBase + path.sep);
-  });
-  if (!isAllowed) {
-    throw new Error(`路径访问被拒绝: ${inputPath} (仅允许访问应用数据目录)`);
-  }
-  return resolved;
-}
-
-function getFallbackAppDataPath(): string {
-  return path.join(process.env.APPDATA || path.join(process.env.HOME || '', '.config'), 'mlps-assessment-tool');
-}
+import { getAppDataPath } from '../main/paths';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const MAX_TEXT_SIZE = 1 * 1024 * 1024;
@@ -56,6 +28,49 @@ function isValidImage(buffer: Buffer, ext: string): boolean {
   return buffer.subarray(0, magic.length).equals(magic);
 }
 
+async function validatePath(inputPath: string): Promise<string> {
+  const resolved = path.resolve(inputPath);
+  const dataPath = await getAppDataPath();
+  const allowedPaths = [
+    dataPath,
+    path.join(dataPath, 'screenshots'),
+    path.join(dataPath, 'evidence'),
+    path.join(dataPath, 'knowledge'),
+    path.join(dataPath, 'temp'),
+  ];
+  const isAllowed = allowedPaths.some(base => {
+    const resolvedBase = path.resolve(base);
+    return resolved === resolvedBase || resolved.startsWith(resolvedBase + path.sep);
+  });
+  if (!isAllowed) {
+    throw new Error(`路径访问被拒绝: ${inputPath} (仅允许访问应用数据目录)`);
+  }
+  return resolved;
+}
+
+const MIME_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
+  '.webp': 'image/webp',
+  '.pdf': 'application/pdf',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.json': 'application/json',
+  '.log': 'text/plain',
+  '.csv': 'text/csv',
+  '.xml': 'application/xml',
+  '.html': 'text/html',
+};
+
+function getMimeType(ext: string): string {
+  return MIME_TYPES[ext.toLowerCase()] || 'application/octet-stream';
+}
+
 export function registerScreenshotHandlers(): void {
   ipcMain.handle('screenshot:upload', wrap(async (_event, { projectId, itemId, filePath }: { projectId: string; itemId: string; filePath: string }) => {
     if (!filePath || typeof filePath !== 'string') {
@@ -68,7 +83,7 @@ export function registerScreenshotHandlers(): void {
       throw new Error(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
     }
 
-    const appDataPath = getFallbackAppDataPath();
+    const appDataPath = await getAppDataPath();
     const screenshotsDir = path.join(appDataPath, 'screenshots', projectId, itemId);
     fs.mkdirSync(screenshotsDir, { recursive: true });
 
@@ -106,7 +121,7 @@ export function registerScreenshotHandlers(): void {
   ipcMain.handle('screenshot:saveFromBase64', wrap(async (_event, { projectId, itemId, base64Data }: { projectId: string; itemId: string; base64Data: string }) => {
     log.info('screenshot:saveFromBase64 called', { projectId, itemId, base64Length: base64Data?.length });
 
-    const appDataPath = getFallbackAppDataPath();
+    const appDataPath = await getAppDataPath();
     const screenshotsDir = path.join(appDataPath, 'screenshots', projectId, itemId);
     fs.mkdirSync(screenshotsDir, { recursive: true });
 
@@ -145,7 +160,7 @@ export function registerScreenshotHandlers(): void {
       throw new Error(`不支持的文件类型: ${ext} (仅支持: ${DOCUMENT_EXTENSIONS.join(', ')})`);
     }
 
-    const appDataPath = getFallbackAppDataPath();
+    const appDataPath = await getAppDataPath();
     const evidenceDir = path.join(appDataPath, 'evidence', projectId, itemId);
     fs.mkdirSync(evidenceDir, { recursive: true });
 
@@ -175,7 +190,12 @@ export function registerScreenshotHandlers(): void {
     if (!filePath || typeof filePath !== 'string') {
       throw new Error('文件路径无效');
     }
-    const resolvedPath = await validatePath(filePath);
+    // 先尝试直接读取文件，如果不存在则尝试在应用数据目录中查找
+    let resolvedPath = filePath;
+    if (!fs.existsSync(resolvedPath)) {
+      // 如果直接路径不存在，尝试验证是否在允许的应用数据目录中
+      resolvedPath = await validatePath(filePath);
+    }
 
     const stat = fs.statSync(resolvedPath);
     if (stat.size > MAX_FILE_SIZE) {
@@ -184,8 +204,8 @@ export function registerScreenshotHandlers(): void {
 
     const buffer = fs.readFileSync(resolvedPath);
     const base64 = buffer.toString('base64');
-    const ext = path.extname(resolvedPath).toLowerCase().replace('.', '');
-    const mimeType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+    const ext = path.extname(resolvedPath).toLowerCase();
+    const mimeType = getMimeType(ext);
 
     return { base64, mimeType };
   }, { moduleName: 'screenshot' }));
@@ -194,7 +214,10 @@ export function registerScreenshotHandlers(): void {
     if (!filePath || typeof filePath !== 'string') {
       throw new Error('文件路径无效');
     }
-    const resolvedPath = await validatePath(filePath);
+    let resolvedPath = filePath;
+    if (!fs.existsSync(resolvedPath)) {
+      resolvedPath = await validatePath(filePath);
+    }
 
     const ext = path.extname(resolvedPath).toLowerCase();
     if (!TEXT_EXTENSIONS.includes(ext)) {
@@ -210,6 +233,29 @@ export function registerScreenshotHandlers(): void {
     return { content };
   }, { moduleName: 'screenshot' }));
 
+  ipcMain.handle('screenshot:readWord', wrap(async (_event, { filePath }: { filePath: string }) => {
+    if (!filePath || typeof filePath !== 'string') {
+      throw new Error('文件路径无效');
+    }
+    let resolvedPath = filePath;
+    if (!fs.existsSync(resolvedPath)) {
+      resolvedPath = await validatePath(filePath);
+    }
+
+    const ext = path.extname(resolvedPath).toLowerCase();
+    if (ext !== '.doc' && ext !== '.docx') {
+      throw new Error(`不支持的文件类型: ${ext} (仅支持: .doc, .docx)`);
+    }
+
+    try {
+      const mammoth = require('mammoth');
+      const result = await mammoth.extractRawText({ path: resolvedPath });
+      return { content: result.value || '' };
+    } catch (err: any) {
+      throw new Error(`Word文档解析失败: ${err.message || '未知错误'}`);
+    }
+  }, { moduleName: 'screenshot' }));
+
   ipcMain.handle('screenshot:deleteFile', wrap(async (_event, { filePath }: { filePath: string }) => {
     const safePath = await validatePath(filePath);
     if (fs.existsSync(safePath)) {
@@ -219,7 +265,7 @@ export function registerScreenshotHandlers(): void {
   }, { moduleName: 'screenshot' }));
 
   ipcMain.handle('image:saveScreenshot', wrap(async (_event, base64Data: string, fileName: string) => {
-    const appDataPath = getFallbackAppDataPath();
+    const appDataPath = await getAppDataPath();
     const tempDir = path.join(appDataPath, 'screenshots', 'temp');
     fs.mkdirSync(tempDir, { recursive: true });
 

@@ -389,6 +389,7 @@ export interface ApiBridge {
     getBase64: (params: { filePath: string }) => Promise<IpcResponse<{ base64: string; mimeType: string }>>;
     uploadFile: (params: { projectId: string; itemId: string; filePath: string }) => Promise<IpcResponse<{ path: string; name: string }>>;
     readText: (params: { filePath: string }) => Promise<IpcResponse<{ content: string }>>;
+    readWord: (params: { filePath: string }) => Promise<IpcResponse<{ content: string }>>;
     deleteFile: (params: { filePath: string }) => Promise<IpcResponse<void>>;
   };
   issue: {
