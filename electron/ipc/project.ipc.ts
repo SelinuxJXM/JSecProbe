@@ -454,21 +454,6 @@ export function registerProjectHandlers(): void {
     }
   }
 
-  ipcMain.handle('project:reimportPresetRecords', wrap(async (_event, projectId: string) => {
-      const db = getDb();
-      const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
-      if (!project) throw new Error('项目不存在');
-      const level = Number(project.level) || 3;
-      const expectedStandardId = level === 2 ? 'gb-t-22239-2019-l2' : 'gb-t-22239-2019-l3';
-      if (project.standardId !== expectedStandardId) {
-        log.warn(`项目 ${projectId} 的标准库ID不匹配: ${project.standardId} -> ${expectedStandardId}，已自动修正`);
-        await db.update(schema.projects).set({ standardId: expectedStandardId }).where(eq(schema.projects.id, projectId));
-      }
-      await importPresetRecords(projectId, level);
-      return { success: true };
-    })
-  );
-
   ipcMain.handle('project:update', wrap(async (_event, id: string, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();

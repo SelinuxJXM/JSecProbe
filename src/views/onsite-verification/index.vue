@@ -89,10 +89,6 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           <span>同步问题</span>
         </el-button>
-        <el-button class="toolbar-btn" @click="reimportPresetRecords" :loading="reimporting">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
-          <span>重新导入预置结果</span>
-        </el-button>
         <el-button type="primary" class="toolbar-btn primary" @click="autoSave.triggerManualSave()" :loading="autoSave.saveStatus.value === 'saving'">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
           <span>保存</span>
@@ -920,29 +916,6 @@ async function handleImportRefresh() {
   await loadProject();
   await loadAssetTree();
   await loadProgress();
-}
-
-// 重新导入预置结果
-const reimporting = ref(false);
-async function reimportPresetRecords() {
-  const projectId = route.params.id as string;
-  if (!projectId || !window.api) return;
-  reimporting.value = true;
-  try {
-    const res = await window.api.project.reimportPresetRecords(projectId);
-    if (res.success) {
-      ElMessage.success('预置结果已重新导入');
-      if (currentDomainId.value) {
-        await selectGlobalDomain(currentDomainId.value);
-      }
-    } else {
-      ElMessage.error(res.error?.message || '导入失败');
-    }
-  } catch (err: any) {
-    ElMessage.error('导入失败: ' + err.message);
-  } finally {
-    reimporting.value = false;
-  }
 }
 
 // 同步问题

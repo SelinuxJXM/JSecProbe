@@ -351,7 +351,6 @@ export interface ApiBridge {
     import: () => Promise<IpcResponse<{ imported: number }>>;
     export: (projectId: string) => Promise<IpcResponse<{ path: string }>>;
     exportAll: () => Promise<IpcResponse<{ path: string }>>;
-    reimportPresetRecords: (projectId: string) => Promise<IpcResponse<{ success: boolean }>>;
   };
   asset: {
     list: (params: AssetListParams) => Promise<IpcResponse<AssetListResult>>;

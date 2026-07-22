@@ -69,7 +69,7 @@ function createWindow() {
   if (process.env.NODE_ENV === 'development') {
     mainWindow.loadURL('http://localhost:5173');
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
+    mainWindow.loadFile(join(__dirname, '../../dist-renderer/index.html'));
   }
 
   mainWindow.on('ready-to-show', () => {
@@ -83,12 +83,6 @@ function createWindow() {
 
   // 创建托盘图标
   createTray(mainWindow);
-
-  // 最小化到托盘
-  mainWindow.on('minimize', (event: Electron.Event) => {
-    event.preventDefault();
-    mainWindow?.hide();
-  });
 
   // 关闭按钮最小化到托盘
   mainWindow.on('close', (event: Electron.Event) => {
