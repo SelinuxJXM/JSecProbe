@@ -1,28 +1,11 @@
 import { ipcMain } from 'electron';
-import log from 'electron-log';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
 import { eq, sql, count, and } from 'drizzle-orm';
-
-function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
-  return Promise.resolve()
-    .then(fn)
-    .then((data) => ({ success: true, data }))
-    .catch((error) => {
-      log.error('Standard IPC Error:', error);
-      return {
-        success: false,
-        error: {
-          code: error.code || 'INTERNAL_ERROR',
-          message: error.message || '操作失败',
-        },
-      };
-    });
-}
+import { wrap } from '../utils/ipc-wrapper';
 
 export function registerStandardHandlers(): void {
-  ipcMain.handle('standard:list', () =>
-    wrap(async () => {
+  ipcMain.handle('standard:list', wrap(async () => {
       const db = getDb();
       const standards = await db.select().from(schema.standards).orderBy(schema.standards.name);
       return standards.map(s => ({
@@ -37,11 +20,9 @@ export function registerStandardHandlers(): void {
         isDefault: !!s.isDefault,
         createdAt: s.createdAt,
       }));
-    })
-  );
+    }));
 
-  ipcMain.handle('standard:getDomains', (_event, standardId: string) =>
-    wrap(async () => {
+  ipcMain.handle('standard:getDomains', wrap(async (_event, standardId: string) => {
       const db = getDb();
       const items = await db
         .select({ domain: schema.assessmentItems.domain, count: count() })
@@ -69,11 +50,9 @@ export function registerStandardHandlers(): void {
         icon: DOMAIN_NAMES[item.domain]?.icon || 'Document',
         count: item.count,
       }));
-    })
-  );
+    }));
 
-  ipcMain.handle('standard:getItems', (_event, standardId: string, domain?: string) =>
-    wrap(async () => {
+  ipcMain.handle('standard:getItems', wrap(async (_event, standardId: string, domain?: string) => {
       const db = getDb();
       const conditions = [eq(schema.assessmentItems.standardId, standardId)];
       if (domain) {
@@ -100,11 +79,9 @@ export function registerStandardHandlers(): void {
         sortOrder: item.sortOrder,
         parentId: item.parentId || undefined,
       }));
-    })
-  );
+    }));
 
-  ipcMain.handle('standard:setDefault', (_event, standardId: string) =>
-    wrap<void>(async () => {
+  ipcMain.handle('standard:setDefault', wrap(async (_event, standardId: string) => {
       const db = getDb();
       await db.update(schema.standards)
         .set({ isDefault: 0 })
@@ -112,13 +89,10 @@ export function registerStandardHandlers(): void {
       await db.update(schema.standards)
         .set({ isDefault: 1 })
         .where(eq(schema.standards.id, standardId));
-    })
-  );
+    }));
 
-  ipcMain.handle('standard:remove', (_event, standardId: string) =>
-    wrap<void>(async () => {
+  ipcMain.handle('standard:remove', wrap(async (_event, standardId: string) => {
       const db = getDb();
       await db.delete(schema.standards).where(eq(schema.standards.id, standardId));
-    })
-  );
+    }));
 }

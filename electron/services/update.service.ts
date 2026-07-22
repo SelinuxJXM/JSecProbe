@@ -172,6 +172,8 @@ export function initAutoUpdater(window: BrowserWindow) {
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
 
+  autoUpdater.removeAllListeners();
+
   autoUpdater.on('checking-for-update', () => {
     log.info('[更新] 正在检查更新...');
     sendStatusToWindow({ status: 'checking' });

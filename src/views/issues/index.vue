@@ -836,7 +836,7 @@ async function addEvidenceFile() {
     ],
     properties: ['openFile', 'multiSelections'],
   });
-  if (res.data?.canceled || !res.data?.filePaths) return;
+  if (!res.success || res.data?.canceled || !res.data?.filePaths) return;
 
   for (const filePath of res.data.filePaths) {
     if (!currentIssueEvidence.value.includes(filePath)) {
@@ -916,7 +916,7 @@ async function handleImport() {
     filters: [{ name: 'Excel文件', extensions: ['xlsx', 'xls'] }],
     properties: ['openFile'],
   });
-  if (res.data?.canceled || !res.data?.filePaths || res.data.filePaths.length === 0) return;
+  if (!res.success || res.data?.canceled || !res.data?.filePaths || res.data.filePaths.length === 0) return;
 
   const importRes = await window.api.issue.importExcel(projectId.value, res.data.filePaths[0]);
   if (importRes.success && importRes.data) {

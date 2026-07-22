@@ -1,78 +1,18 @@
-import { ipcMain, dialog } from 'electron';
+import { ipcMain } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
-import log from 'electron-log';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, and, desc, like, or, asc, sql } from 'drizzle-orm';
+import { eq, and, like, or } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { getAppDataPath } from '../main/paths';
-
-// 文件读取相关导入
-let XLSX: any = null;
-let mammoth: any = null;
-
-function getXlsx() {
-  if (!XLSX) {
-    XLSX = require('xlsx');
-  }
-  return XLSX;
-}
-
-function getMammoth() {
-  if (!mammoth) {
-    mammoth = require('mammoth');
-  }
-  return mammoth;
-}
-
-async function getAllowedBasePaths(): Promise<string[]> {
-  const dataPath = await getAppDataPath();
-  return [
-    dataPath,
-    path.join(dataPath, 'screenshots'),
-    path.join(dataPath, 'evidence'),
-    path.join(dataPath, 'knowledge'),
-    path.join(dataPath, 'temp'),
-    path.join(dataPath, 'backups'),
-  ];
-}
-
-async function validatePath(inputPath: string): Promise<string> {
-  const resolved = path.resolve(inputPath);
-  const allowedPaths = await getAllowedBasePaths();
-  const isAllowed = allowedPaths.some(base => {
-    const resolvedBase = path.resolve(base);
-    return resolved === resolvedBase || resolved.startsWith(resolvedBase + path.sep);
-  });
-  if (!isAllowed) {
-    throw new Error(`路径访问被拒绝: ${inputPath} (仅允许访问应用数据目录)`);
-  }
-  return resolved;
-}
+import { wrap } from '../utils/ipc-wrapper';
 
 const MAX_EXCEL_SIZE = 50 * 1024 * 1024;
 const MAX_EXCEL_ROWS = 10000;
 
-function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
-  return Promise.resolve()
-    .then(fn)
-    .then((data) => ({ success: true, data }))
-    .catch((error) => {
-      log.error('Knowledge IPC Error:', error);
-      return {
-        success: false,
-        error: {
-          code: error.code || 'INTERNAL_ERROR',
-          message: error.message || '操作失败',
-        },
-      };
-    });
-}
-
 export function registerKnowledgeHandlers(): void {
-  ipcMain.handle('knowledge:listCategories', () =>
-    wrap<any[]>(async () => {
+  ipcMain.handle('knowledge:listCategories', wrap(async () => {
       const db = getDb();
       const categories = await db
         .select()
@@ -91,11 +31,9 @@ export function registerKnowledgeHandlers(): void {
         color: cat.color,
         documentCount: countMap[cat.id] || 0,
       }));
-    })
-  );
+    }));
 
-  ipcMain.handle('knowledge:createCategory', (_event, data: any) =>
-    wrap<any>(async () => {
+  ipcMain.handle('knowledge:createCategory', wrap(async (_event, data: any) => {
       const db = getDb();
       const id = randomUUID();
       const now = new Date().toISOString();
@@ -111,44 +49,41 @@ export function registerKnowledgeHandlers(): void {
         updatedAt: now,
       });
       return { id, ...data };
-    })
-  );
+    }));
 
-  ipcMain.handle('knowledge:updateCategory', (_event, id: string, data: any) =>
-    wrap<void>(async () => {
+  ipcMain.handle('knowledge:updateCategory', wrap(async (_event, id: string, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
       await db.update(schema.knowledgeCategories).set({
         ...data,
         updatedAt: now,
       }).where(eq(schema.knowledgeCategories.id, id));
-    })
-  );
+      return { id, ...data };
+    }));
 
-  ipcMain.handle('knowledge:deleteCategory', (_event, id: string) =>
-    wrap<void>(async () => {
+  ipcMain.handle('knowledge:deleteCategory', wrap(async (_event, id: string) => {
       const db = getDb();
-      const getAllChildren = async (parentId: string): Promise<string[]> => {
+      const allIds: string[] = [];
+      const queue: string[] = [id];
+      while (queue.length > 0) {
+        const currentId = queue.shift()!;
+        allIds.push(currentId);
         const children = await db.select({ id: schema.knowledgeCategories.id })
           .from(schema.knowledgeCategories)
-          .where(eq(schema.knowledgeCategories.parentId, parentId));
-        let result = children.map(c => c.id);
-        for (const childId of result) {
-          result = result.concat(await getAllChildren(childId));
-        }
-        return result;
-      };
-      const allIds = [id, ...await getAllChildren(id)];
-      for (const cid of allIds) {
-        await db.update(schema.knowledgeDocuments)
-          .set({ categoryId: '' })
-          .where(eq(schema.knowledgeDocuments.categoryId, cid));
-        await db.delete(schema.knowledgeCategories).where(eq(schema.knowledgeCategories.id, cid));
+          .where(eq(schema.knowledgeCategories.parentId, currentId));
+        queue.push(...children.map(c => c.id));
       }
-    })
-  );
+      await db.transaction(async (tx) => {
+        for (const cid of allIds) {
+          await tx.update(schema.knowledgeDocuments)
+            .set({ categoryId: '' })
+            .where(eq(schema.knowledgeDocuments.categoryId, cid));
+          await tx.delete(schema.knowledgeCategories).where(eq(schema.knowledgeCategories.id, cid));
+        }
+      });
+    }));
 
-  ipcMain.handle('knowledge:listDocuments', (_event, params: {
+  ipcMain.handle('knowledge:listDocuments', wrap(async (_event, params: {
     categoryId?: string;
     keyword?: string;
     type?: string;
@@ -156,8 +91,7 @@ export function registerKnowledgeHandlers(): void {
     sortOrder?: string;
     page?: number;
     pageSize?: number;
-  }) =>
-    wrap<{ list: any[]; total: number }>(async () => {
+  }) => {
       const db = getDb();
       const { categoryId, keyword, type, sortField, sortOrder, page = 1, pageSize = 20 } = params;
 
@@ -205,11 +139,9 @@ export function registerKnowledgeHandlers(): void {
       const list = filtered.slice((page - 1) * pageSize, page * pageSize);
 
       return { list, total };
-    })
-  );
+    }));
 
-  ipcMain.handle('knowledge:getDocument', (_event, id: string) =>
-    wrap<any>(async () => {
+  ipcMain.handle('knowledge:getDocument', wrap(async (_event, id: string) => {
       const db = getDb();
       const result = await db
         .select()
@@ -217,11 +149,9 @@ export function registerKnowledgeHandlers(): void {
         .where(eq(schema.knowledgeDocuments.id, id))
         .limit(1);
       return result[0] || null;
-    })
-  );
+    }));
 
-  ipcMain.handle('knowledge:createDocument', (_event, data: any) =>
-    wrap<string>(async () => {
+  ipcMain.handle('knowledge:createDocument', wrap(async (_event, data: any) => {
       const db = getDb();
       const id = randomUUID();
       const now = new Date().toISOString();
@@ -233,28 +163,23 @@ export function registerKnowledgeHandlers(): void {
         updatedAt: now,
       });
       return id;
-    })
-  );
+    }));
 
-  ipcMain.handle('knowledge:updateDocument', (_event, id: string, data: any) =>
-    wrap<void>(async () => {
+  ipcMain.handle('knowledge:updateDocument', wrap(async (_event, id: string, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
       await db.update(schema.knowledgeDocuments).set({
         ...data,
         updatedAt: now,
       }).where(eq(schema.knowledgeDocuments.id, id));
-    })
-  );
+    }));
 
-  ipcMain.handle('knowledge:deleteDocument', (_event, id: string) =>
-    wrap<void>(async () => {
+  ipcMain.handle('knowledge:deleteDocument', wrap(async (_event, id: string) => {
       const db = getDb();
       await db.delete(schema.knowledgeDocuments).where(eq(schema.knowledgeDocuments.id, id));
-    })
-  );
+    }));
 
-  ipcMain.handle('knowledge:listCommands', (_event, params: {
+  ipcMain.handle('knowledge:listCommands', wrap(async (_event, params: {
     keyword?: string;
     os?: string;
     brand?: string;
@@ -263,8 +188,7 @@ export function registerKnowledgeHandlers(): void {
     subCategory?: string;
     page?: number;
     pageSize?: number;
-  }) =>
-    wrap<{ list: any[]; total: number }>(async () => {
+  }) => {
       const db = getDb();
       const { keyword, os, brand, deviceType, category, subCategory, page = 1, pageSize = 20 } = params;
 
@@ -301,20 +225,24 @@ export function registerKnowledgeHandlers(): void {
         query = query.where(and(...conditions));
       }
 
-      query = query.orderBy(desc(schema.knowledgeCommands.isFavorite), asc(schema.knowledgeCommands.createdAt));
-
       const all = await query;
-      const total = all.length;
-      const list = all.slice((page - 1) * pageSize, page * pageSize);
+
+      // 排序：常用命令优先
+      const sorted = [...all].sort((a, b) => {
+        if (a.isFavorite && !b.isFavorite) return -1;
+        if (!a.isFavorite && b.isFavorite) return 1;
+        return 0;
+      });
+
+      const total = sorted.length;
+      const list = sorted.slice((page - 1) * pageSize, page * pageSize);
 
       return { list, total };
-    })
-  );
+    }));
 
-  ipcMain.handle('knowledge:createCommand', (_event, data: any) =>
-    wrap<string>(async () => {
+  ipcMain.handle('knowledge:createCommand', wrap(async (_event, data: any) => {
       const db = getDb();
-      const id = data.id || randomUUID();
+      const id = randomUUID();
       const now = new Date().toISOString();
       await db.insert(schema.knowledgeCommands).values({
         ...data,
@@ -322,508 +250,345 @@ export function registerKnowledgeHandlers(): void {
         createdAt: now,
         updatedAt: now,
       });
-      return id;
-    })
-  );
+      return { id, ...data };
+    }));
 
-  ipcMain.handle('knowledge:updateCommand', (_event, id: string, data: any) =>
-    wrap<void>(async () => {
+  ipcMain.handle('knowledge:updateCommand', wrap(async (_event, id: string, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
       await db.update(schema.knowledgeCommands).set({
         ...data,
         updatedAt: now,
       }).where(eq(schema.knowledgeCommands.id, id));
-    })
-  );
+      return { id, ...data };
+    }));
 
-  ipcMain.handle('knowledge:deleteCommand', (_event, id: string) =>
-    wrap<void>(async () => {
+  ipcMain.handle('knowledge:deleteCommand', wrap(async (_event, id: string) => {
       const db = getDb();
       await db.delete(schema.knowledgeCommands).where(eq(schema.knowledgeCommands.id, id));
-    })
-  );
+    }));
 
-  ipcMain.handle('knowledge:favoriteCommand', (_event, id: string, isFavorite: number) =>
-    wrap<void>(async () => {
+  ipcMain.handle('knowledge:favoriteCommand', wrap(async (_event, id: string, isFavorite: number) => {
       const db = getDb();
-      await db.update(schema.knowledgeCommands).set({
-        isFavorite,
-        updatedAt: new Date().toISOString(),
-      }).where(eq(schema.knowledgeCommands.id, id));
-    })
-  );
+      await db.update(schema.knowledgeCommands)
+        .set({ isFavorite })
+        .where(eq(schema.knowledgeCommands.id, id));
+    }));
 
-  ipcMain.handle('knowledge:importKnowledge', async (_event, filePath: string) => {
-    try {
-      const XLSX = require('xlsx');
-      const db = getDb();
-      const safePath = await validatePath(filePath);
-      
-      const stats = fs.statSync(safePath);
-      if (stats.size > MAX_EXCEL_SIZE) {
-        return { success: false, error: { code: 'FILE_TOO_LARGE', message: `Excel文件过大 (最大${MAX_EXCEL_SIZE / 1024 / 1024}MB)` } };
-      }
-      
-      const workbook = XLSX.readFile(safePath);
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-
-      if (rows.length > MAX_EXCEL_ROWS) {
-        return { success: false, error: { code: 'TOO_MANY_ROWS', message: `Excel行数过多 (最大${MAX_EXCEL_ROWS}行)` } };
-      }
-
-      let count = 0;
-      const now = new Date().toISOString();
+  // 导入 Excel
+  ipcMain.handle('knowledge:importExcel', wrap(async (_event, filePath: string) => {
       const errors: string[] = [];
+      let imported = 0;
 
-      await db.transaction(async (tx) => {
-        for (let i = 0; i < rows.length; i++) {
+      try {
+        if (!fs.existsSync(filePath)) {
+          return { imported: 0, errors: ['文件不存在'] };
+        }
+
+        const stats = fs.statSync(filePath);
+        if (stats.size > MAX_EXCEL_SIZE) {
+          return { imported: 0, errors: [`文件大小超过限制 (${MAX_EXCEL_SIZE / 1024 / 1024}MB)`] };
+        }
+
+        const XLSX = require('xlsx');
+        const workbook = XLSX.readFile(filePath);
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const rows: any[] = XLSX.utils.sheet_to_json(worksheet);
+
+        if (rows.length > MAX_EXCEL_ROWS) {
+          return { imported: 0, errors: [`数据行数超过限制 (${MAX_EXCEL_ROWS}行)`] };
+        }
+
+        const db = getDb();
+
+        for (const row of rows) {
           try {
-            const row = rows[i];
-            const title = row['标题'] || row['title'] || row['文档名称'] || row['name'];
-            if (!title) continue;
-
-            const categoryName = row['分类'] || row['category'] || '';
-            let categoryId = '';
-            if (categoryName) {
-              const cats = await tx.select().from(schema.knowledgeCategories)
-                .where(eq(schema.knowledgeCategories.name, categoryName))
-                .limit(1);
-              if (cats.length > 0) {
-                categoryId = cats[0].id;
-              }
-            }
-
-            await tx.insert(schema.knowledgeDocuments).values({
-              id: randomUUID(),
-              categoryId: categoryId || 'uncategorized',
-              title,
-              type: row['类型'] || row['type'] || 'guide',
+            const id = randomUUID();
+            const now = new Date().toISOString();
+            await db.insert(schema.knowledgeCommands).values({
+              id,
+              name: row['名称'] || row['name'] || '',
+              target: row['目标'] || row['target'] || row['名称'] || row['name'] || '',
+              command: row['命令'] || row['command'] || '',
               description: row['描述'] || row['description'] || '',
-              content: row['内容'] || row['content'] || '',
-              version: row['版本'] || row['version'] || '1.0',
-              tags: row['标签'] || row['tags'] || '',
-              uploadDate: now,
+              os: row['操作系统'] || row['os'] || '',
+              brand: row['品牌'] || row['brand'] || '',
+              deviceType: row['设备类型'] || row['deviceType'] || '',
+              category: row['分类'] || row['category'] || '',
+              subCategory: row['子分类'] || row['subCategory'] || '',
+              isFavorite: 0,
               createdAt: now,
               updatedAt: now,
             });
-            count++;
-          } catch (rowError: any) {
-            errors.push(`第${i + 2}行: ${rowError.message}`);
+            imported++;
+          } catch (err: any) {
+            errors.push(`第 ${imported + errors.length + 1} 行导入失败: ${err.message}`);
           }
         }
+
+        return { imported, errors };
+      } catch (err: any) {
+        return { imported, errors: [`导入失败: ${err.message}`] };
+      }
+    }));
+
+  // 上传文件到知识库
+  ipcMain.handle('knowledge:uploadFile', wrap(async (_event, fileInfo: { name: string; data: number[] }) => {
+      const basePath = await getAppDataPath();
+      const uploadDir = path.join(basePath, 'knowledge', 'uploads');
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+
+      const fileName = `${Date.now()}_${fileInfo.name}`;
+      const filePath = path.join(uploadDir, fileName);
+      const buffer = Buffer.from(fileInfo.data);
+      fs.writeFileSync(filePath, buffer);
+
+      return { filePath, fileName };
+    }));
+
+  // 上传文档（将文件复制到上传目录并创建数据库记录）
+  ipcMain.handle('knowledge:uploadDocument', wrap(async (_event, data: {
+    categoryId: string;
+    title: string;
+    type: string;
+    description?: string;
+    version?: string;
+    tags?: string;
+    filePath: string;
+  }) => {
+      const { categoryId, title, type, description, version, tags, filePath: srcPath } = data;
+
+      if (!fs.existsSync(srcPath)) {
+        throw new Error('源文件不存在');
+      }
+
+      const basePath = await getAppDataPath();
+      const uploadDir = path.join(basePath, 'knowledge', 'uploads');
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+
+      const ext = path.extname(srcPath);
+      const fileName = `${Date.now()}_${randomUUID().slice(0, 8)}${ext}`;
+      const destPath = path.join(uploadDir, fileName);
+      fs.copyFileSync(srcPath, destPath);
+
+      const db = getDb();
+      const id = randomUUID();
+      const now = new Date().toISOString();
+      await db.insert(schema.knowledgeDocuments).values({
+        id,
+        categoryId,
+        title,
+        type: type || 'standard',
+        description: description || '',
+        version: version || '1.0',
+        tags: tags || '',
+        filePath: destPath,
+        uploadDate: now,
+        createdAt: now,
+        updatedAt: now,
       });
 
-      if (errors.length > 0) {
-        log.warn(`知识库导入部分失败: ${errors.join('; ')}`);
+      return id;
+    }));
+
+  // 读取文件内容
+  ipcMain.handle('knowledge:readFile', wrap(async (_event, filePath: string) => {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      return { content, fileName: path.basename(filePath) };
+    }));
+
+  // 删除上传的文件
+  ipcMain.handle('knowledge:deleteFile', wrap(async (_event, filePath: string) => {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
       }
+    }));
 
-      return { success: true, data: { count, errors } };
-    } catch (error: any) {
-      log.error('Import knowledge error:', error);
-      return { success: false, error: { code: 'IMPORT_ERROR', message: error.message } };
-    }
-  });
-
-  ipcMain.handle('knowledge:exportKnowledge', async () => {
-    try {
-      const XLSX = require('xlsx');
+  // 获取知识库统计
+  ipcMain.handle('knowledge:getStats', wrap(async () => {
       const db = getDb();
-      const docs = await db.select().from(schema.knowledgeDocuments);
+      const categories = await db.select().from(schema.knowledgeCategories);
+      const documents = await db.select().from(schema.knowledgeDocuments);
+      const commands = await db.select().from(schema.knowledgeCommands);
 
-      const data = docs.map((doc, i) => ({
-        '序号': i + 1,
-        '标题': doc.title,
-        '类型': doc.type,
-        '描述': doc.description || '',
-        '版本': doc.version || '',
-        '标签': doc.tags || '',
-        '上传日期': doc.uploadDate,
-        '内容': doc.content || '',
-      }));
+      return {
+        categoryCount: categories.length,
+        documentCount: documents.length,
+        commandCount: commands.length,
+      };
+    }));
 
-      const ws = XLSX.utils.json_to_sheet(data);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '知识库');
-
-      const result = await dialog.showSaveDialog({
-        title: '导出知识库',
-        defaultPath: `知识库导出_${new Date().toISOString().slice(0, 10)}.xlsx`,
-        filters: [{ name: 'Excel', extensions: ['xlsx'] }],
-      });
-
-      if (result.canceled || !result.filePath) {
-        return { success: true, data: { path: '' } };
+  // 导入知识库（从JSON文件批量导入命令）
+  ipcMain.handle('knowledge:importKnowledge', wrap(async (_event, filePath: string) => {
+      if (!fs.existsSync(filePath)) {
+        throw new Error('文件不存在');
       }
-
-      XLSX.writeFile(wb, result.filePath);
-      return { success: true, data: { path: result.filePath } };
-    } catch (error: any) {
-      log.error('Export knowledge error:', error);
-      return { success: false, error: { code: 'EXPORT_ERROR', message: error.message } };
-    }
-  });
-
-  ipcMain.handle('knowledge:downloadDocument', async (_event, id: string) => {
-    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const data = JSON.parse(content);
       const db = getDb();
-      const result = await db
-        .select()
-        .from(schema.knowledgeDocuments)
-        .where(eq(schema.knowledgeDocuments.id, id))
-        .limit(1);
+      const now = new Date().toISOString();
+      let count = 0;
 
-      if (!result[0] || !result[0].filePath) {
-        return { success: false, error: { code: 'NOT_FOUND', message: '文档文件不存在' } };
+      if (data.commands && Array.isArray(data.commands)) {
+        for (const cmd of data.commands) {
+          const id = randomUUID();
+          await db.insert(schema.knowledgeCommands).values({
+            id,
+            name: cmd.name || '',
+            target: cmd.target || '',
+            command: cmd.command || '',
+            description: cmd.description || '',
+            os: cmd.os || '',
+            brand: cmd.brand || '',
+            deviceType: cmd.deviceType || '',
+            category: cmd.category || '',
+            subCategory: cmd.subCategory || '',
+            isFavorite: 0,
+            createdAt: now,
+            updatedAt: now,
+          });
+          count++;
+        }
       }
+      return { count };
+    }));
 
-      const fs = require('fs');
-      if (!fs.existsSync(result[0].filePath)) {
-        return { success: false, error: { code: 'FILE_NOT_FOUND', message: '文件已被删除' } };
-      }
-
-      return { success: true, data: { path: result[0].filePath, title: result[0].title } };
-    } catch (error: any) {
-      log.error('Download document error:', error);
-      return { success: false, error: { code: 'DOWNLOAD_ERROR', message: error.message } };
-    }
-  });
-
-  ipcMain.handle('knowledge:downloadAndSave', async (_event, id: string) => {
-    try {
+  // 导出知识库（导出命令到JSON文件）
+  ipcMain.handle('knowledge:exportKnowledge', wrap(async () => {
       const db = getDb();
-      const result = await db
-        .select()
-        .from(schema.knowledgeDocuments)
-        .where(eq(schema.knowledgeDocuments.id, id))
-        .limit(1);
+      const commands = await db.select().from(schema.knowledgeCommands);
+      return { commands };
+    }));
 
-      if (!result[0]) {
-        return { success: false, error: { code: 'NOT_FOUND', message: '文档不存在' } };
-      }
-
+  // 下载文档（获取文档路径）
+  ipcMain.handle('knowledge:downloadDocument', wrap(async (_event, id: string) => {
+      const db = getDb();
+      const result = await db.select().from(schema.knowledgeDocuments)
+        .where(eq(schema.knowledgeDocuments.id, id)).limit(1);
       const doc = result[0];
-      const path = require('path');
-      const fs = require('fs');
-
-      // 如果有文件路径，则复制文件
-      if (doc.filePath && fs.existsSync(doc.filePath)) {
-        const fileName = path.basename(doc.filePath);
-        const saveResult = await dialog.showSaveDialog({
-          title: '保存文档',
-          defaultPath: fileName,
-          filters: [
-            { name: 'PDF', extensions: ['pdf'] },
-            { name: 'Word', extensions: ['doc', 'docx'] },
-            { name: 'Excel', extensions: ['xlsx', 'xls'] },
-            { name: '所有文件', extensions: ['*'] },
-          ],
-        });
-
-        if (saveResult.canceled || !saveResult.filePath) {
-          return { success: true, data: { saved: false } };
-        }
-
-        fs.copyFileSync(doc.filePath, saveResult.filePath);
-        return { success: true, data: { saved: true, path: saveResult.filePath } };
+      if (!doc) {
+        throw new Error('文档不存在');
       }
-
-      // 如果是内置文档（只有content），则导出为Markdown文件
-      if (doc.content) {
-        const fileName = `${doc.title}.md`;
-        const saveResult = await dialog.showSaveDialog({
-          title: '保存文档',
-          defaultPath: fileName,
-          filters: [
-            { name: 'Markdown', extensions: ['md'] },
-            { name: '所有文件', extensions: ['*'] },
-          ],
-        });
-
-        if (saveResult.canceled || !saveResult.filePath) {
-          return { success: true, data: { saved: false } };
-        }
-
-        fs.writeFileSync(saveResult.filePath, doc.content, 'utf8');
-        return { success: true, data: { saved: true, path: saveResult.filePath } };
+      if (!doc.filePath || !fs.existsSync(doc.filePath)) {
+        throw new Error('文档文件不存在');
       }
+      return { path: doc.filePath, title: doc.title };
+    }));
 
-      return { success: false, error: { code: 'NO_CONTENT', message: '文档没有内容可下载' } };
-    } catch (error: any) {
-      log.error('Download and save error:', error);
-      return { success: false, error: { code: 'SAVE_ERROR', message: error.message } };
-    }
-  });
-
-  ipcMain.handle('knowledge:uploadDocument', async (_event, data: { categoryId: string; title: string; type: string; description: string; version: string; tags: string; filePath: string }) => {
-    try {
-      // 验证输入
-      if (!data.filePath || !data.title || !data.categoryId) {
-        return { success: false, error: { code: 'INVALID_INPUT', message: '缺少必要参数' } };
+  // 下载并保存文档（复制到用户选择的位置）
+  ipcMain.handle('knowledge:downloadAndSave', wrap(async (_event, id: string) => {
+      const db = getDb();
+      const result = await db.select().from(schema.knowledgeDocuments)
+        .where(eq(schema.knowledgeDocuments.id, id)).limit(1);
+      const doc = result[0];
+      if (!doc) {
+        throw new Error('文档不存在');
       }
-
-      // 检查源文件是否存在
-      if (!fs.existsSync(data.filePath)) {
-        return { success: false, error: { code: 'FILE_NOT_FOUND', message: '源文件不存在' } };
+      if (!doc.filePath || !fs.existsSync(doc.filePath)) {
+        return { saved: false };
       }
+      const { dialog } = await import('electron');
+      const ext = path.extname(doc.filePath);
+      const defaultName = `${doc.title}${ext}`;
+      const result2 = await dialog.showSaveDialog({
+        defaultPath: defaultName,
+        filters: [{ name: '文档', extensions: [ext.replace('.', '')] }],
+      });
+      if (result2.canceled || !result2.filePath) {
+        return { saved: false };
+      }
+      fs.copyFileSync(doc.filePath, result2.filePath);
+      return { saved: true, path: result2.filePath };
+    }));
 
+  // 引用文档
+  ipcMain.handle('knowledge:referenceDocument', wrap(async (_event, data: {
+    documentId: string;
+    targetId: string;
+    targetType: string;
+  }) => {
+      const db = getDb();
+      const result = await db.select({ referenceCount: schema.knowledgeDocuments.referenceCount })
+        .from(schema.knowledgeDocuments)
+        .where(eq(schema.knowledgeDocuments.id, data.documentId))
+        .limit(1);
+      if (result[0]) {
+        await db.update(schema.knowledgeDocuments)
+          .set({ referenceCount: (result[0].referenceCount || 0) + 1 })
+          .where(eq(schema.knowledgeDocuments.id, data.documentId));
+      }
+    }));
+
+  // 导入单个文档
+  ipcMain.handle('knowledge:importSingleDocument', wrap(async (_event, data: {
+    categoryId: string;
+    title: string;
+    type: string;
+    description?: string;
+    version?: string;
+    tags?: string;
+    filePath: string;
+  }) => {
       const db = getDb();
       const id = randomUUID();
       const now = new Date().toISOString();
+      await db.insert(schema.knowledgeDocuments).values({
+        id,
+        categoryId: data.categoryId,
+        title: data.title,
+        type: data.type || 'standard',
+        description: data.description || '',
+        version: data.version || '1.0',
+        tags: data.tags || '',
+        filePath: data.filePath,
+        uploadDate: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return { id };
+    }));
 
-      // 将文件复制到应用数据目录下
-      const appDataPath = await getAppDataPath();
-      const knowledgeDir = path.join(appDataPath, 'knowledge', 'documents');
-      
-      try {
-        if (!fs.existsSync(knowledgeDir)) {
-          fs.mkdirSync(knowledgeDir, { recursive: true });
-        }
-      } catch (dirError: any) {
-        log.error('创建目录失败:', dirError);
-        return { success: false, error: { code: 'DIR_ERROR', message: `创建目录失败: ${dirError.message}` } };
+  // 列出目录文件
+  ipcMain.handle('knowledge:listDirectoryFiles', wrap(async (_event, dirPath: string) => {
+      if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+        throw new Error('目录不存在');
       }
-
-      const ext = path.extname(data.filePath);
-      const fileName = `${id}${ext}`;
-      const destPath = path.join(knowledgeDir, fileName);
-
-      // 复制文件到目标目录
-      try {
-        fs.copyFileSync(data.filePath, destPath);
-        log.info(`文件复制成功: ${data.filePath} -> ${destPath}`);
-      } catch (copyError: any) {
-        log.error('文件复制失败:', copyError);
-        return { success: false, error: { code: 'COPY_ERROR', message: `文件复制失败: ${copyError.message}` } };
-      }
-
-      // 插入数据库
-      try {
-        await db.insert(schema.knowledgeDocuments).values({
-          id,
-          categoryId: data.categoryId,
-          title: data.title,
-          type: data.type,
-          description: data.description || '',
-          content: '',
-          version: data.version || '1.0',
-          tags: data.tags || '',
-          filePath: destPath,
-          uploadDate: now,
-          referenceCount: 0,
-          createdAt: now,
-          updatedAt: now,
-        });
-        log.info(`文档上传成功: ${id}`);
-      } catch (dbError: any) {
-        log.error('数据库插入失败:', dbError);
-        // 如果数据库插入失败，删除已复制的文件
-        try {
-          if (fs.existsSync(destPath)) {
-            fs.unlinkSync(destPath);
-          }
-        } catch (unlinkError) {
-          log.error('删除文件失败:', unlinkError);
-        }
-        return { success: false, error: { code: 'DB_ERROR', message: `数据库操作失败: ${dbError.message}` } };
-      }
-
-      return { success: true, data: { id } };
-    } catch (error: any) {
-      log.error('Upload document error:', error);
-      return { success: false, error: { code: 'UPLOAD_ERROR', message: error.message } };
-    }
-  });
-
-  ipcMain.handle('knowledge:referenceDocument', async (_event, data: { documentId: string; targetId: string; targetType: string }) => {
-    try {
-      const db = getDb();
-      await db.update(schema.knowledgeDocuments).set({
-        referenceCount: sql`referenceCount + 1`,
-        updatedAt: new Date().toISOString(),
-      }).where(eq(schema.knowledgeDocuments.id, data.documentId));
-
-      return { success: true, data: {} };
-    } catch (error: any) {
-      log.error('Reference document error:', error);
-      return { success: false, error: { code: 'REFERENCE_ERROR', message: error.message } };
-    }
-  });
-
-  ipcMain.handle('knowledge:importSingleDocument', async (_event, data: { categoryId: string; title: string; type: string; description: string; version: string; tags: string; filePath: string }) => {
-    try {
-      // 验证输入
-      if (!data.filePath || !data.title || !data.categoryId) {
-        return { success: false, error: { code: 'INVALID_INPUT', message: '缺少必要参数' } };
-      }
-
-      // 检查源文件是否存在
-      if (!fs.existsSync(data.filePath)) {
-        return { success: false, error: { code: 'FILE_NOT_FOUND', message: '源文件不存在' } };
-      }
-
-      const db = getDb();
-      const id = randomUUID();
-      const now = new Date().toISOString();
-
-      // 将文件复制到应用数据目录下
-      const appDataPath = await getAppDataPath();
-      const knowledgeDir = path.join(appDataPath, 'knowledge', 'documents');
-      
-      try {
-        if (!fs.existsSync(knowledgeDir)) {
-          fs.mkdirSync(knowledgeDir, { recursive: true });
-        }
-      } catch (dirError: any) {
-        log.error('创建目录失败:', dirError);
-        return { success: false, error: { code: 'DIR_ERROR', message: `创建目录失败: ${dirError.message}` } };
-      }
-
-      const ext = path.extname(data.filePath);
-      const fileName = `${id}${ext}`;
-      const destPath = path.join(knowledgeDir, fileName);
-
-      // 复制文件到目标目录
-      try {
-        fs.copyFileSync(data.filePath, destPath);
-        log.info(`文件复制成功: ${data.filePath} -> ${destPath}`);
-      } catch (copyError: any) {
-        log.error('文件复制失败:', copyError);
-        return { success: false, error: { code: 'COPY_ERROR', message: `文件复制失败: ${copyError.message}` } };
-      }
-
-      // 插入数据库
-      try {
-        await db.insert(schema.knowledgeDocuments).values({
-          id,
-          categoryId: data.categoryId,
-          title: data.title,
-          type: data.type,
-          description: data.description || '',
-          content: '',
-          version: data.version || '1.0',
-          tags: data.tags || '',
-          filePath: destPath,
-          uploadDate: now,
-          referenceCount: 0,
-          createdAt: now,
-          updatedAt: now,
-        });
-        log.info(`文档导入成功: ${id}`);
-      } catch (dbError: any) {
-        log.error('数据库插入失败:', dbError);
-        // 如果数据库插入失败，删除已复制的文件
-        try {
-          if (fs.existsSync(destPath)) {
-            fs.unlinkSync(destPath);
-          }
-        } catch (unlinkError) {
-          log.error('删除文件失败:', unlinkError);
-        }
-        return { success: false, error: { code: 'DB_ERROR', message: `数据库操作失败: ${dbError.message}` } };
-      }
-
-      return { success: true, data: { id } };
-    } catch (error: any) {
-      log.error('Import single document error:', error);
-      return { success: false, error: { code: 'IMPORT_ERROR', message: error.message } };
-    }
-  });
-
-  ipcMain.handle('knowledge:listDirectoryFiles', async (_event, dirPath: string) => {
-    try {
-      const safePath = await validatePath(dirPath);
-      const files = fs.readdirSync(safePath);
-      const result = files.map(file => {
-        const fullPath = path.join(safePath, file);
+      const items = fs.readdirSync(dirPath);
+      return items.map(name => {
+        const fullPath = path.join(dirPath, name);
         const stat = fs.statSync(fullPath);
         return {
-          name: file,
+          name,
           path: fullPath,
           size: stat.size,
           isFile: stat.isFile(),
         };
       });
-      return { success: true, data: result };
-    } catch (error: any) {
-      log.error('List directory files error:', error);
-      return { success: false, error: { code: 'LIST_ERROR', message: error.message } };
-    }
-  });
+    }));
 
   // 读取 Excel 文件
-  ipcMain.handle('knowledge:readExcelFile', async (_event, filePath: string, sheetName?: string) => {
-    try {
-      const safePath = await validatePath(filePath);
-      const xlsx = getXlsx();
-      const workbook = xlsx.readFile(safePath);
-      
-      const targetSheet = sheetName || workbook.SheetNames[0];
-      const sheet = workbook.Sheets[targetSheet];
-      const data: any[] = xlsx.utils.sheet_to_json(sheet, { defval: '' });
-      
-      // 获取列名
+  ipcMain.handle('knowledge:readExcelFile', wrap(async (_event, filePath: string, sheetName?: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const XLSX = require('xlsx');
+      const workbook = XLSX.readFile(filePath);
+      const sheets = workbook.SheetNames;
+      const targetSheet = sheetName || sheets[0];
+      const worksheet = workbook.Sheets[targetSheet];
+      const data: any[] = XLSX.utils.sheet_to_json(worksheet);
       const columns = data.length > 0 ? Object.keys(data[0]) : [];
-      
-      return { 
-        success: true, 
-        data: { 
-          sheetNames: workbook.SheetNames, 
-          columns, 
-          data 
-        } 
-      };
-    } catch (error: any) {
-      log.error('Read Excel file error:', error);
-      return { success: false, error: { code: 'READ_ERROR', message: error.message } };
-    }
-  });
+      return { sheetNames: sheets, columns, data };
+    }));
 
   // 读取 Word 文件
-  ipcMain.handle('knowledge:readWordFile', async (_event, filePath: string) => {
-    try {
-      const safePath = await validatePath(filePath);
-      const m = getMammoth();
-      const result = await m.convertToHtml({ path: safePath });
-      return { success: true, data: { html: result.value } };
-    } catch (error: any) {
-      log.error('Read Word file error:', error);
-      return { success: false, error: { code: 'READ_ERROR', message: error.message } };
-    }
-  });
-
-  // 检查文件是否存在
-  ipcMain.handle('file:exists', async (_event, filePath: string) => {
-    try {
-      const safePath = await validatePath(filePath);
-      return { success: true, data: fs.existsSync(safePath) };
-    } catch (error: any) {
-      return { success: false, error: { code: 'CHECK_ERROR', message: error.message } };
-    }
-  });
-
-  // 读取文件为 ArrayBuffer（用于 PDF）
-  ipcMain.handle('file:readAsArrayBuffer', async (_event, filePath: string) => {
-    try {
-      const safePath = await validatePath(filePath);
-      const buffer = fs.readFileSync(safePath);
-      return { success: true, data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) };
-    } catch (error: any) {
-      log.error('Read file as array buffer error:', error);
-      return { success: false, error: { code: 'READ_ERROR', message: error.message } };
-    }
-  });
-
-  // 读取文件为文本
-  ipcMain.handle('file:readAsText', async (_event, filePath: string) => {
-    try {
-      const safePath = await validatePath(filePath);
-      const content = fs.readFileSync(safePath, 'utf8');
-      return { success: true, data: content };
-    } catch (error: any) {
-      log.error('Read file as text error:', error);
-      return { success: false, error: { code: 'READ_ERROR', message: error.message } };
-    }
-  });
+  ipcMain.handle('knowledge:readWordFile', wrap(async (_event, filePath: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const mammoth = require('mammoth');
+      const result = await mammoth.convertToHtml({ path: filePath });
+      return { html: result.value };
+    }));
 }

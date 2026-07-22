@@ -413,7 +413,10 @@ export function registerAssetHandlers(): void {
       const asset = await db.query.assets.findFirst({
         where: eq(schema.assets.id, id),
       });
-      await db.delete(schema.assets).where(eq(schema.assets.id, id));
+      await db.transaction(async (tx) => {
+        await tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.assetId, id));
+        await tx.delete(schema.assets).where(eq(schema.assets.id, id));
+      });
       await writeOperationLog({
         action: 'delete',
         module: 'asset',
@@ -426,9 +429,12 @@ export function registerAssetHandlers(): void {
 
   ipcMain.handle('asset:batchRemove', wrap(async (_event, ids: string[]) => {
       const db = getDb();
-      for (const id of ids) {
-        await db.delete(schema.assets).where(eq(schema.assets.id, id));
-      }
+      await db.transaction(async (tx) => {
+        for (const id of ids) {
+          await tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.assetId, id));
+          await tx.delete(schema.assets).where(eq(schema.assets.id, id));
+        }
+      });
     })
   );
 
@@ -681,6 +687,15 @@ export function registerAssetHandlers(): void {
             createdAt: now,
             updatedAt: now,
           });
+
+          const insertedAsset = await db.query.assets.findFirst({
+            where: eq(schema.assets.id, id),
+          });
+          if (insertedAsset) {
+            importAssetPresetRecords(insertedAsset).catch((err) => {
+              log.error(`导入资产 ${name} 预置测评记录失败:`, err);
+            });
+          }
 
           importCount++;
         }

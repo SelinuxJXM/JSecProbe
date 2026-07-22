@@ -362,25 +362,17 @@
           </el-table-column>
           <el-table-column label="操作" width="180" fixed="right" align="center">
             <template #default="{ row }">
-              <el-button
-                v-if="!row.isDefault"
-                type="primary"
-                link
-                size="small"
-                @click="handleSetDefault(row)"
-              >
-                设为默认
-              </el-button>
-              <el-button
-                v-if="!row.isDefault"
-                type="danger"
-                link
-                size="small"
-                @click="handleDeleteStandard(row)"
-              >
-                删除
-              </el-button>
-              <span v-else style="color: var(--text-secondary); font-size: 12px">-</span>
+              <el-tooltip content="设为默认标准库" placement="top">
+                <el-icon
+                  v-if="!row.isDefault"
+                  class="star-icon"
+                  :size="16"
+                  @click="handleSetDefault(row)"
+                ><Star /></el-icon>
+              </el-tooltip>
+              <el-tooltip content="系统预置标准库，不可删除" placement="top">
+                <el-icon class="lock-icon" :size="14"><Lock /></el-icon>
+              </el-tooltip>
             </template>
           </el-table-column>
         </el-table>
@@ -449,7 +441,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus';
-import { Download, Upload, InfoFilled, Plus, Refresh, Search } from '@element-plus/icons-vue';
+import { Download, Upload, InfoFilled, Plus, Refresh, Search, Lock, Star } from '@element-plus/icons-vue';
 import type { UpdateStatus } from '../../../shared/types';
 
 const tabs = [
@@ -985,25 +977,6 @@ async function handleSetDefault(row: any) {
   }
 }
 
-async function handleDeleteStandard(row: any) {
-  try {
-    await ElMessageBox.confirm(
-      `确定要删除标准库「${row.name}」吗？此操作不可撤销。`,
-      '确认删除',
-      { type: 'warning' }
-    );
-    const res = await window.api.standard.remove(row.id);
-    if (res.success) {
-      ElMessage.success('删除成功');
-      loadStandards();
-    } else {
-      ElMessage.error(res.error?.message || '删除失败');
-    }
-  } catch {
-    // User cancelled
-  }
-}
-
 onMounted(() => {
   loadSystemInfo();
   loadUsers();
@@ -1271,5 +1244,22 @@ onUnmounted(() => {
       }
     }
   }
+}
+
+.star-icon {
+  color: #C0C4CC;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: color 0.15s;
+
+  &:hover {
+    color: #E6A23C;
+  }
+}
+
+.lock-icon {
+  color: #C0C4CC;
+  cursor: default;
+  vertical-align: middle;
 }
 </style>

@@ -325,9 +325,10 @@ export interface KnowledgeCommandListResult {
 export interface ApiBridge {
   auth: {
     login: (username: string, password: string) => Promise<IpcResponse<LoginResult>>;
-    logout: () => Promise<IpcResponse<void>>;
-    getCurrentUser: () => Promise<IpcResponse<User | null>>;
+    logout: (token?: string) => Promise<IpcResponse<void>>;
+    getCurrentUser: (token: string) => Promise<IpcResponse<{ userId: string; username: string } | null>>;
     changePassword: (userId: string, oldPassword: string, newPassword: string) => Promise<IpcResponse<void>>;
+    validateSession: (token: string) => Promise<IpcResponse<{ valid: boolean; userId?: string; username?: string }>>;
   };
   project: {
     list: (params: ProjectListParams) => Promise<IpcResponse<ProjectListResult>>;
@@ -350,6 +351,7 @@ export interface ApiBridge {
     import: () => Promise<IpcResponse<{ imported: number }>>;
     export: (projectId: string) => Promise<IpcResponse<{ path: string }>>;
     exportAll: () => Promise<IpcResponse<{ path: string }>>;
+    reimportPresetRecords: (projectId: string) => Promise<IpcResponse<{ success: boolean }>>;
   };
   asset: {
     list: (params: AssetListParams) => Promise<IpcResponse<AssetListResult>>;
@@ -432,7 +434,7 @@ export interface ApiBridge {
     importKnowledge: (filePath: string) => Promise<IpcResponse<{ count: number }>>;
     exportKnowledge: () => Promise<IpcResponse<{ path: string }>>;
     downloadDocument: (id: string) => Promise<IpcResponse<{ path: string; title: string }>>;
-    downloadAndSave: (id: string) => Promise<IpcResponse<{ path: string; title: string }>>;
+    downloadAndSave: (id: string) => Promise<IpcResponse<{ saved: boolean; path?: string }>>;
     uploadDocument: (data: { categoryId: string; title: string; type: string; description: string; version: string; tags: string; filePath: string }) => Promise<IpcResponse<{ id: string }>>;
     referenceDocument: (data: { documentId: string; targetId: string; targetType: string }) => Promise<IpcResponse<void>>;
     importSingleDocument: (data: { categoryId: string; title: string; type: string; description: string; version: string; tags: string; filePath: string }) => Promise<IpcResponse<{ id: string }>>;

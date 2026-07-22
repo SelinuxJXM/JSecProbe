@@ -1,6 +1,6 @@
 import { app } from 'electron';
 import { join, resolve } from 'path';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync } from 'fs';
 import log from 'electron-log';
 
 let appDataPath = '';
@@ -54,7 +54,6 @@ export async function getAppDataPath(): Promise<string> {
     if (existsSync(oldPath)) {
       log.info(`检测到旧版数据目录，正在迁移: ${oldPath} -> ${basePath}`);
       try {
-        const { cpSync } = await import('fs');
         cpSync(oldPath, basePath, { recursive: true });
         log.info('数据迁移完成');
       } catch (e) {
