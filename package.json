@@ -54,7 +54,6 @@
     "electron": "^29.4.6",
     "electron-builder": "^24.13.3",
     "electron-rebuild": "^3.2.9",
-    "ico-endec": "^0.1.6",
     "rcedit": "^5.0.1",
     "sass": "^1.71.0",
     "tsx": "^4.7.0",

@@ -54,7 +54,6 @@ const api = {
     import: ipc<{ imported: number }>('project:import'),
     export: ipc<{ path: string }>('project:export'),
     exportAll: ipc<{ path: string }>('project:exportAll'),
-    reimportPresetRecords: ipc<{ success: boolean }>('project:reimportPresetRecords'),
   },
   asset: {
     list: ipc<any>('asset:list'),
