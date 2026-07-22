@@ -1,14 +1,15 @@
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
-  username TEXT NOT NULL UNIQUE,
+  username TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
   real_name TEXT NOT NULL,
   email TEXT,
   phone TEXT,
   role TEXT NOT NULL DEFAULT 'assessor',
   is_active INTEGER NOT NULL DEFAULT 1,
+  must_change_password INTEGER NOT NULL DEFAULT 1,
   last_login_at TEXT,
-  created_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   updated_at TEXT NOT NULL
 );
 
@@ -36,8 +37,7 @@ CREATE TABLE IF NOT EXISTS projects (
   updated_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
-CREATE INDEX IF NOT EXISTS idx_projects_level ON projects(level);
+CREATE UNIQUE INDEX IF NOT EXISTS project_user_idx ON project_members(project_id, user_id);
 
 CREATE TABLE IF NOT EXISTS project_members (
   id TEXT PRIMARY KEY,
@@ -45,12 +45,8 @@ CREATE TABLE IF NOT EXISTS project_members (
   user_id TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'assessor',
   assigned_domains TEXT,
-  created_at TEXT NOT NULL,
-  UNIQUE(project_id, user_id)
+  created_at TEXT NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_project_members_project_id ON project_members(project_id);
-CREATE INDEX IF NOT EXISTS idx_project_members_user_id ON project_members(user_id);
 
 CREATE TABLE IF NOT EXISTS assets (
   id TEXT PRIMARY KEY,
@@ -65,28 +61,27 @@ CREATE TABLE IF NOT EXISTS assets (
   ip TEXT,
   importance TEXT NOT NULL DEFAULT 'medium',
   is_virtual INTEGER NOT NULL DEFAULT 0,
-  has_guide INTEGER NOT NULL DEFAULT 0,
+  db_system TEXT,
+  middleware TEXT,
   is_assessment_target INTEGER NOT NULL DEFAULT 1,
+  position TEXT,
   responsible_person TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_assets_project_id ON assets(project_id);
-CREATE INDEX IF NOT EXISTS idx_assets_category ON assets(category);
-
 CREATE TABLE IF NOT EXISTS standards (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  code TEXT NOT NULL UNIQUE,
+  code TEXT UNIQUE NOT NULL,
   version TEXT NOT NULL,
   description TEXT,
   grade INTEGER NOT NULL DEFAULT 3,
   domain_count INTEGER NOT NULL DEFAULT 0,
   item_count INTEGER NOT NULL DEFAULT 0,
   is_default INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
 CREATE TABLE IF NOT EXISTS assessment_items (
@@ -96,13 +91,13 @@ CREATE TABLE IF NOT EXISTS assessment_items (
   control_point TEXT NOT NULL,
   control_name TEXT NOT NULL,
   requirement TEXT NOT NULL,
-  level INTEGER NOT NULL,
+  min_level INTEGER NOT NULL DEFAULT 2,
+  max_level INTEGER NOT NULL DEFAULT 4,
+  extension_type TEXT NOT NULL DEFAULT 'general',
   is_high_risk INTEGER NOT NULL DEFAULT 0,
   sort_order INTEGER NOT NULL DEFAULT 0,
   parent_id TEXT
 );
-
-CREATE INDEX IF NOT EXISTS idx_items_standard_domain ON assessment_items(standard_id, domain);
 
 CREATE TABLE IF NOT EXISTS assessment_records (
   id TEXT PRIMARY KEY,
@@ -110,6 +105,8 @@ CREATE TABLE IF NOT EXISTS assessment_records (
   item_id TEXT NOT NULL,
   asset_id TEXT,
   result TEXT NOT NULL DEFAULT 'untested',
+  method TEXT NOT NULL DEFAULT 'check',
+  command_output TEXT,
   evidence TEXT,
   findings TEXT,
   assessor TEXT,
@@ -118,10 +115,6 @@ CREATE TABLE IF NOT EXISTS assessment_records (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_records_project_id ON assessment_records(project_id);
-CREATE INDEX IF NOT EXISTS idx_records_asset_id ON assessment_records(asset_id);
-CREATE INDEX IF NOT EXISTS idx_records_item_id ON assessment_records(item_id);
 
 CREATE TABLE IF NOT EXISTS issues (
   id TEXT PRIMARY KEY,
@@ -146,11 +139,6 @@ CREATE TABLE IF NOT EXISTS issues (
   updated_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_issues_project_id ON issues(project_id);
-CREATE INDEX IF NOT EXISTS idx_issues_project_risk ON issues(project_id, risk_level);
-CREATE INDEX IF NOT EXISTS idx_issues_project_status ON issues(project_id, status);
-CREATE INDEX IF NOT EXISTS idx_issues_project_domain ON issues(project_id, security_domain);
-
 CREATE TABLE IF NOT EXISTS knowledge_categories (
   id TEXT PRIMARY KEY,
   parent_id TEXT,
@@ -162,8 +150,6 @@ CREATE TABLE IF NOT EXISTS knowledge_categories (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_knowledge_categories_parent ON knowledge_categories(parent_id);
 
 CREATE TABLE IF NOT EXISTS knowledge_documents (
   id TEXT PRIMARY KEY,
@@ -181,8 +167,22 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
   updated_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_knowledge_docs_category ON knowledge_documents(category_id);
-CREATE INDEX IF NOT EXISTS idx_knowledge_docs_type ON knowledge_documents(type);
+CREATE TABLE IF NOT EXISTS knowledge_commands (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  target TEXT NOT NULL,
+  command TEXT NOT NULL,
+  description TEXT NOT NULL,
+  os TEXT NOT NULL,
+  brand TEXT NOT NULL DEFAULT '',
+  device_type TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT '',
+  sub_category TEXT NOT NULL DEFAULT '',
+  is_favorite INTEGER NOT NULL DEFAULT 0,
+  reference_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS report_templates (
   id TEXT PRIMARY KEY,
@@ -207,7 +207,10 @@ CREATE TABLE IF NOT EXISTS ai_configs (
   ocr_provider TEXT DEFAULT 'tesseract',
   ocr_api_key TEXT,
   enable_ai INTEGER NOT NULL DEFAULT 0,
-  updated_at TEXT NOT NULL
+  privacy_mode INTEGER NOT NULL DEFAULT 0,
+  sensitive_words TEXT,
+  updated_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS system_settings (
@@ -219,6 +222,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
   auto_backup_days INTEGER NOT NULL DEFAULT 7,
   data_path TEXT,
   default_standard TEXT DEFAULT 'gb-t-22239-2019-l3',
+  standard_data_version INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL
 );
 
@@ -234,7 +238,3 @@ CREATE TABLE IF NOT EXISTS operation_logs (
   ip_address TEXT,
   created_at TEXT NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_op_logs_user ON operation_logs(user_id);
-CREATE INDEX IF NOT EXISTS idx_op_logs_action ON operation_logs(action);
-CREATE INDEX IF NOT EXISTS idx_op_logs_created ON operation_logs(created_at);

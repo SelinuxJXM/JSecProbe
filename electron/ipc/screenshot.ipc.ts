@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import log from 'electron-log';
 import crypto from 'crypto';
+import { wrap } from '../utils/ipc-wrapper';
 import { getAppDataPath as getConfiguredAppDataPath } from '../main/paths';
 
 async function getAllowedBasePaths(): Promise<string[]> {
@@ -27,10 +28,6 @@ async function validatePath(inputPath: string): Promise<string> {
     throw new Error(`路径访问被拒绝: ${inputPath} (仅允许访问应用数据目录)`);
   }
   return resolved;
-}
-
-function errorResult(message: string) {
-  return { success: false, error: { message } };
 }
 
 function getFallbackAppDataPath(): string {
@@ -60,219 +57,184 @@ function isValidImage(buffer: Buffer, ext: string): boolean {
 }
 
 export function registerScreenshotHandlers(): void {
-  ipcMain.handle('screenshot:upload', async (_event, { projectId, itemId, filePath }: { projectId: string; itemId: string; filePath: string }) => {
-    try {
-      if (!filePath || typeof filePath !== 'string') {
-        return errorResult('文件路径无效');
-      }
-      if (!fs.existsSync(filePath)) {
-        return errorResult('文件不存在: ' + filePath);
-      }
-      if (fs.statSync(filePath).size > MAX_FILE_SIZE) {
-        return errorResult(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
-      }
+  ipcMain.handle('screenshot:upload', wrap(async (_event, { projectId, itemId, filePath }: { projectId: string; itemId: string; filePath: string }) => {
+    if (!filePath || typeof filePath !== 'string') {
+      throw new Error('文件路径无效');
+    }
+    if (!fs.existsSync(filePath)) {
+      throw new Error('文件不存在: ' + filePath);
+    }
+    if (fs.statSync(filePath).size > MAX_FILE_SIZE) {
+      throw new Error(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
+    }
 
-      const appDataPath = getFallbackAppDataPath();
-      const screenshotsDir = path.join(appDataPath, 'screenshots', projectId, itemId);
-      fs.mkdirSync(screenshotsDir, { recursive: true });
+    const appDataPath = getFallbackAppDataPath();
+    const screenshotsDir = path.join(appDataPath, 'screenshots', projectId, itemId);
+    fs.mkdirSync(screenshotsDir, { recursive: true });
 
-      const ext = path.extname(filePath).toLowerCase();
-      if (!IMAGE_EXTENSIONS.includes(ext)) {
-        return errorResult(`不支持的文件类型: ${ext}`);
-      }
+    const ext = path.extname(filePath).toLowerCase();
+    if (!IMAGE_EXTENSIONS.includes(ext)) {
+      throw new Error(`不支持的文件类型: ${ext}`);
+    }
 
-      const buffer = fs.readFileSync(filePath);
-      if (!isValidImage(buffer, ext)) {
-        return errorResult('文件内容不是有效的图片格式');
-      }
+    const buffer = fs.readFileSync(filePath);
+    if (!isValidImage(buffer, ext)) {
+      throw new Error('文件内容不是有效的图片格式');
+    }
 
-      const fileHash = crypto.createHash('md5').update(buffer).digest('hex');
-      const existingFiles = fs.readdirSync(screenshotsDir);
-      for (const existing of existingFiles) {
-        const existingPath = path.join(screenshotsDir, existing);
-        if (fs.statSync(existingPath).isFile()) {
-          const existingHash = crypto.createHash('md5').update(fs.readFileSync(existingPath)).digest('hex');
-          if (existingHash === fileHash) {
-            return { success: true, data: { path: existingPath, name: existing } };
-          }
+    const fileHash = crypto.createHash('md5').update(buffer).digest('hex');
+    const existingFiles = fs.readdirSync(screenshotsDir);
+    for (const existing of existingFiles) {
+      const existingPath = path.join(screenshotsDir, existing);
+      if (fs.statSync(existingPath).isFile()) {
+        const existingHash = crypto.createHash('md5').update(fs.readFileSync(existingPath)).digest('hex');
+        if (existingHash === fileHash) {
+          return { path: existingPath, name: existing };
         }
       }
-
-      const baseName = path.basename(filePath, ext);
-      const targetName = `${baseName}_${Date.now()}${ext}`;
-      const targetPath = path.join(screenshotsDir, targetName);
-
-      fs.copyFileSync(filePath, targetPath);
-
-      return { success: true, data: { path: targetPath, name: targetName } };
-    } catch (error: any) {
-      log.error('screenshot:upload error:', error);
-      return errorResult(error.message || '文件上传失败');
     }
-  });
 
-  ipcMain.handle('screenshot:saveFromBase64', async (_event, { projectId, itemId, base64Data }: { projectId: string; itemId: string; base64Data: string }) => {
-    try {
-      log.info('screenshot:saveFromBase64 called', { projectId, itemId, base64Length: base64Data?.length });
+    const baseName = path.basename(filePath, ext);
+    const targetName = `${baseName}_${Date.now()}${ext}`;
+    const targetPath = path.join(screenshotsDir, targetName);
 
-      const appDataPath = getFallbackAppDataPath();
-      const screenshotsDir = path.join(appDataPath, 'screenshots', projectId, itemId);
-      fs.mkdirSync(screenshotsDir, { recursive: true });
+    fs.copyFileSync(filePath, targetPath);
 
-      const targetName = `clipboard_${Date.now()}.png`;
-      const targetPath = path.join(screenshotsDir, targetName);
+    return { path: targetPath, name: targetName };
+  }, { moduleName: 'screenshot' }));
 
-      const buffer = Buffer.from(base64Data, 'base64');
-      if (buffer.length > MAX_FILE_SIZE) {
-        return errorResult(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
-      }
+  ipcMain.handle('screenshot:saveFromBase64', wrap(async (_event, { projectId, itemId, base64Data }: { projectId: string; itemId: string; base64Data: string }) => {
+    log.info('screenshot:saveFromBase64 called', { projectId, itemId, base64Length: base64Data?.length });
 
-      if (!isValidImage(buffer, '.png')) {
-        return errorResult('无效的图片数据');
-      }
+    const appDataPath = getFallbackAppDataPath();
+    const screenshotsDir = path.join(appDataPath, 'screenshots', projectId, itemId);
+    fs.mkdirSync(screenshotsDir, { recursive: true });
 
-      fs.writeFileSync(targetPath, buffer);
+    const targetName = `clipboard_${Date.now()}.png`;
+    const targetPath = path.join(screenshotsDir, targetName);
 
-      log.info('screenshot saved to:', targetPath, 'size:', buffer.length);
-
-      return { success: true, data: { path: targetPath, name: targetName } };
-    } catch (error: any) {
-      log.error('screenshot:saveFromBase64 error:', error);
-      return errorResult(error.message || '保存截图失败');
+    const buffer = Buffer.from(base64Data, 'base64');
+    if (buffer.length > MAX_FILE_SIZE) {
+      throw new Error(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
     }
-  });
 
-  ipcMain.handle('screenshot:uploadFile', async (_event, { projectId, itemId, filePath }: { projectId: string; itemId: string; filePath: string }) => {
-    try {
-      if (!filePath || typeof filePath !== 'string') {
-        return errorResult('文件路径无效');
-      }
-      if (!fs.existsSync(filePath)) {
-        return errorResult('文件不存在: ' + filePath);
-      }
-      if (fs.statSync(filePath).size > MAX_FILE_SIZE) {
-        return errorResult(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
-      }
+    if (!isValidImage(buffer, '.png')) {
+      throw new Error('无效的图片数据');
+    }
 
-      const ext = path.extname(filePath).toLowerCase();
-      if (!DOCUMENT_EXTENSIONS.includes(ext)) {
-        return errorResult(`不支持的文件类型: ${ext} (仅支持: ${DOCUMENT_EXTENSIONS.join(', ')})`);
-      }
+    fs.writeFileSync(targetPath, buffer);
 
-      const appDataPath = getFallbackAppDataPath();
-      const evidenceDir = path.join(appDataPath, 'evidence', projectId, itemId);
-      fs.mkdirSync(evidenceDir, { recursive: true });
+    log.info('screenshot saved to:', targetPath, 'size:', buffer.length);
 
-      const buffer = fs.readFileSync(filePath);
-      const fileHash = crypto.createHash('md5').update(buffer).digest('hex');
-      const existingFiles = fs.readdirSync(evidenceDir);
-      for (const existing of existingFiles) {
-        const existingPath = path.join(evidenceDir, existing);
-        if (fs.statSync(existingPath).isFile()) {
-          const existingHash = crypto.createHash('md5').update(fs.readFileSync(existingPath)).digest('hex');
-          if (existingHash === fileHash) {
-            return { success: true, data: { path: existingPath, name: existing } };
-          }
+    return { path: targetPath, name: targetName };
+  }, { moduleName: 'screenshot' }));
+
+  ipcMain.handle('screenshot:uploadFile', wrap(async (_event, { projectId, itemId, filePath }: { projectId: string; itemId: string; filePath: string }) => {
+    if (!filePath || typeof filePath !== 'string') {
+      throw new Error('文件路径无效');
+    }
+    if (!fs.existsSync(filePath)) {
+      throw new Error('文件不存在: ' + filePath);
+    }
+    if (fs.statSync(filePath).size > MAX_FILE_SIZE) {
+      throw new Error(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    if (!DOCUMENT_EXTENSIONS.includes(ext)) {
+      throw new Error(`不支持的文件类型: ${ext} (仅支持: ${DOCUMENT_EXTENSIONS.join(', ')})`);
+    }
+
+    const appDataPath = getFallbackAppDataPath();
+    const evidenceDir = path.join(appDataPath, 'evidence', projectId, itemId);
+    fs.mkdirSync(evidenceDir, { recursive: true });
+
+    const buffer = fs.readFileSync(filePath);
+    const fileHash = crypto.createHash('md5').update(buffer).digest('hex');
+    const existingFiles = fs.readdirSync(evidenceDir);
+    for (const existing of existingFiles) {
+      const existingPath = path.join(evidenceDir, existing);
+      if (fs.statSync(existingPath).isFile()) {
+        const existingHash = crypto.createHash('md5').update(fs.readFileSync(existingPath)).digest('hex');
+        if (existingHash === fileHash) {
+          return { path: existingPath, name: existing };
         }
       }
-
-      const fileName = path.basename(filePath);
-      const targetName = `${Date.now()}_${fileName}`;
-      const targetPath = path.join(evidenceDir, targetName);
-
-      fs.copyFileSync(filePath, targetPath);
-
-      return { success: true, data: { path: targetPath, name: targetName } };
-    } catch (error: any) {
-      log.error('screenshot:uploadFile error:', error);
-      return errorResult(error.message || '文件上传失败');
     }
-  });
 
-  ipcMain.handle('screenshot:getBase64', async (_event, { filePath }: { filePath: string }) => {
-    try {
-      if (!filePath || typeof filePath !== 'string') {
-        return errorResult('文件路径无效');
-      }
-      const resolvedPath = path.resolve(filePath);
+    const fileName = path.basename(filePath);
+    const targetName = `${Date.now()}_${fileName}`;
+    const targetPath = path.join(evidenceDir, targetName);
 
-      const stat = fs.statSync(resolvedPath);
-      if (stat.size > MAX_FILE_SIZE) {
-        return errorResult(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
-      }
+    fs.copyFileSync(filePath, targetPath);
 
-      const buffer = fs.readFileSync(resolvedPath);
-      const base64 = buffer.toString('base64');
-      const ext = path.extname(resolvedPath).toLowerCase().replace('.', '');
-      const mimeType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+    return { path: targetPath, name: targetName };
+  }, { moduleName: 'screenshot' }));
 
-      return { success: true, data: { base64, mimeType } };
-    } catch (error: any) {
-      log.error('screenshot:getBase64 error:', error);
-      return errorResult(error.message || '读取文件失败');
+  ipcMain.handle('screenshot:getBase64', wrap(async (_event, { filePath }: { filePath: string }) => {
+    if (!filePath || typeof filePath !== 'string') {
+      throw new Error('文件路径无效');
     }
-  });
+    const resolvedPath = await validatePath(filePath);
 
-  ipcMain.handle('screenshot:readText', async (_event, { filePath }: { filePath: string }) => {
-    try {
-      if (!filePath || typeof filePath !== 'string') {
-        return errorResult('文件路径无效');
-      }
-      const resolvedPath = path.resolve(filePath);
-
-      const ext = path.extname(resolvedPath).toLowerCase();
-      if (!TEXT_EXTENSIONS.includes(ext)) {
-        return errorResult(`不支持的文件类型: ${ext} (仅支持: ${TEXT_EXTENSIONS.join(', ')})`);
-      }
-
-      const stat = fs.statSync(resolvedPath);
-      if (stat.size > MAX_TEXT_SIZE) {
-        return errorResult(`文件过大 (${Math.round(stat.size / 1024)}KB)，文本预览限制 ${MAX_TEXT_SIZE / 1024}KB`);
-      }
-
-      const content = fs.readFileSync(resolvedPath, 'utf-8');
-      return { success: true, data: { content } };
-    } catch (error: any) {
-      log.error('screenshot:readText error:', error);
-      return errorResult(error.message || '读取文件失败');
+    const stat = fs.statSync(resolvedPath);
+    if (stat.size > MAX_FILE_SIZE) {
+      throw new Error(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
     }
-  });
 
-  ipcMain.handle('screenshot:deleteFile', async (_event, { filePath }: { filePath: string }) => {
-    try {
-      const safePath = await validatePath(filePath);
-      if (fs.existsSync(safePath)) {
-        fs.unlinkSync(safePath);
-      }
-      return { success: true };
-    } catch (error: any) {
-      log.error('screenshot:deleteFile error:', error);
-      return errorResult(error.message || '删除文件失败');
+    const buffer = fs.readFileSync(resolvedPath);
+    const base64 = buffer.toString('base64');
+    const ext = path.extname(resolvedPath).toLowerCase().replace('.', '');
+    const mimeType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+
+    return { base64, mimeType };
+  }, { moduleName: 'screenshot' }));
+
+  ipcMain.handle('screenshot:readText', wrap(async (_event, { filePath }: { filePath: string }) => {
+    if (!filePath || typeof filePath !== 'string') {
+      throw new Error('文件路径无效');
     }
-  });
+    const resolvedPath = await validatePath(filePath);
 
-  ipcMain.handle('image:saveScreenshot', async (_event, base64Data: string, fileName: string) => {
-    try {
-      const appDataPath = getFallbackAppDataPath();
-      const tempDir = path.join(appDataPath, 'screenshots', 'temp');
-      fs.mkdirSync(tempDir, { recursive: true });
-
-      const targetPath = path.join(tempDir, fileName);
-      const buffer = Buffer.from(base64Data, 'base64');
-
-      if (buffer.length > MAX_FILE_SIZE) {
-        return errorResult(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
-      }
-
-      if (!isValidImage(buffer, '.png')) {
-        return errorResult('无效的图片数据');
-      }
-
-      fs.writeFileSync(targetPath, buffer);
-      return { success: true, data: { filePath: targetPath, fileName } };
-    } catch (error: any) {
-      log.error('image:saveScreenshot error:', error);
-      return errorResult(error.message || '保存截图失败');
+    const ext = path.extname(resolvedPath).toLowerCase();
+    if (!TEXT_EXTENSIONS.includes(ext)) {
+      throw new Error(`不支持的文件类型: ${ext} (仅支持: ${TEXT_EXTENSIONS.join(', ')})`);
     }
-  });
+
+    const stat = fs.statSync(resolvedPath);
+    if (stat.size > MAX_TEXT_SIZE) {
+      throw new Error(`文件过大 (${Math.round(stat.size / 1024)}KB)，文本预览限制 ${MAX_TEXT_SIZE / 1024}KB`);
+    }
+
+    const content = fs.readFileSync(resolvedPath, 'utf-8');
+    return { content };
+  }, { moduleName: 'screenshot' }));
+
+  ipcMain.handle('screenshot:deleteFile', wrap(async (_event, { filePath }: { filePath: string }) => {
+    const safePath = await validatePath(filePath);
+    if (fs.existsSync(safePath)) {
+      fs.unlinkSync(safePath);
+    }
+    return { success: true };
+  }, { moduleName: 'screenshot' }));
+
+  ipcMain.handle('image:saveScreenshot', wrap(async (_event, base64Data: string, fileName: string) => {
+    const appDataPath = getFallbackAppDataPath();
+    const tempDir = path.join(appDataPath, 'screenshots', 'temp');
+    fs.mkdirSync(tempDir, { recursive: true });
+
+    const targetPath = path.join(tempDir, fileName);
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    if (buffer.length > MAX_FILE_SIZE) {
+      throw new Error(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
+    }
+
+    if (!isValidImage(buffer, '.png')) {
+      throw new Error('无效的图片数据');
+    }
+
+    fs.writeFileSync(targetPath, buffer);
+    return { filePath: targetPath, fileName };
+  }, { moduleName: 'screenshot' }));
 }

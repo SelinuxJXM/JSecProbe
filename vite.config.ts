@@ -67,6 +67,18 @@ export default defineConfig({
   build: {
     outDir: 'dist-renderer',
     emptyOutDir: true,
+    chunkSizeWarningLimit: 1500,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-vue': ['vue', 'vue-router', 'pinia'],
+          'vendor-element': ['element-plus'],
+          'vendor-charts': ['echarts', 'vue-echarts'],
+          'vendor-docs': ['docx', 'exceljs', 'xlsx', 'pdf-parse', 'pdfjs-dist', 'mammoth'],
+          'vendor-utils': ['marked', 'dompurify', 'dayjs'],
+        },
+      },
+    },
   },
   css: {
     preprocessorOptions: {

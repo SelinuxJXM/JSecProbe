@@ -72,18 +72,6 @@
           <span v-if="doc.category" class="doc-card-category">{{ doc.category }}</span>
         </div>
         <div v-if="doc.description" class="doc-card-summary">{{ doc.description }}</div>
-        <div class="doc-card-preview" v-if="doc.content">
-          <div class="preview-content" :class="{ expanded: doc._expanded }">
-            {{ doc.content }}
-          </div>
-          <button
-            v-if="doc.content && doc.content.length > 150"
-            class="expand-toggle"
-            @click.stop="toggleExpand(doc)"
-          >
-            {{ doc._expanded ? '收起' : '展开全文' }}
-          </button>
-        </div>
         <div class="doc-card-footer">
           <button class="doc-btn-view" @click.stop="viewDocument(doc)">查看</button>
           <button class="doc-btn-copy-text" @click.stop="copyCommand(doc.content)">
@@ -144,7 +132,6 @@ interface DocumentItem {
   content: string;
   filePath?: string;
   category: string;
-  _expanded?: boolean;
 }
 
 // Props 定义
@@ -234,18 +221,12 @@ async function loadKnowledgeBase() {
           content: doc.content || '',
           filePath: doc.filePath || '',
           category: doc.categoryName || doc.category || '',
-          _expanded: false,
         }));
       }
     }
   } catch (error) {
     console.error('加载知识库失败:', error);
   }
-}
-
-// 切换文档展开/收起
-function toggleExpand(doc: DocumentItem) {
-  doc._expanded = !doc._expanded;
 }
 
 // 复制命令/内容到剪贴板
@@ -553,46 +534,6 @@ loadKnowledgeBase();
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-}
-
-.document-card .doc-card-preview {
-  padding: 0 12px 6px;
-}
-
-.document-card .doc-card-preview .preview-content {
-  font-size: 11px;
-  color: var(--color-text-secondary, #4b5563);
-  background: var(--color-bg-base);
-  border: 1px solid var(--color-border-light, #f0f0f3);
-  border-radius: 4px;
-  padding: 8px 10px;
-  line-height: 1.6;
-  max-height: 60px;
-  overflow: hidden;
-  position: relative;
-  transition: max-height 0.3s ease;
-}
-
-.document-card .doc-card-preview .preview-content.expanded {
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.document-card .doc-card-preview .expand-toggle {
-  display: block;
-  width: 100%;
-  text-align: center;
-  font-size: 10px;
-  color: var(--color-primary, #1b5fd9);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 4px 0 0;
-  margin-top: 2px;
-}
-
-.document-card .doc-card-preview .expand-toggle:hover {
-  text-decoration: underline;
 }
 
 .document-card .doc-card-footer {

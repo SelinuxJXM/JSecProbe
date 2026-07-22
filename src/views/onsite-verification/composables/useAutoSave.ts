@@ -41,7 +41,7 @@ export function useAutoSave(options: AutoSaveOptions) {
     updateAssetProgress,
     loadProgress,
     debounceDelay = 1500,
-    periodicInterval = 1500,
+    periodicInterval = 30000,
   } = options;
 
   // 保存状态

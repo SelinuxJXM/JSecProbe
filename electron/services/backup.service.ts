@@ -5,7 +5,8 @@ const require = createRequire(import.meta.url);
 const compressing = require('compressing');
 const AdmZip = require('adm-zip');
 import Database from 'better-sqlite3';
-import { getDbPath, getAppDataPath } from '../main/paths';
+import { getDbPath, getAppDataPath, getDefaultBasePath } from '../main/paths';
+import { join } from 'path';
 import { closeDb, getDb, walCheckpoint } from '../db';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
@@ -426,43 +427,55 @@ export async function previewZipBackup(backupPath: string): Promise<BackupPrevie
       return null;
     }
 
-    let backupDb: Database.Database;
+    let backupDb: Database.Database | null = null;
     try {
       backupDb = new Database(dbBackupPath, { readonly: true });
+
+      const projects = backupDb.prepare('SELECT * FROM projects ORDER BY created_at DESC').all() as any[];
+      const projectInfos: BackupProjectInfo[] = projects.map((p: any) => {
+        const counts = backupDb!.prepare(`
+          SELECT
+            (SELECT COUNT(*) FROM project_members WHERE project_id = ?) as member_count,
+            (SELECT COUNT(*) FROM assessment_records WHERE project_id = ?) as record_count,
+            (SELECT COUNT(*) FROM assets WHERE project_id = ?) as asset_count
+        `).get(p.id, p.id, p.id) as any;
+        return {
+          id: p.id,
+          name: p.name,
+          level: p.level,
+          status: p.status,
+          createdAt: p.created_at,
+          memberCount: counts?.member_count || 0,
+          recordCount: counts?.record_count || 0,
+          assetCount: counts?.asset_count || 0,
+        };
+      });
+
+      const totalRecords = backupDb.prepare('SELECT COUNT(*) as cnt FROM assessment_records').get() as any;
+      const totalAssets = backupDb.prepare('SELECT COUNT(*) as cnt FROM assets').get() as any;
+
+      backupDb.close();
+      backupDb = null;
+
+      fs.rmSync(tempExtractPath, { recursive: true, force: true });
+
+      return {
+        manifest,
+        projects: projectInfos,
+        totalRecords: totalRecords?.cnt || 0,
+        totalAssets: totalAssets?.cnt || 0,
+      };
     } catch {
+      if (backupDb) {
+        try {
+          backupDb.close();
+        } catch (closeErr) {
+          log.warn('预览备份时关闭数据库连接失败:', closeErr);
+        }
+      }
       fs.rmSync(tempExtractPath, { recursive: true, force: true });
       return null;
     }
-
-    const projects = backupDb.prepare('SELECT * FROM projects ORDER BY created_at DESC').all() as any[];
-    const projectInfos: BackupProjectInfo[] = projects.map((p: any) => {
-      const memberCount = backupDb.prepare('SELECT COUNT(*) as cnt FROM project_members WHERE project_id = ?').get(p.id) as any;
-      const recordCount = backupDb.prepare('SELECT COUNT(*) as cnt FROM assessment_records WHERE project_id = ?').get(p.id) as any;
-      const assetCount = backupDb.prepare('SELECT COUNT(*) as cnt FROM assets WHERE project_id = ?').get(p.id) as any;
-      return {
-        id: p.id,
-        name: p.name,
-        level: p.level,
-        status: p.status,
-        createdAt: p.created_at,
-        memberCount: memberCount?.cnt || 0,
-        recordCount: recordCount?.cnt || 0,
-        assetCount: assetCount?.cnt || 0,
-      };
-    });
-
-    const totalRecords = backupDb.prepare('SELECT COUNT(*) as cnt FROM assessment_records').get() as any;
-    const totalAssets = backupDb.prepare('SELECT COUNT(*) as cnt FROM assets').get() as any;
-
-    backupDb.close();
-    fs.rmSync(tempExtractPath, { recursive: true, force: true });
-
-    return {
-      manifest,
-      projects: projectInfos,
-      totalRecords: totalRecords?.cnt || 0,
-      totalAssets: totalAssets?.cnt || 0,
-    };
   } catch {
     return null;
   }
@@ -843,5 +856,44 @@ export async function restoreFromZipBackupIncremental(
   } catch (error: any) {
     log.error('[增量恢复] 失败:', error);
     return { success: false, error: error.message || '恢复失败' };
+  }
+}
+
+export async function checkAndPerformAutoBackup(): Promise<void> {
+  try {
+    const db = getDb();
+    const settings = await db.query.systemSettings.findFirst();
+    if (!settings || settings.autoBackupEnabled !== 1) {
+      return;
+    }
+
+    const backupPath = join(getDefaultBasePath(), 'backup');
+    if (!fs.existsSync(backupPath)) {
+      fs.mkdirSync(backupPath, { recursive: true });
+    }
+
+    const files = fs.readdirSync(backupPath)
+      .filter((f: string) => f.endsWith('.db') || f.endsWith('.zip'))
+      .map((f: string) => {
+        const stat = fs.statSync(join(backupPath, f));
+        return { name: f, mtime: stat.mtime.getTime() };
+      })
+      .sort((a: { mtime: number }, b: { mtime: number }) => b.mtime - a.mtime);
+
+    if (files.length > 0) {
+      const lastBackupTime = files[0].mtime;
+      const now = Date.now();
+      const daysSinceLast = (now - lastBackupTime) / (1000 * 60 * 60 * 24);
+      if (daysSinceLast < (settings.autoBackupDays || 7)) {
+        return;
+      }
+    }
+
+    const result = await createFullBackup();
+    if (result.success) {
+      log.info('自动备份完成');
+    }
+  } catch (error) {
+    log.error('自动备份失败:', error);
   }
 }

@@ -996,7 +996,7 @@ export class ReportService {
     });
 
     // 关闭隐藏窗口
-    hiddenWindow.close();
+    hiddenWindow.destroy();
 
     // 保存PDF
     fs.writeFileSync(savePath, pdfBuffer);

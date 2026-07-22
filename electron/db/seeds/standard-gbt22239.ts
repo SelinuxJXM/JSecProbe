@@ -5114,7 +5114,7 @@ export const STANDARD_GB_T_22239_2019_ITEMS: StandardItem[] = [
 
 export const STANDARD_GB_T_22239_2019 = {
   id: 'gb-t-22239-2019-l3',
-  name: '信息安全技术 网络安全等级保护基本要求',
+  name: '信息安全技术 网络安全等级保护基本要求（三级）',
   code: 'GB/T 22239-2019-L3',
   version: '2019',
   description: '网络安全等级保护基本要求标准，包含安全通用要求和各应用场景扩展要求',

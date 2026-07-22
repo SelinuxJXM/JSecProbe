@@ -96,6 +96,11 @@
         <pre>{{ textContent }}</pre>
       </div>
 
+      <!-- Markdown 内容预览 -->
+      <div v-else-if="fileType === 'content'" class="content-preview">
+        <div class="content-body" v-html="contentHtml"></div>
+      </div>
+
       <!-- 不支持的文件类型 -->
       <div v-else class="unsupported-state">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#909399" stroke-width="1.5">
@@ -124,6 +129,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue';
 import { ElMessage } from 'element-plus';
+import DOMPurify from 'dompurify';
+import { marked } from 'marked';
 import {
   ArrowLeft,
   ArrowRight,
@@ -138,6 +145,8 @@ interface DocumentItem {
   title: string;
   filePath?: string;
   type?: string;
+  content?: string;
+  description?: string;
 }
 
 const visible = ref(false);
@@ -167,8 +176,17 @@ const wordHtmlContent = ref('');
 // 文本相关
 const textContent = ref('');
 
+// 内容相关（Markdown 文本直接渲染）
+const contentHtml = ref('');
+
+// 是否使用内容模式（无文件路径但有文本内容）
+const useContent = computed(() => {
+  return !filePath.value && !!document.value?.content;
+});
+
 // 计算文件类型
 const fileType = computed(() => {
+  if (useContent.value) return 'content';
   if (!filePath.value) return 'unknown';
   const ext = filePath.value.toLowerCase().split('.').pop();
   if (ext === 'pdf') return 'pdf';
@@ -195,6 +213,7 @@ const filteredTableData = computed(() => {
 function open(doc: DocumentItem) {
   document.value = doc;
   filePath.value = doc.filePath || '';
+  contentHtml.value = '';
   visible.value = true;
   error.value = '';
   loading.value = true;
@@ -206,13 +225,17 @@ function open(doc: DocumentItem) {
 
 // 加载文件
 async function loadFile() {
-  if (!filePath.value) {
+  if (!filePath.value && !document.value?.content) {
     error.value = '文件路径不存在';
     loading.value = false;
     return;
   }
 
   try {
+    if (useContent.value) {
+      renderContent();
+      return;
+    }
     const type = fileType.value;
     if (type === 'pdf') {
       await loadPdf();
@@ -230,6 +253,19 @@ async function loadFile() {
   } finally {
     loading.value = false;
   }
+}
+
+// 渲染 Markdown 内容
+function renderContent() {
+  const raw = document.value?.content || '';
+  if (!raw) {
+    error.value = '文档内容为空';
+    loading.value = false;
+    return;
+  }
+  const html = marked.parse(raw, { async: false }) as string;
+  contentHtml.value = DOMPurify.sanitize(html);
+  loading.value = false;
 }
 
 // 加载 PDF
@@ -323,7 +359,7 @@ async function loadWord() {
   if (!res.success || !res.data) {
     throw new Error(res.error?.message || '读取Word失败，可能是文件路径不在允许访问的目录内');
   }
-  wordHtmlContent.value = res.data.html;
+  wordHtmlContent.value = DOMPurify.sanitize(res.data.html);
 }
 
 // 加载文本
@@ -359,6 +395,7 @@ watch(visible, (val) => {
     pdfDoc = null;
     wordHtmlContent.value = '';
     textContent.value = '';
+    contentHtml.value = '';
     tableData.value = [];
     tableColumns.value = [];
     sheetNames.value = [];
@@ -572,6 +609,70 @@ defineExpose({ open });
   word-wrap: break-word;
 }
 
+/* Markdown 内容预览 */
+.content-preview {
+  flex: 1;
+  overflow: auto;
+  padding: 24px;
+  background: #fff;
+}
+
+.content-body {
+  max-width: 800px;
+  margin: 0 auto;
+  line-height: 1.8;
+  color: #333;
+}
+
+.content-body :deep(h1),
+.content-body :deep(h2),
+.content-body :deep(h3) {
+  margin: 16px 0 8px;
+  color: #1f2937;
+}
+
+.content-body :deep(p) {
+  margin: 8px 0;
+}
+
+.content-body :deep(pre) {
+  background: #f3f4f6;
+  border-radius: 6px;
+  padding: 12px 16px;
+  overflow-x: auto;
+}
+
+.content-body :deep(code) {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+}
+
+.content-body :deep(ul),
+.content-body :deep(ol) {
+  padding-left: 24px;
+  margin: 8px 0;
+}
+
+.content-body :deep(li) {
+  margin: 4px 0;
+}
+
+.content-body :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 16px 0;
+}
+
+.content-body :deep(th),
+.content-body :deep(td) {
+  border: 1px solid #d1d5db;
+  padding: 8px 12px;
+}
+
+.content-body :deep(th) {
+  background: #f3f4f6;
+}
+
 /* 底部按钮 */
 .dialog-footer {
   display: flex;
@@ -665,6 +766,33 @@ defineExpose({ open });
 
   .text-preview pre {
     color: #E2E8F0;
+  }
+
+  .content-preview {
+    background: var(--color-bg-card);
+  }
+
+  .content-body {
+    color: var(--color-text-primary);
+
+    :deep(h1),
+    :deep(h2),
+    :deep(h3) {
+      color: var(--color-text-primary);
+    }
+
+    :deep(pre) {
+      background: var(--color-bg-hover);
+    }
+
+    :deep(th),
+    :deep(td) {
+      border-color: var(--color-border-base);
+    }
+
+    :deep(th) {
+      background: var(--color-bg-hover);
+    }
   }
 }
 </style>

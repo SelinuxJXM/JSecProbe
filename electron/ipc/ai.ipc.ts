@@ -946,3 +946,16 @@ ${itemsJson}
 }
 
 export { getSharedOcrWorker };
+
+export async function terminateSharedOcrWorker(): Promise<void> {
+  if (sharedOcrWorker) {
+    try {
+      await sharedOcrWorker.terminate();
+      sharedOcrWorker = null;
+      sharedOcrInitializing = null;
+      log.info('OCR Worker 已终止');
+    } catch (err) {
+      log.warn('终止 OCR Worker 失败:', err);
+    }
+  }
+}

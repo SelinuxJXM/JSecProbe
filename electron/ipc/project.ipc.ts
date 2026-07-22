@@ -189,7 +189,7 @@ export function registerProjectHandlers(): void {
       const id = randomUUID();
 
       // 如果传入了 levelCombo，自动计算 level 值（优先使用前端传入的）
-      let level = data.level;
+      let level = Number(data.level);
       if (data.levelCombo && !level) {
         const match = data.levelCombo.match(/S(\d)A(\d)G(\d)/);
         if (match) {
@@ -246,12 +246,14 @@ export function registerProjectHandlers(): void {
         log.error('导入预置测评记录失败:', err);
       });
 
-      calcProjectProgress(id).catch(() => {});
+      calcProjectProgress(id).catch((err) => {
+        log.error('[project:create] 进度计算失败:', err);
+      });
 
       const project = await db.query.projects.findFirst({
         where: eq(schema.projects.id, id),
       });
-
+      if (!project) return;
       await writeOperationLog({
         action: 'create',
         module: 'project',
@@ -452,6 +454,21 @@ export function registerProjectHandlers(): void {
     }
   }
 
+  ipcMain.handle('project:reimportPresetRecords', wrap(async (_event, projectId: string) => {
+      const db = getDb();
+      const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
+      if (!project) throw new Error('项目不存在');
+      const level = Number(project.level) || 3;
+      const expectedStandardId = level === 2 ? 'gb-t-22239-2019-l2' : 'gb-t-22239-2019-l3';
+      if (project.standardId !== expectedStandardId) {
+        log.warn(`项目 ${projectId} 的标准库ID不匹配: ${project.standardId} -> ${expectedStandardId}，已自动修正`);
+        await db.update(schema.projects).set({ standardId: expectedStandardId }).where(eq(schema.projects.id, projectId));
+      }
+      await importPresetRecords(projectId, level);
+      return { success: true };
+    })
+  );
+
   ipcMain.handle('project:update', wrap(async (_event, id: string, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
@@ -469,12 +486,14 @@ export function registerProjectHandlers(): void {
         .set({ ...data, level, updatedAt: now })
         .where(eq(schema.projects.id, id));
 
-      calcProjectProgress(id).catch(() => {});
+      calcProjectProgress(id).catch((err) => {
+        log.error('[project:update] 进度计算失败:', err);
+      });
 
       const project = await db.query.projects.findFirst({
         where: eq(schema.projects.id, id),
       });
-
+      if (!project) return;
       await writeOperationLog({
         action: 'update',
         module: 'project',
@@ -492,7 +511,13 @@ export function registerProjectHandlers(): void {
       const project = await db.query.projects.findFirst({
         where: eq(schema.projects.id, id),
       });
-      await db.delete(schema.projects).where(eq(schema.projects.id, id));
+      await db.transaction(async (tx) => {
+        await tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.projectId, id));
+        await tx.delete(schema.issues).where(eq(schema.issues.projectId, id));
+        await tx.delete(schema.projectMembers).where(eq(schema.projectMembers.projectId, id));
+        await tx.delete(schema.assets).where(eq(schema.assets.projectId, id));
+        await tx.delete(schema.projects).where(eq(schema.projects.id, id));
+      });
       await writeOperationLog({
         action: 'delete',
         module: 'project',

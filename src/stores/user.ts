@@ -24,17 +24,26 @@ export const useUserStore = defineStore('user', () => {
 
   async function logout() {
     if (window.api) {
-      await window.api.auth.logout();
+      await window.api.auth.logout(token.value || undefined);
     }
     user.value = null;
     token.value = '';
     localStorage.removeItem('token');
   }
 
-  function restoreSession() {
+  async function restoreSession() {
     const savedToken = localStorage.getItem('token');
     if (savedToken) {
-      token.value = savedToken;
+      try {
+        const res = await window.api.auth.validateSession(savedToken);
+        if (res.success && res.data?.valid) {
+          token.value = savedToken;
+        } else {
+          localStorage.removeItem('token');
+        }
+      } catch {
+        localStorage.removeItem('token');
+      }
     }
   }
 

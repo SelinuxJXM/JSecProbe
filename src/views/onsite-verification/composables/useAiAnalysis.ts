@@ -18,7 +18,7 @@ interface UseAiAnalysisOptions {
  * 提取自 onsite-verification/index.vue 的 AI 分析相关逻辑
  */
 export function useAiAnalysis(options: UseAiAnalysisOptions) {
-  const { tableRows, saveAllRows, loadScreenshotDataUrl } = options;
+  const { tableRows, saveAllRows } = options;
 
   // ==================== 单条 AI 分析状态 ====================
   const aiDialogVisible = ref(false);
@@ -308,7 +308,7 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
         filters: [{ name: '支持的文件', extensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'pdf', 'doc', 'docx', 'md', 'txt'] }],
         properties: ['openFile', 'multiSelections'],
       });
-      if (res.data?.canceled || !res.data?.filePaths) return;
+      if (!res.success || res.data?.canceled || !res.data?.filePaths) return;
       for (const filePath of res.data.filePaths) {
         const fileName = filePath.split('\\').pop()?.split('/').pop() || filePath;
         const fileType = getFileType(filePath);
@@ -405,117 +405,56 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
           const content = res.data.content;
           const jsonMatch = content.match(/\{[\s\S]*\}/);
           if (jsonMatch) {
-            const analysis = JSON.parse(jsonMatch[0]);
-            const results = analysis.results || [];
-            let appliedCount = 0;
-
-            console.log('[batchAiAnalyze] batchFiles:', batchFiles.value.map(b => ({ name: b.name, path: b.path.substring(0, 60), hasDataUrl: !!b.dataUrl })));
-            console.log('[batchAiAnalyze] results screenshots:', results.map((r: any) => ({ itemId: r.itemId, screenshots: r.screenshots })));
-
-            for (const result of results) {
-              const row = tableRows.value.find(r => r.itemId === result.itemId);
-              if (row) {
-                const resultMap: Record<string, string> = {
-                  '符合': 'conform',
-                  '部分符合': 'partial',
-                  '不符合': 'nonconform',
-                  '不适用': 'na',
-                };
-                const complianceValue = resultMap[result.compliance] || '';
-                if (complianceValue) {
-                  row.compliance = complianceValue;
-                }
-                if (result.conclusion) {
-                  row.conclusion = result.conclusion;
-                }
-                if (result.keyEvidencePoints && result.keyEvidencePoints.length > 0) {
-                  row.evidence = result.keyEvidencePoints.join('\n');
-                }
-                const attachedFiles = result.attachedFiles || result.screenshots || [];
-                if (attachedFiles.length > 0) {
-                  row.screenshots = row.screenshots || [];
-                  row.screenshotUrls = row.screenshotUrls || {};
-
-                  const loadPromises: Promise<string | null>[] = [];
-                  const newUrls: Record<string, string> = {};
-
-                  for (const entry of result.attachedFiles) {
-                    const cleanName = entry.replace(/^截图：|^文档：/, '').trim();
-                    const sBasename = (cleanName.includes('\\') ? cleanName.split('\\').pop() : cleanName.split('/').pop()) || cleanName;
-                    let match = batchFiles.value.find(b =>
-                      b.name === cleanName ||
-                      b.path === cleanName ||
-                      b.path.endsWith('\\' + cleanName) ||
-                      b.path.endsWith('/' + cleanName) ||
-                      b.name === sBasename
-                    );
-                    if (!match) {
-                      match = batchFiles.value.find(b =>
-                        b.name.includes(sBasename) || sBasename.includes(b.name)
-                      );
-                    }
-
-                    if (!match) {
-                      console.warn('[batchAiAnalyze] 未找到匹配的文件:', entry, '可用文件:', batchFiles.value.map(b => b.name));
-                      continue;
-                    }
-
-                    const filePath = match.path;
-
-                    if (!row.screenshots.includes(filePath)) {
-                      row.screenshots = [...row.screenshots, filePath];
-                    }
-
-                    if (match.fileType === 'image' && match.dataUrl && match.dataUrl.startsWith('data:image/')) {
-                      newUrls[filePath] = match.dataUrl;
-                    } else if (match.fileType !== 'image') {
-                      // 文档文件跳过截图加载
-                      continue;
-                    } else {
-                      loadPromises.push(loadScreenshotDataUrl(row, filePath));
-                    }
-                  }
-
-                  if (Object.keys(newUrls).length > 0) {
-                    row.screenshotUrls = Object.assign({}, row.screenshotUrls, newUrls);
-                  }
-
-                  if (loadPromises.length > 0) {
-                    await Promise.all(loadPromises);
-                  }
-                }
-                appliedCount++;
-              }
-            }
-
-            ElMessage.success(`AI分析完成，已自动填入 ${appliedCount} 条测评记录`);
             try {
-              const saveRes = await saveAllRows();
-              if (!saveRes) {
-                console.error('[batchAiAnalyze] saveAllRows returned false');
+              const analysis = JSON.parse(jsonMatch[0]);
+              const results = analysis.results || [];
+              let appliedCount = 0;
+
+              for (const result of results) {
+                const row = tableRows.value.find(r => r.itemId === result.itemId);
+                if (row) {
+                  const resultMap: Record<string, string> = {
+                    '符合': 'conform',
+                    '部分符合': 'partial',
+                    '不符合': 'nonconform',
+                    '不适用': 'na',
+                  };
+                  const complianceValue = resultMap[result.compliance] || '';
+                  if (complianceValue) {
+                    row.compliance = complianceValue;
+                  }
+                  if (result.conclusion) {
+                    row.conclusion = result.conclusion;
+                  }
+                  appliedCount++;
+                }
               }
-            } catch (err: any) {
-              console.error('[batchAiAnalyze] saveAllRows threw:', err);
+
+              ElMessage.success(`AI分析完成，已自动填入 ${appliedCount} 条测评记录`);
+              try {
+                await saveAllRows();
+              } catch (err: any) {
+                console.error('[batchAiAnalyze] saveAllRows threw:', err);
+              }
+            } catch (e) {
+              console.error('[batchAiAnalyze] JSON解析失败:', e);
+              ElMessage.warning('AI返回结果解析失败，请重试');
             }
           } else {
             ElMessage.error('AI返回格式无法解析');
-            batchAiProgress.value.stage = 'error';
-            batchAiProgress.value.message = 'AI返回格式无法解析';
           }
         } else {
           ElMessage.error(res.error?.message || 'AI分析失败');
-          batchAiProgress.value.stage = 'error';
-          batchAiProgress.value.message = res.error?.message || 'AI分析失败';
         }
       } catch (error: any) {
         ElMessage.error('AI分析失败：' + (error.message || error));
-        batchAiProgress.value.stage = 'error';
-        batchAiProgress.value.message = error.message || '未知错误';
       } finally {
         batchAiLoading.value = false;
       }
     })();
   }
+
+
 
   // ==================== 返回所有状态和方法 ====================
   return {

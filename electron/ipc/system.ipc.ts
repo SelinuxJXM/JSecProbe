@@ -13,8 +13,6 @@ import { wrap } from '../utils/ipc-wrapper';
 function restartApp(): void {
   try {
     if (process.env.VITE_DEV_SERVER_URL) {
-      // 开发模式下由 vite-plugin-electron 重新启动进程，
-      // app.relaunch() 会丢失 VITE_DEV_SERVER_URL 环境变量
       app.exit(0);
     } else {
       app.relaunch();
@@ -61,264 +59,241 @@ function validatePathName(name: string): string {
 
 export function registerSystemHandlers(): void {
   ipcMain.handle('system:getInfo', wrap(async () => ({
-      appVersion: app.getVersion(),
-      electronVersion: process.versions.electron,
-      nodeVersion: process.versions.node,
-      platform: process.platform,
-      dataPath: await getAppDataPath(),
-    }))
-  );
+    appVersion: app.getVersion(),
+    electronVersion: process.versions.electron,
+    nodeVersion: process.versions.node,
+    platform: process.platform,
+    dataPath: await getAppDataPath(),
+  }), 'system'));
 
   ipcMain.handle('system:openDataFolder', wrap(async () => {
-      const dataPath = await getAppDataPath();
-      shell.openPath(dataPath);
-    })
-  );
+    const dataPath = await getAppDataPath();
+    shell.openPath(dataPath);
+  }, 'system'));
 
   ipcMain.handle('system:changeDataPath', wrap(async (_event, newPath: string) => {
-      log.info(`开始更改数据存储路径，目标路径: ${newPath}`);
-      const resolvedPath = path.resolve(newPath);
-      log.info(`解析后的目标路径: ${resolvedPath}`);
+    log.info(`开始更改数据存储路径，目标路径: ${newPath}`);
+    const resolvedPath = path.resolve(newPath);
+    log.info(`解析后的目标路径: ${resolvedPath}`);
 
-      if (!fs.existsSync(resolvedPath)) {
-        log.info('目标目录不存在，创建目录');
-        fs.mkdirSync(resolvedPath, { recursive: true });
+    if (!fs.existsSync(resolvedPath)) {
+      log.info('目标目录不存在，创建目录');
+      fs.mkdirSync(resolvedPath, { recursive: true });
+    }
+
+    if (!fs.statSync(resolvedPath).isDirectory()) {
+      throw new Error('指定的路径不是有效目录');
+    }
+
+    const oldPath = await getAppDataPath();
+    const oldDbPath = path.join(oldPath, 'data', 'mlps.db');
+    const newDbPath = path.join(resolvedPath, 'data', 'mlps.db');
+    log.info(`旧数据路径: ${oldPath}, 旧数据库: ${oldDbPath}, 新数据库: ${newDbPath}`);
+
+    if (fs.existsSync(oldDbPath)) {
+      if (!fs.existsSync(path.join(resolvedPath, 'data'))) {
+        fs.mkdirSync(path.join(resolvedPath, 'data'), { recursive: true });
       }
+      log.info('关闭数据库连接并复制数据库文件');
+      closeDb();
+      fs.copyFileSync(oldDbPath, newDbPath);
+      log.info(`数据库已从 ${oldDbPath} 复制到 ${newDbPath}`);
+    } else {
+      log.warn(`旧数据库不存在: ${oldDbPath}`);
+    }
 
-      if (!fs.statSync(resolvedPath).isDirectory()) {
-        throw new Error('指定的路径不是有效目录');
-      }
+    log.info('写入新数据路径配置');
+    setAppDataPath(resolvedPath);
+    log.info('数据路径配置写入完成');
 
-      const oldPath = await getAppDataPath();
-      const oldDbPath = path.join(oldPath, 'data', 'mlps.db');
-      const newDbPath = path.join(resolvedPath, 'data', 'mlps.db');
-      log.info(`旧数据路径: ${oldPath}, 旧数据库: ${oldDbPath}, 新数据库: ${newDbPath}`);
+    setTimeout(() => {
+      restartApp();
+    }, 500);
 
-      if (fs.existsSync(oldDbPath)) {
-        if (!fs.existsSync(path.join(resolvedPath, 'data'))) {
-          fs.mkdirSync(path.join(resolvedPath, 'data'), { recursive: true });
-        }
-        log.info('关闭数据库连接并复制数据库文件');
-        closeDb();
-        fs.copyFileSync(oldDbPath, newDbPath);
-        log.info(`数据库已从 ${oldDbPath} 复制到 ${newDbPath}`);
-      } else {
-        log.warn(`旧数据库不存在: ${oldDbPath}`);
-      }
-
-      log.info('写入新数据路径配置');
-      setAppDataPath(resolvedPath);
-      log.info('数据路径配置写入完成');
-
-      setTimeout(() => {
-        restartApp();
-      }, 500);
-
-      return resolvedPath;
-    })
-  );
+    return resolvedPath;
+  }, 'system'));
 
   ipcMain.handle('shell:openPath', wrap(async (_event, filePath: string) => {
-      const safePath = await validatePath(filePath);
-      const result = await shell.openPath(safePath);
-      if (result) {
-        // result is empty string on success, error message on failure
-        throw new Error(result);
-      }
-    })
-  );
+    const safePath = await validatePath(filePath);
+    const result = await shell.openPath(safePath);
+    if (result) {
+      throw new Error(result);
+    }
+  }, 'system'));
 
   ipcMain.handle('shell:openExternal', wrap(async (_event, filePath: string) => {
-      const safePath = await validatePath(filePath);
-      shell.openPath(safePath);
-    })
-  );
+    const safePath = await validatePath(filePath);
+    shell.openPath(safePath);
+  }, 'system'));
 
   ipcMain.handle('system:selectFile', wrap(async (_event, filters?: FileFilter[]) => {
-      const result = await dialog.showOpenDialog({
-        properties: ['openFile'],
-        filters: filters || [],
-      });
-      if (result.canceled || result.filePaths.length === 0) {
-        return null;
-      }
-      return result.filePaths[0];
-    })
-  );
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: filters || [],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+    return result.filePaths[0];
+  }, 'system'));
 
   ipcMain.handle('system:saveFile', wrap(async (_event, defaultPath?: string, filters?: FileFilter[]) => {
-      const result = await dialog.showSaveDialog({
-        defaultPath: defaultPath || '',
-        filters: filters || [],
-      });
-      if (result.canceled || !result.filePath) {
-        return null;
-      }
-      return result.filePath;
-    })
-  );
+    const result = await dialog.showSaveDialog({
+      defaultPath: defaultPath || '',
+      filters: filters || [],
+    });
+    if (result.canceled || !result.filePath) {
+      return null;
+    }
+    return result.filePath;
+  }, 'system'));
 
   ipcMain.handle('system:backupData', wrap(async (_event, customPath?: string) => {
-      let backupPath: string;
+    let backupPath: string;
 
-      if (customPath) {
-        const resolvedPath = path.resolve(customPath);
-        const dir = path.dirname(resolvedPath);
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
-        }
-        backupPath = resolvedPath.endsWith('.zip') ? resolvedPath : resolvedPath + '.zip';
-      } else {
-        const dataPath = await getAppDataPath();
-        const backupDir = path.join(dataPath, 'backups');
-        if (!fs.existsSync(backupDir)) {
-          fs.mkdirSync(backupDir, { recursive: true });
-        }
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-        backupPath = path.join(backupDir, `backup_${timestamp}.zip`);
-      }
-
-      const result = await createFullBackup(backupPath);
-      if (!result.success) {
-        throw new Error(result.error || '备份失败');
-      }
-
-      return result.path || backupPath;
-    })
-  );
-
-  ipcMain.handle('system:restoreData', wrap(async (_event, backupPath: string, options?: { incremental?: boolean; projectIds?: string[] }) => {
-      if (!fs.existsSync(backupPath)) {
-        throw new Error('备份文件不存在');
-      }
-      
-      const stats = fs.statSync(backupPath);
-      if (!stats.isFile()) {
-        throw new Error('备份路径不是文件');
-      }
-
-      const isZip = backupPath.endsWith('.zip');
-      const isDb = backupPath.endsWith('.db') || backupPath.endsWith('.sqlite') || backupPath.endsWith('.sqlite3');
-
-      if (!isZip && !isDb) {
-        throw new Error('不支持的备份文件格式，请选择 .zip 或 .db 文件');
-      }
-
-      let result: any;
-
-      if (isZip) {
-        if (options?.incremental) {
-          result = await restoreFromZipBackupIncremental(backupPath, options.projectIds);
-        } else {
-          result = await restoreFromZipBackup(backupPath);
-        }
-      } else {
-        result = await restoreFromLegacyBackup(backupPath);
-      }
-
-      if (!result.success) {
-        throw new Error(result.error || '恢复失败');
-      }
-
-      setTimeout(() => {
-        restartApp();
-      }, 500);
-    })
-  );
-
-  ipcMain.handle('system:previewBackup', wrap(async (_event, backupPath: string) => {
-      const preview = await previewZipBackup(backupPath);
-      if (!preview) {
-        return { success: false, error: '无法预览备份文件' };
-      }
-      return JSON.parse(JSON.stringify(preview));
-    })
-  );
-
-  ipcMain.handle('system:listBackups', wrap(async () => {
-      const backups = await listBackups();
-      return JSON.parse(JSON.stringify(backups));
-    })
-  );
-
-  ipcMain.handle('log:list', wrap(async (_event, params: { page?: number; pageSize?: number; module?: string; action?: string }) => {
-      const db = getDb();
-      const page = params.page || 1;
-      const pageSize = params.pageSize || 50;
-      const conditions: any[] = [];
-      if (params.module) conditions.push(eq(schema.operationLogs.module, params.module));
-      if (params.action) conditions.push(eq(schema.operationLogs.action, params.action));
-
-      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
-
-      const totalResult = await db
-        .select({ value: count() })
-        .from(schema.operationLogs)
-        .where(whereClause || undefined);
-      const total = totalResult[0]?.value || 0;
-
-      const logs = await db
-        .select()
-        .from(schema.operationLogs)
-        .where(whereClause || undefined)
-        .orderBy(desc(schema.operationLogs.createdAt))
-        .limit(pageSize)
-        .offset((page - 1) * pageSize);
-
-      return { list: logs, total };
-    })
-  );
-
-  // Dialog handlers
-  ipcMain.handle('dialog:showOpenDialog', wrap(async (_event, options) => {
-      const result = await dialog.showOpenDialog(options);
-      return result;
-    })
-  );
-
-  ipcMain.handle('dialog:showSaveDialog', wrap(async (_event, options) => {
-      const result = await dialog.showSaveDialog(options);
-      return result;
-    })
-  );
-
-  ipcMain.handle('dialog:showMessageBox', (_event, options) =>
-    wrap(async () => {
-      const result = await dialog.showMessageBox(options);
-      return result;
-    })
-  );
-
-  // 文件系统操作
-  ipcMain.handle('system:getPath', (_event, name: string) =>
-    wrap<string>(() => {
-      const safeName = validatePathName(name);
-      return app.getPath(safeName as any);
-    })
-  );
-
-  ipcMain.handle('fs:ensureDir', (_event, dirPath: string) =>
-    wrap<void>(async () => {
-      const safePath = await validatePath(dirPath);
-      if (!fs.existsSync(safePath)) {
-        fs.mkdirSync(safePath, { recursive: true });
-      }
-    })
-  );
-
-  ipcMain.handle('fs:writeFile', (_event, filePath: string, data: string | Buffer) =>
-    wrap<void>(async () => {
-      const safePath = await validatePath(filePath);
-      const dir = path.dirname(safePath);
+    if (customPath) {
+      const resolvedPath = path.resolve(customPath);
+      const dir = path.dirname(resolvedPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      if (typeof data === 'string') {
-        const buffer = Buffer.from(data, 'base64');
-        fs.writeFileSync(safePath, buffer);
-      } else {
-        fs.writeFileSync(safePath, data);
+      backupPath = resolvedPath.endsWith('.zip') ? resolvedPath : resolvedPath + '.zip';
+    } else {
+      const dataPath = await getAppDataPath();
+      const backupDir = path.join(dataPath, 'backups');
+      if (!fs.existsSync(backupDir)) {
+        fs.mkdirSync(backupDir, { recursive: true });
       }
-    })
-  );
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      backupPath = path.join(backupDir, `backup_${timestamp}.zip`);
+    }
+
+    const result = await createFullBackup(backupPath);
+    if (!result.success) {
+      throw new Error(result.error || '备份失败');
+    }
+
+    return result.path || backupPath;
+  }, 'system'));
+
+  ipcMain.handle('system:restoreData', wrap(async (_event, backupPath: string, options?: { incremental?: boolean; projectIds?: string[] }) => {
+    if (!fs.existsSync(backupPath)) {
+      throw new Error('备份文件不存在');
+    }
+    
+    const stats = fs.statSync(backupPath);
+    if (!stats.isFile()) {
+      throw new Error('备份路径不是文件');
+    }
+
+    const isZip = backupPath.endsWith('.zip');
+    const isDb = backupPath.endsWith('.db') || backupPath.endsWith('.sqlite') || backupPath.endsWith('.sqlite3');
+
+    if (!isZip && !isDb) {
+      throw new Error('不支持的备份文件格式，请选择 .zip 或 .db 文件');
+    }
+
+    let result;
+
+    if (isZip) {
+      if (options?.incremental) {
+        result = await restoreFromZipBackupIncremental(backupPath, options.projectIds);
+      } else {
+        result = await restoreFromZipBackup(backupPath);
+      }
+    } else {
+      result = await restoreFromLegacyBackup(backupPath);
+    }
+
+    if (!result.success) {
+      throw new Error(result.error || '恢复失败');
+    }
+
+    setTimeout(() => {
+      restartApp();
+    }, 500);
+  }, 'system'));
+
+  ipcMain.handle('system:previewBackup', wrap(async (_event, backupPath: string) => {
+    const preview = await previewZipBackup(backupPath);
+    if (!preview) {
+      return { success: false, error: '无法预览备份文件' };
+    }
+    return JSON.parse(JSON.stringify(preview));
+  }, 'system'));
+
+  ipcMain.handle('system:listBackups', wrap(async () => {
+    const backups = await listBackups();
+    return JSON.parse(JSON.stringify(backups));
+  }, 'system'));
+
+  ipcMain.handle('log:list', wrap(async (_event, params: { page?: number; pageSize?: number; module?: string; action?: string }) => {
+    const db = getDb();
+    const page = params.page || 1;
+    const pageSize = params.pageSize || 50;
+    const conditions = [];
+    if (params.module) conditions.push(eq(schema.operationLogs.module, params.module));
+    if (params.action) conditions.push(eq(schema.operationLogs.action, params.action));
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const totalResult = await db
+      .select({ value: count() })
+      .from(schema.operationLogs)
+      .where(whereClause || undefined);
+    const total = totalResult[0]?.value || 0;
+
+    const logs = await db
+      .select()
+      .from(schema.operationLogs)
+      .where(whereClause || undefined)
+      .orderBy(desc(schema.operationLogs.createdAt))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize);
+
+    return { list: logs, total };
+  }, 'system'));
+
+  // Dialog handlers
+  ipcMain.handle('dialog:showOpenDialog', wrap(async (_event, options) => {
+    const result = await dialog.showOpenDialog(options);
+    return result;
+  }, 'system'));
+
+  ipcMain.handle('dialog:showSaveDialog', wrap(async (_event, options) => {
+    const result = await dialog.showSaveDialog(options);
+    return result;
+  }, 'system'));
+
+  ipcMain.handle('dialog:showMessageBox', wrap(async (_event, options) => {
+    const result = await dialog.showMessageBox(options);
+    return result;
+  }, 'system'));
+
+  // 文件系统操作
+  ipcMain.handle('system:getPath', wrap((_event, name: string) => {
+    const safeName = validatePathName(name);
+    return app.getPath(safeName as Parameters<typeof app.getPath>[0]);
+  }, 'system'));
+
+  ipcMain.handle('fs:ensureDir', wrap(async (_event, dirPath: string) => {
+    const safePath = await validatePath(dirPath);
+    if (!fs.existsSync(safePath)) {
+      fs.mkdirSync(safePath, { recursive: true });
+    }
+  }, 'system'));
+
+  ipcMain.handle('fs:writeFile', wrap(async (_event, filePath: string, data: string | Buffer) => {
+    const safePath = await validatePath(filePath);
+    const dir = path.dirname(safePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    if (typeof data === 'string') {
+      const buffer = Buffer.from(data, 'base64');
+      fs.writeFileSync(safePath, buffer);
+    } else {
+      fs.writeFileSync(safePath, data);
+    }
+  }, 'system'));
 }

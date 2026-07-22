@@ -1,30 +1,15 @@
 import { ipcMain } from 'electron';
-import log from 'electron-log';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import bcrypt from 'bcryptjs';
-
-function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
-  return Promise.resolve()
-    .then(fn)
-    .then((data) => ({ success: true, data }))
-    .catch((error) => {
-      log.error('User IPC Error:', error);
-      return {
-        success: false,
-        error: {
-          code: error.code || 'INTERNAL_ERROR',
-          message: error.message || '操作失败',
-        },
-      };
-    });
-}
+import { wrap } from '../utils/ipc-wrapper';
 
 export function registerUserHandlers(): void {
-  ipcMain.handle('user:list', () =>
-    wrap(async () => {
+  const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d@$!%*?&]{8,}$/;
+
+  ipcMain.handle('user:list', wrap(async () => {
       const db = getDb();
       const users = await db.select().from(schema.users);
       return users.map(u => ({
@@ -39,12 +24,18 @@ export function registerUserHandlers(): void {
         createdAt: u.createdAt,
         updatedAt: u.updatedAt,
       }));
-    })
-  );
+    }));
 
-  ipcMain.handle('user:create', (_event, data: { username: string; password: string; realName: string; email?: string; phone?: string; role?: string }) =>
-    wrap(async () => {
+  ipcMain.handle('user:create', wrap(async (_event, data: { username: string; password: string; realName: string; email?: string; phone?: string; role?: string }) => {
+      if (!data.username || data.username.length < 3) throw new Error('用户名至少3个字符');
+      if (!data.realName) throw new Error('请输入姓名');
+      if (!data.password) throw new Error('请输入密码');
+      if (!PASSWORD_REGEX.test(data.password)) throw new Error('密码需8位以上，包含大小写字母和数字');
       const db = getDb();
+
+      const existing = await db.select().from(schema.users).where(eq(schema.users.username, data.username)).limit(1);
+      if (existing.length > 0) throw new Error('用户名已存在');
+
       const id = randomUUID();
       const now = new Date().toISOString();
       const passwordHash = bcrypt.hashSync(data.password, 12);
@@ -61,11 +52,9 @@ export function registerUserHandlers(): void {
         updatedAt: now,
       });
       return { id, username: data.username, realName: data.realName };
-    })
-  );
+    }));
 
-  ipcMain.handle('user:update', (_event, id: string, data: { realName?: string; email?: string; phone?: string; role?: string; isActive?: boolean; password?: string }) =>
-    wrap(async () => {
+  ipcMain.handle('user:update', wrap(async (_event, id: string, data: { realName?: string; email?: string; phone?: string; role?: string; isActive?: boolean; password?: string }) => {
       const db = getDb();
       const now = new Date().toISOString();
       const updateData: any = { updatedAt: now };
@@ -75,16 +64,14 @@ export function registerUserHandlers(): void {
       if (data.role !== undefined) updateData.role = data.role;
       if (data.isActive !== undefined) updateData.isActive = data.isActive ? 1 : 0;
       if (data.password) {
+        if (!PASSWORD_REGEX.test(data.password)) throw new Error('密码需8位以上，包含大小写字母和数字');
         updateData.passwordHash = bcrypt.hashSync(data.password, 12);
       }
       await db.update(schema.users).set(updateData).where(eq(schema.users.id, id));
-    })
-  );
+    }));
 
-  ipcMain.handle('user:delete', (_event, id: string) =>
-    wrap(async () => {
+  ipcMain.handle('user:delete', wrap(async (_event, id: string) => {
       const db = getDb();
       await db.delete(schema.users).where(eq(schema.users.id, id));
-    })
-  );
+    }));
 }

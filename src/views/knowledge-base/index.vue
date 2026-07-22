@@ -72,47 +72,15 @@
               <span>全部文档</span>
               <span class="kb-tree-count">{{ allDocCount }}</span>
             </div>
-            <div v-for="cat in rootCategories" :key="cat.id" class="kb-tree-node">
-              <div
-                class="kb-tree-item kb-tree-parent"
-                :class="{ open: expandedNodes[cat.id], active: selectedCategoryId === cat.id }"
-                @click="selectCategory(cat.id)"
-                @contextmenu.prevent="showCategoryMenu($event, cat)"
-              >
-                <svg
-                  class="kb-tree-arrow"
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  :style="{ transform: expandedNodes[cat.id] ? 'rotate(90deg)' : 'rotate(0deg)' }"
-                  @click.stop="toggleNode(cat.id)"
-                >
-                  <polyline points="9 18 15 12 9 6"/>
-                </svg>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" :stroke="cat.color || '#409EFF'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-if="cat.icon !== 'Folder'"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" :stroke="cat.color || '#409EFF'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-else><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                <span>{{ cat.name }}</span>
-                <span class="kb-tree-count">{{ getCategoryDocumentCount(cat.id) }}</span>
-              </div>
-              <div v-if="expandedNodes[cat.id]" class="kb-tree-children">
-                <div
-                  v-for="child in getChildren(cat.id)"
-                  :key="child.id"
-                  class="kb-tree-item kb-tree-child"
-                  :class="{ active: selectedCategoryId === child.id }"
-                  @click="selectCategory(child.id)"
-                  @contextmenu.prevent="showCategoryMenu($event, child)"
-                >
-                  <span>{{ child.name }}</span>
-                  <span class="kb-tree-count">{{ getCategoryDocumentCount(child.id) }}</span>
-                </div>
-              </div>
-            </div>
+            <RecursiveCategoryTree
+              :categories="rootCategories"
+              :selected-id="selectedCategoryId"
+              :expanded-ids="expandedIds"
+              :depth="0"
+              :all-categories="allCategories"
+              @select="selectCategory"
+              @toggle="toggleNode"
+            />
           </div>
         </div>
 
@@ -123,8 +91,9 @@
             <span class="kb-breadcrumb-item kb-breadcrumb-current">{{ selectedCategoryName }}</span>
           </div>
 
-          <div class="kb-doc-list" v-loading="loading">
-            <div v-if="documentList.length === 0 && !loading" class="kb-empty">
+          <div class="kb-doc-list">
+            <SkeletonLoader v-if="loading && !documentList.length" type="card" :rows="4" />
+            <div v-else-if="documentList.length === 0 && !loading" class="kb-empty">
               <el-empty description="暂无文档" />
             </div>
             <div
@@ -441,43 +410,39 @@
     </el-dialog>
 
     <!-- 上传文档对话框 -->
-    <el-dialog v-model="showUploadDialog" title="上传文档" width="500px" destroy-on-close>
-      <el-form :model="uploadForm" label-width="80px">
-        <el-form-item label="文档标题">
+    <el-dialog v-model="showUploadDialog" title="上传文档" width="420px" destroy-on-close @closed="resetUploadForm">
+      <el-form :model="uploadForm" label-position="top">
+        <el-form-item label="文档文件" required>
+          <div class="upload-file-zone" @click="selectDocumentFile">
+            <input v-model="uploadForm.filePath" type="text" placeholder="点击选择文件" readonly />
+            <span v-if="uploadForm.fileName" class="file-name">{{ uploadForm.fileName }}</span>
+          </div>
+        </el-form-item>
+        <el-form-item label="文档标题" required>
           <el-input v-model="uploadForm.title" placeholder="请输入文档标题" />
         </el-form-item>
-        <el-form-item label="文档分类">
-          <el-select v-model="uploadForm.categoryId" style="width:100%">
-            <el-option v-for="cat in allCategories" :key="cat.id" :label="cat.name" :value="cat.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="文档类型">
-          <el-select v-model="uploadForm.type" style="width:100%">
-            <el-option label="PDF" value="standard" />
-            <el-option label="Word" value="guide" />
-            <el-option label="Excel" value="tool" />
-            <el-option label="其他" value="other" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="版本">
-          <el-input v-model="uploadForm.version" placeholder="如: 1.0" />
-        </el-form-item>
-        <el-form-item label="描述">
-          <el-input v-model="uploadForm.description" type="textarea" :rows="3" placeholder="请输入文档描述" />
-        </el-form-item>
-        <el-form-item label="标签">
-          <el-input v-model="uploadForm.tags" placeholder="多个标签用逗号分隔" />
-        </el-form-item>
-        <el-form-item label="文件路径">
-          <div style="display:flex; gap:8px;">
-            <el-input v-model="uploadForm.filePath" placeholder="请选择文件" readonly style="flex:1" />
-            <el-button @click="selectDocumentFile">选择文件</el-button>
-          </div>
+        <div class="form-row">
+          <el-form-item label="文档分类" required style="flex:1">
+            <el-select v-model="uploadForm.categoryId" style="width:100%">
+              <el-option v-for="cat in allCategories" :key="cat.id" :label="cat.name" :value="cat.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="文档类型" style="flex:1">
+            <el-select v-model="uploadForm.type" style="width:100%">
+              <el-option label="PDF" value="standard" />
+              <el-option label="Word" value="guide" />
+              <el-option label="Excel" value="tool" />
+              <el-option label="其他" value="other" />
+            </el-select>
+          </el-form-item>
+        </div>
+        <el-form-item label="描述（可选）">
+          <el-input v-model="uploadForm.description" type="textarea" :rows="2" placeholder="文档描述..." />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showUploadDialog = false">取消</el-button>
-        <el-button type="primary" @click="handleUploadDocument">上传</el-button>
+        <el-button type="primary" @click="handleUploadDocument" :disabled="!uploadForm.title || !uploadForm.categoryId || !uploadForm.filePath">上传</el-button>
       </template>
     </el-dialog>
 
@@ -507,51 +472,47 @@
     </el-dialog>
 
     <!-- 导入指导书对话框 -->
-    <el-dialog v-model="showImportGuideDialog" title="导入测评指导书" width="700px" destroy-on-close>
-      <el-form :model="importGuideForm" label-width="100px">
-        <el-form-item label="选择目录">
-          <div style="display:flex; gap:8px;">
-            <el-input v-model="importGuideForm.dirPath" placeholder="请选择指导书目录" readonly style="flex:1" />
-            <el-button @click="selectGuideDirectory">选择目录</el-button>
+    <el-dialog v-model="showImportGuideDialog" title="导入测评指导书" width="420px" destroy-on-close @closed="resetImportGuideForm">
+      <el-form :model="importGuideForm" label-position="top">
+        <el-form-item label="指导书目录" required>
+          <div class="upload-file-zone" @click="selectGuideDirectory">
+            <input v-model="importGuideForm.dirPath" type="text" placeholder="点击选择目录" readonly />
+            <span v-if="guideFileList.length" class="file-name">{{ guideFileList.length }} 个文件</span>
           </div>
         </el-form-item>
-        <el-form-item label="目标分类">
-          <el-select v-model="importGuideForm.categoryId" style="width:100%">
-            <el-option v-for="cat in allCategories" :key="cat.id" :label="cat.name" :value="cat.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="文档类型">
-          <el-select v-model="importGuideForm.type" style="width:100%">
-            <el-option label="Excel" value="tool" />
-            <el-option label="Word" value="guide" />
-            <el-option label="PDF" value="standard" />
-            <el-option label="其他" value="other" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="版本">
-          <el-input v-model="importGuideForm.version" placeholder="如: V2.0" />
-        </el-form-item>
-        <el-form-item label="标签">
-          <el-input v-model="importGuideForm.tags" placeholder="多个标签用逗号分隔" />
-        </el-form-item>
-      </el-form>
-
-      <div v-if="guideFileList.length > 0" style="margin-top:16px; border:1px solid var(--color-border-default); border-radius:8px; padding:16px;">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
-          <span style="font-weight:600; color:var(--color-text-primary);">待导入文件 ({{ guideFileList.length }})</span>
-          <el-button size="small" @click="selectAllFiles" :disabled="selectedFiles.length === guideFileList.length">全选</el-button>
+        <div class="form-row">
+          <el-form-item label="目标分类" required style="flex:1">
+            <el-select v-model="importGuideForm.categoryId" style="width:100%">
+              <el-option v-for="cat in allCategories" :key="cat.id" :label="cat.name" :value="cat.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="文档类型" style="flex:1">
+            <el-select v-model="importGuideForm.type" style="width:100%">
+              <el-option label="Excel" value="tool" />
+              <el-option label="Word" value="guide" />
+              <el-option label="PDF" value="standard" />
+              <el-option label="其他" value="other" />
+            </el-select>
+          </el-form-item>
         </div>
-        <div style="max-height:300px; overflow-y:auto;">
-          <div v-for="file in guideFileList" :key="file.path" style="display:flex; align-items:center; padding:8px; border-bottom:1px solid var(--color-border-light);">
-            <el-checkbox v-model="selectedFiles" :value="file.path" />
-            <div style="margin-left:12px; flex:1; min-width:0;">
-              <div style="font-size:13px; font-weight:500; color:var(--color-text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ file.name }}</div>
-              <div style="font-size:11px; color:var(--color-text-tertiary);">{{ formatFileSize(file.size) }}</div>
+        <el-form-item v-if="guideFileList.length > 0" label="待导入文件">
+          <div class="file-list-box">
+            <div class="file-list-header">
+              <span>{{ guideFileList.length }} 个文件</span>
+              <el-button size="small" @click="selectAllFiles" :disabled="selectedFiles.length === guideFileList.length">全选</el-button>
+            </div>
+            <div class="file-list-scroll">
+              <div v-for="file in guideFileList" :key="file.path" class="file-list-item">
+                <el-checkbox v-model="selectedFiles" :value="file.path" />
+                <div class="file-info">
+                  <div class="file-list-name">{{ file.name }}</div>
+                  <div class="file-list-size">{{ formatFileSize(file.size) }}</div>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
-
+        </el-form-item>
+      </el-form>
       <template #footer>
         <el-button @click="showImportGuideDialog = false">取消</el-button>
         <el-button type="primary" @click="handleBatchImportGuide" :disabled="selectedFiles.length === 0 || !importGuideForm.categoryId">导入 {{ selectedFiles.length }} 个文件</el-button>
@@ -573,10 +534,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, watch } from 'vue';
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import DOMPurify from 'dompurify';
 import type { KnowledgeCategory, KnowledgeDocument, KnowledgeCommand } from '../../../shared/types';
 import FilePreviewDialog from '../onsite-verification/components/file-preview-dialog.vue';
+import RecursiveCategoryTree from './components/RecursiveCategoryTree.vue';
+import SkeletonLoader from '@/components/SkeletonLoader/index.vue';
 
 const activeTab = ref('documents');
 const loading = ref(false);
@@ -639,11 +603,12 @@ const editCategoryForm = reactive({
 const uploadForm = reactive({
   categoryId: '',
   title: '',
-  type: 'standard',
+  type: '',
   version: '1.0',
   description: '',
   tags: '',
   filePath: '',
+  fileName: '',
 });
 
 const importGuideForm = reactive({
@@ -684,6 +649,7 @@ const commandVersion = ref(0);
 const editingCommandId = ref<string | null>(null);
 
 const expandedNodes = reactive<Record<string, boolean>>({});
+const expandedIds = reactive<Set<string>>(new Set());
 
 const rootCategories = computed(() => {
   return allCategories.value.filter(c => !c.parentId);
@@ -739,10 +705,6 @@ const renderedContent = computed(() => {
   return renderMarkdown(viewingDoc.value?.content || '');
 });
 
-function getChildren(parentId: string) {
-  return allCategories.value.filter(c => c.parentId === parentId);
-}
-
 function typeLabel(type?: string) {
   const map: Record<string, string> = {
     standard: 'PDF',
@@ -776,11 +738,16 @@ function renderMarkdown(text: string): string {
   html = html.replace(/\n\n/g, '</p><p>');
   html = html.replace(/\n/g, '<br>');
   html = '<p>' + html + '</p>';
-  return html;
+  return DOMPurify.sanitize(html);
 }
 
 function toggleNode(id: string) {
   expandedNodes[id] = !expandedNodes[id];
+  if (expandedIds.has(id)) {
+    expandedIds.delete(id);
+  } else {
+    expandedIds.add(id);
+  }
 }
 
 function switchTab(tab: string) {
@@ -794,17 +761,6 @@ function selectCategory(catId: string) {
   selectedCategoryId.value = catId;
   pagination.page = 1;
   loadDocuments();
-}
-
-function showCategoryMenu(event: MouseEvent, cat: KnowledgeCategory) {
-  contextMenuCategory.value = cat;
-  contextMenuX.value = event.clientX;
-  contextMenuY.value = event.clientY;
-  contextMenuVisible.value = true;
-  // 点击其他地方关闭菜单
-  setTimeout(() => {
-    document.addEventListener('click', closeContextMenu);
-  }, 0);
 }
 
 function closeContextMenu() {
@@ -1176,16 +1132,23 @@ async function selectDocumentFile() {
   try {
     const res = await window.api.dialog.showOpenDialog({
       title: '选择文档文件',
-      filters: [
-        { name: 'PDF', extensions: ['pdf'] },
-        { name: 'Word', extensions: ['doc', 'docx'] },
-        { name: 'Excel', extensions: ['xlsx', 'xls'] },
-        { name: '所有文件', extensions: ['*'] },
-      ],
       properties: ['openFile'],
     });
     if (res.success && res.data && !res.data.canceled && res.data.filePaths?.[0]) {
-      uploadForm.filePath = res.data.filePaths[0];
+      const fullPath = res.data.filePaths[0];
+      uploadForm.filePath = fullPath;
+      uploadForm.fileName = fullPath.split('\\').pop() || fullPath.split('/').pop() || '';
+      const ext = uploadForm.fileName.split('.').pop()?.toLowerCase() || '';
+      const typeMap: Record<string, string> = {
+        pdf: 'standard',
+        doc: 'guide', docx: 'guide',
+        xlsx: 'tool', xls: 'tool', csv: 'tool',
+        txt: 'other', md: 'other', json: 'other', xml: 'other',
+      };
+      uploadForm.type = typeMap[ext] || 'other';
+      if (!uploadForm.title) {
+        uploadForm.title = uploadForm.fileName.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
+      }
     }
   } catch {
     ElMessage.error('文件选择失败');
@@ -1274,6 +1237,31 @@ async function handleImportCommandFile() {
   }
 }
 
+function resetUploadForm() {
+  Object.assign(uploadForm, {
+    categoryId: '',
+    title: '',
+    type: '',
+    version: '1.0',
+    description: '',
+    tags: '',
+    filePath: '',
+    fileName: '',
+  });
+}
+
+function resetImportGuideForm() {
+  Object.assign(importGuideForm, {
+    dirPath: '',
+    categoryId: '',
+    type: 'tool',
+    version: 'V2.0',
+    tags: '测评指导书,等级保护',
+  });
+  guideFileList.value = [];
+  selectedFiles.value = [];
+}
+
 async function handleUploadDocument() {
   if (!uploadForm.title || !uploadForm.categoryId || !uploadForm.filePath) {
     ElMessage.warning('请填写必填项（标题、分类、文件路径）');
@@ -1284,7 +1272,7 @@ async function handleUploadDocument() {
     const res = await window.api.knowledge.uploadDocument({
       categoryId: uploadForm.categoryId,
       title: uploadForm.title,
-      type: uploadForm.type,
+      type: uploadForm.type || 'other',
       description: uploadForm.description,
       version: uploadForm.version,
       tags: uploadForm.tags,
@@ -1293,15 +1281,6 @@ async function handleUploadDocument() {
     if (res.success) {
       ElMessage.success('文档上传成功');
       showUploadDialog.value = false;
-      Object.assign(uploadForm, {
-        categoryId: '',
-        title: '',
-        type: 'standard',
-        version: '1.0',
-        description: '',
-        tags: '',
-        filePath: '',
-      });
       loadCategories();
       loadDocuments();
     } else {
@@ -1482,6 +1461,18 @@ onMounted(() => {
   loadDocuments();
   loadCommands();
 });
+
+onBeforeUnmount(() => {
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  }
+  if (cmdSearchTimer) {
+    clearTimeout(cmdSearchTimer);
+    cmdSearchTimer = null;
+  }
+  closeContextMenu();
+});
 </script>
 
 <style scoped lang="scss">
@@ -1607,6 +1598,105 @@ $info-light: var(--color-primary-light);
   svg {
     flex-shrink: 0;
   }
+}
+
+.upload-file-zone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px dashed $border;
+  border-radius: 6px;
+  background: $bg-page;
+  cursor: pointer;
+  transition: all 0.15s;
+
+  &:hover {
+    border-color: $primary;
+    background: $primary-light;
+  }
+
+  input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    outline: none;
+    font-size: 13px;
+    color: $text-primary;
+    cursor: pointer;
+
+    &::placeholder {
+      color: $text-tertiary;
+    }
+  }
+
+  .file-name {
+    font-size: 12px;
+    color: $text-secondary;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 150px;
+  }
+}
+
+.form-row {
+  display: flex;
+  gap: 12px;
+}
+
+.file-list-box {
+  border: 1px solid $border;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.file-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: $bg-page;
+  border-bottom: 1px solid $border-light;
+  font-size: 12px;
+  font-weight: 500;
+  color: $text-secondary;
+}
+
+.file-list-scroll {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.file-list-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid $border-light;
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.file-info {
+  margin-left: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.file-list-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: $text-primary;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-list-size {
+  font-size: 11px;
+  color: $text-tertiary;
 }
 
 .kb-btn-primary {

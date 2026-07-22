@@ -1,299 +1,217 @@
-import { contextBridge, ipcRenderer } from 'electron';
-import type { ApiBridge } from '../../shared/types';
+import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
+import * as fs from 'fs';
 
-const api: ApiBridge = {
+const ipc = <T = any>(channel: string) => (...args: any[]): Promise<T> => ipcRenderer.invoke(channel, ...args);
+
+const updateService = {
+  check: ipc<void>('update:check'),
+  download: ipc<void>('update:download'),
+  install: ipc<void>('update:install'),
+  getStatus: ipc<any>('update:getStatus'),
+  getCurrentVersion: ipc<string>('update:getCurrentVersion'),
+  onStatusChange: (callback: (status: any) => void) => {
+    const handler = (_e: IpcRendererEvent, status: any) => callback(status);
+    ipcRenderer.on('update:status', handler);
+    return () => ipcRenderer.removeListener('update:status', handler);
+  },
+  onDownloadProgress: (callback: (info: any) => void) => {
+    const handler = (_e: IpcRendererEvent, info: any) => callback(info);
+    ipcRenderer.on('update:progress', handler);
+    return () => ipcRenderer.removeListener('update:progress', handler);
+  },
+};
+
+const aiService = {
+  chat: ipc<{ content: string; suggestions: string[] }>('ai:chat'),
+  analyzeAssessment: ipc<{ content: string }>('ai:analyzeAssessment'),
+  batchAnalyzeScreenshots: ipc<{ content: string }>('ai:batchAnalyzeScreenshots'),
+  getConfig: ipc<any>('ai:getConfig'),
+  saveConfig: ipc<void>('ai:saveConfig'),
+  testConnection: ipc<any>('ai:testConnection'),
+  getProgress: ipc<{ stage: string; message: string; percent: number; timestamp: number } | null>('ai:getProgress'),
+  onAnalysisProgress: (callback: (data: { stage: string; message: string; percent: number }) => void) => {
+    const handler = (_e: IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on('ai:progress', handler);
+    return () => ipcRenderer.removeListener('ai:progress', handler);
+  },
+};
+
+const api = {
   auth: {
-    login: (username, password) => 
-      ipcRenderer.invoke('auth:login', username, password),
-    logout: () => 
-      ipcRenderer.invoke('auth:logout'),
-    getCurrentUser: () => 
-      ipcRenderer.invoke('auth:getCurrentUser'),
-    changePassword: (userId, oldPassword, newPassword) =>
-      ipcRenderer.invoke('auth:changePassword', userId, oldPassword, newPassword),
+    login: ipc<any>('auth:login'),
+    logout: ipc<void>('auth:logout'),
+    getCurrentUser: ipc<{ userId: string; username: string } | null>('auth:getCurrentUser'),
+    changePassword: ipc<void>('auth:changePassword'),
+    validateSession: ipc<{ valid: boolean; userId?: string; username?: string }>('auth:validateSession'),
   },
   project: {
-    list: (params) => 
-      ipcRenderer.invoke('project:list', params),
-    get: (id) => 
-      ipcRenderer.invoke('project:get', id),
-    getStatistics: () =>
-      ipcRenderer.invoke('project:getStatistics'),
-    create: (data) => 
-      ipcRenderer.invoke('project:create', data),
-    update: (id, data) => 
-      ipcRenderer.invoke('project:update', id, data),
-    remove: (id) => 
-      ipcRenderer.invoke('project:remove', id),
-    import: () =>
-      ipcRenderer.invoke('project:import'),
-    export: (projectId) =>
-      ipcRenderer.invoke('project:export', projectId),
-    exportAll: () =>
-      ipcRenderer.invoke('project:exportAll'),
+    list: ipc<any>('project:list'),
+    get: ipc<any>('project:get'),
+    getStatistics: ipc<any>('project:getStatistics'),
+    create: ipc<any>('project:create'),
+    update: ipc<any>('project:update'),
+    remove: ipc<void>('project:remove'),
+    import: ipc<{ imported: number }>('project:import'),
+    export: ipc<{ path: string }>('project:export'),
+    exportAll: ipc<{ path: string }>('project:exportAll'),
+    reimportPresetRecords: ipc<{ success: boolean }>('project:reimportPresetRecords'),
   },
   asset: {
-    list: (params) => 
-      ipcRenderer.invoke('asset:list', params),
-    create: (data) => 
-      ipcRenderer.invoke('asset:create', data),
-    update: (id, data) => 
-      ipcRenderer.invoke('asset:update', id, data),
-    remove: (id) => 
-      ipcRenderer.invoke('asset:remove', id),
-    batchRemove: (ids) => 
-      ipcRenderer.invoke('asset:batchRemove', ids),
-    importExcel: (projectId, filePath) =>
-      ipcRenderer.invoke('asset:importExcel', projectId, filePath),
-    exportExcel: (projectId, category) =>
-      ipcRenderer.invoke('asset:exportExcel', projectId, category),
-    downloadTemplate: (projectId) =>
-      ipcRenderer.invoke('asset:downloadTemplate', projectId),
+    list: ipc<any>('asset:list'),
+    create: ipc<any>('asset:create'),
+    update: ipc<any>('asset:update'),
+    remove: ipc<void>('asset:remove'),
+    batchRemove: ipc<void>('asset:batchRemove'),
+    importExcel: ipc<{ count: number; category?: string }>('asset:importExcel'),
+    exportExcel: ipc<string>('asset:exportExcel'),
+    downloadTemplate: ipc<string>('asset:downloadTemplate'),
   },
   standard: {
-    list: () =>
-      ipcRenderer.invoke('standard:list'),
-    getDomains: (standardId) =>
-      ipcRenderer.invoke('standard:getDomains', standardId),
-    getItems: (standardId, domain) =>
-      ipcRenderer.invoke('standard:getItems', standardId, domain),
-    setDefault: (standardId) =>
-      ipcRenderer.invoke('standard:setDefault', standardId),
-    remove: (standardId) =>
-      ipcRenderer.invoke('standard:remove', standardId),
+    list: ipc<any>('standard:list'),
+    getDomains: ipc<any>('standard:getDomains'),
+    getItems: ipc<any>('standard:getItems'),
+    setDefault: ipc<void>('standard:setDefault'),
+    remove: ipc<void>('standard:remove'),
   },
   assessment: {
-    getItems: (standardId, domain, projectLevel, extensionType) =>
-      ipcRenderer.invoke('assessment:getItems', standardId, domain, projectLevel, extensionType),
-    getItemsByCategory: (category, projectLevel, extensionType) =>
-      ipcRenderer.invoke('assessment:getItemsByCategory', category, projectLevel, extensionType),
-    getRecords: (projectId, itemId) =>
-      ipcRenderer.invoke('assessment:getRecords', projectId, itemId),
-    getRecordsByAsset: (projectId, assetId) =>
-      ipcRenderer.invoke('assessment:getRecordsByAsset', projectId, assetId),
-    getRecordByAssetAndItem: (projectId, assetId, itemId) =>
-      ipcRenderer.invoke('assessment:getRecordByAssetAndItem', projectId, assetId, itemId),
-    getRecordsByDomain: (projectId, domain, projectLevel, extensionType) =>
-      ipcRenderer.invoke('assessment:getRecordsByDomain', projectId, domain, projectLevel, extensionType),
-    saveRecord: (data) =>
-      ipcRenderer.invoke('assessment:saveRecord', data),
-    getProgress: (projectId: string, standardId: string) =>
-      ipcRenderer.invoke('assessment:getProgress', projectId, standardId),
-    listDomains: (standardId) =>
-      ipcRenderer.invoke('assessment:listDomains', standardId),
-    exportExcel: (projectId, domain) =>
-      ipcRenderer.invoke('assessment:exportExcel', projectId, domain),
-    exportExcelByAssets: (projectId, assetIds, domainIds) =>
-      ipcRenderer.invoke('assessment:exportExcelByAssets', projectId, assetIds, domainIds),
-    importExcel: (projectId, filePath, domainIds?, assetIds?) =>
-      ipcRenderer.invoke('assessment:importExcel', projectId, filePath, domainIds, assetIds),
+    getItems: ipc<any>('assessment:getItems'),
+    getItemsByCategory: ipc<any>('assessment:getItemsByCategory'),
+    getRecords: ipc<any>('assessment:getRecords'),
+    getRecordsByAsset: ipc<any>('assessment:getRecordsByAsset'),
+    getRecordByAssetAndItem: ipc<any>('assessment:getRecordByAssetAndItem'),
+    getRecordsByDomain: ipc<any>('assessment:getRecordsByDomain'),
+    saveRecord: ipc<any>('assessment:saveRecord'),
+    getProgress: ipc<any>('assessment:getProgress'),
+    listDomains: ipc<any>('assessment:listDomains'),
+    exportExcel: ipc<any>('assessment:exportExcel'),
+    exportExcelByAssets: ipc<any>('assessment:exportExcelByAssets'),
+    importExcel: ipc<any>('assessment:importExcel'),
   },
   screenshot: {
-    upload: ({ projectId, itemId, filePath }) =>
-      ipcRenderer.invoke('screenshot:upload', { projectId, itemId, filePath }),
-    saveFromBase64: ({ projectId, itemId, base64Data }) =>
-      ipcRenderer.invoke('screenshot:saveFromBase64', { projectId, itemId, base64Data }),
-    getBase64: ({ filePath }) =>
-      ipcRenderer.invoke('screenshot:getBase64', { filePath }),
-    uploadFile: (params: { projectId: string; itemId: string; filePath: string }) =>
-      ipcRenderer.invoke('screenshot:uploadFile', params),
-    readText: (params: { filePath: string }) =>
-      ipcRenderer.invoke('screenshot:readText', params),
-    deleteFile: (params: { filePath: string }) =>
-      ipcRenderer.invoke('screenshot:deleteFile', params),
+    upload: ipc<{ path: string; name: string }>('screenshot:upload'),
+    saveFromBase64: ipc<{ path: string; name: string }>('screenshot:saveFromBase64'),
+    getBase64: ipc<{ base64: string; mimeType: string }>('screenshot:getBase64'),
+    uploadFile: ipc<{ path: string; name: string }>('screenshot:uploadFile'),
+    readText: ipc<{ content: string }>('screenshot:readText'),
+    deleteFile: ipc<void>('screenshot:deleteFile'),
   },
   issue: {
-    list: (params) =>
-      ipcRenderer.invoke('issue:list', params),
-    get: (id) =>
-      ipcRenderer.invoke('issue:get', id),
-    create: (data) =>
-      ipcRenderer.invoke('issue:create', data),
-    update: (id, data) =>
-      ipcRenderer.invoke('issue:update', id, data),
-    remove: (id) =>
-      ipcRenderer.invoke('issue:remove', id),
-    generateFromRecords: (projectId) =>
-      ipcRenderer.invoke('issue:generateFromRecords', projectId),
-    getSummary: (projectId) =>
-      ipcRenderer.invoke('issue:getSummary', projectId),
-    exportExcel: (projectId) =>
-      ipcRenderer.invoke('issue:exportExcel', projectId),
-    batchRemove: (ids) =>
-      ipcRenderer.invoke('issue:batchRemove', ids),
-    batchUpdateStatus: (ids, status) =>
-      ipcRenderer.invoke('issue:batchUpdateStatus', ids, status),
-    updateEvidence: (id, evidenceFiles) =>
-      ipcRenderer.invoke('issue:updateEvidence', id, evidenceFiles),
-    importExcel: (projectId, filePath) =>
-      ipcRenderer.invoke('issue:importExcel', projectId, filePath),
-    downloadTemplate: (projectId) =>
-      ipcRenderer.invoke('issue:downloadTemplate', projectId),
+    list: ipc<any>('issue:list'),
+    get: ipc<any>('issue:get'),
+    create: ipc<string>('issue:create'),
+    update: ipc<void>('issue:update'),
+    remove: ipc<void>('issue:remove'),
+    generateFromRecords: ipc<{ count: number }>('issue:generateFromRecords'),
+    getSummary: ipc<any>('issue:getSummary'),
+    exportExcel: ipc<string>('issue:exportExcel'),
+    batchRemove: ipc<void>('issue:batchRemove'),
+    batchUpdateStatus: ipc<void>('issue:batchUpdateStatus'),
+    updateEvidence: ipc<void>('issue:updateEvidence'),
+    importExcel: ipc<{ count: number }>('issue:importExcel'),
+    downloadTemplate: ipc<string>('issue:downloadTemplate'),
   },
   report: {
-    generate: (options) =>
-      ipcRenderer.invoke('report:generate', options),
+    generate: ipc<{ filePath: string }>('report:generate'),
   },
   knowledge: {
-    listCategories: () =>
-      ipcRenderer.invoke('knowledge:listCategories'),
-    listDocuments: (params) =>
-      ipcRenderer.invoke('knowledge:listDocuments', params),
-    getDocument: (id) =>
-      ipcRenderer.invoke('knowledge:getDocument', id),
-    createDocument: (data) =>
-      ipcRenderer.invoke('knowledge:createDocument', data),
-    updateDocument: (id, data) =>
-      ipcRenderer.invoke('knowledge:updateDocument', id, data),
-    deleteDocument: (id) =>
-      ipcRenderer.invoke('knowledge:deleteDocument', id),
-    createCategory: (data) =>
-      ipcRenderer.invoke('knowledge:createCategory', data),
-    updateCategory: (id, data) =>
-      ipcRenderer.invoke('knowledge:updateCategory', id, data),
-    deleteCategory: (id) =>
-      ipcRenderer.invoke('knowledge:deleteCategory', id),
-    listCommands: (params) =>
-      ipcRenderer.invoke('knowledge:listCommands', params),
-    createCommand: (data) =>
-      ipcRenderer.invoke('knowledge:createCommand', data),
-    updateCommand: (id, data) =>
-      ipcRenderer.invoke('knowledge:updateCommand', id, data),
-    deleteCommand: (id) =>
-      ipcRenderer.invoke('knowledge:deleteCommand', id),
-    favoriteCommand: (id, isFavorite) =>
-      ipcRenderer.invoke('knowledge:favoriteCommand', id, isFavorite),
-    importKnowledge: (filePath) =>
-      ipcRenderer.invoke('knowledge:importKnowledge', filePath),
-    exportKnowledge: () =>
-      ipcRenderer.invoke('knowledge:exportKnowledge'),
-    downloadDocument: (id) =>
-      ipcRenderer.invoke('knowledge:downloadDocument', id),
-    downloadAndSave: (id) =>
-      ipcRenderer.invoke('knowledge:downloadAndSave', id),
-    uploadDocument: (data) =>
-      ipcRenderer.invoke('knowledge:uploadDocument', data),
-    referenceDocument: (data) =>
-      ipcRenderer.invoke('knowledge:referenceDocument', data),
-    importSingleDocument: (data) =>
-      ipcRenderer.invoke('knowledge:importSingleDocument', data),
-    listDirectoryFiles: (dirPath) =>
-      ipcRenderer.invoke('knowledge:listDirectoryFiles', dirPath),
-    readExcelFile: (filePath, sheetName?) =>
-      ipcRenderer.invoke('knowledge:readExcelFile', filePath, sheetName),
-    readWordFile: (filePath) =>
-      ipcRenderer.invoke('knowledge:readWordFile', filePath),
+    listCategories: ipc<any>('knowledge:listCategories'),
+    listDocuments: ipc<{ list: any[]; total: number }>('knowledge:listDocuments'),
+    getDocument: ipc<any>('knowledge:getDocument'),
+    createDocument: ipc<string>('knowledge:createDocument'),
+    updateDocument: ipc<void>('knowledge:updateDocument'),
+    deleteDocument: ipc<void>('knowledge:deleteDocument'),
+    createCategory: ipc<any>('knowledge:createCategory'),
+    updateCategory: ipc<void>('knowledge:updateCategory'),
+    deleteCategory: ipc<void>('knowledge:deleteCategory'),
+    listCommands: ipc<any>('knowledge:listCommands'),
+    createCommand: ipc<string>('knowledge:createCommand'),
+    updateCommand: ipc<void>('knowledge:updateCommand'),
+    deleteCommand: ipc<void>('knowledge:deleteCommand'),
+    favoriteCommand: ipc<void>('knowledge:favoriteCommand'),
+    importKnowledge: ipc<{ count: number }>('knowledge:importKnowledge'),
+    exportKnowledge: ipc<{ path: string }>('knowledge:exportKnowledge'),
+    downloadDocument: ipc<{ path: string; title: string }>('knowledge:downloadDocument'),
+    downloadAndSave: ipc<{ saved: boolean; path?: string }>('knowledge:downloadAndSave'),
+    uploadDocument: ipc<{ id: string }>('knowledge:uploadDocument'),
+    referenceDocument: ipc<void>('knowledge:referenceDocument'),
+    importSingleDocument: ipc<{ id: string }>('knowledge:importSingleDocument'),
+    listDirectoryFiles: ipc<any[]>('knowledge:listDirectoryFiles'),
+    readExcelFile: ipc<{ sheetNames: string[]; columns: string[]; data: any[] }>('knowledge:readExcelFile'),
+    readWordFile: ipc<{ html: string }>('knowledge:readWordFile'),
   },
   file: {
-    exists: (filePath) =>
-      ipcRenderer.invoke('file:exists', filePath),
-    readAsArrayBuffer: (filePath) =>
-      ipcRenderer.invoke('file:readAsArrayBuffer', filePath),
-    readAsText: (filePath) =>
-      ipcRenderer.invoke('file:readAsText', filePath),
+    exists: (filePath: string) => fs.existsSync(filePath),
+    readAsArrayBuffer: (filePath: string): { success: boolean; data?: number[]; error?: string } => {
+      try {
+        const buf = fs.readFileSync(filePath);
+        return { success: true, data: Array.from(buf) };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    readAsText: (filePath: string, encoding: BufferEncoding = 'utf-8') => fs.readFileSync(filePath, encoding),
   },
   system: {
-    getInfo: () => 
-      ipcRenderer.invoke('system:getInfo'),
-    openDataFolder: () => 
-      ipcRenderer.invoke('system:openDataFolder'),
-    selectFile: (filters) =>
-      ipcRenderer.invoke('system:selectFile', filters),
-    saveFile: (defaultPath, filters) =>
-      ipcRenderer.invoke('system:saveFile', defaultPath, filters),
-    backupData: (customPath?: string) =>
-      ipcRenderer.invoke('system:backupData', customPath),
-    restoreData: (backupPath, options?: { incremental?: boolean; projectIds?: string[] }) =>
-      ipcRenderer.invoke('system:restoreData', backupPath, options),
-    previewBackup: (backupPath) =>
-      ipcRenderer.invoke('system:previewBackup', backupPath),
-    listBackups: () =>
-      ipcRenderer.invoke('system:listBackups'),
-    changeDataPath: (newPath) =>
-      ipcRenderer.invoke('system:changeDataPath', newPath),
+    getInfo: ipc<any>('system:getInfo'),
+    openDataFolder: ipc<void>('system:openDataFolder'),
+    selectFile: ipc<string | null>('system:selectFile'),
+    saveFile: ipc<string | null>('system:saveFile'),
+    backupData: ipc<string>('system:backupData'),
+    restoreData: ipc<void>('system:restoreData'),
+    previewBackup: ipc<any>('system:previewBackup'),
+    listBackups: ipc<any[]>('system:listBackups'),
+    changeDataPath: ipc<string>('system:changeDataPath'),
   },
   user: {
-    list: () =>
-      ipcRenderer.invoke('user:list'),
-    create: (data) =>
-      ipcRenderer.invoke('user:create', data),
-    update: (id, data) =>
-      ipcRenderer.invoke('user:update', id, data),
-    delete: (id) =>
-      ipcRenderer.invoke('user:delete', id),
+    list: ipc<any>('user:list'),
+    create: ipc<{ id: string; username: string; realName: string }>('user:create'),
+    update: ipc<void>('user:update'),
+    delete: ipc<void>('user:delete'),
   },
   log: {
-    list: (params) =>
-      ipcRenderer.invoke('log:list', params),
+    list: ipc<{ list: any[]; total: number }>('log:list'),
   },
-  ai: {
-    chat: (params) =>
-      ipcRenderer.invoke('ai:chat', params),
-    analyzeAssessment: (params) =>
-      ipcRenderer.invoke('ai:analyzeAssessment', params),
-    batchAnalyzeScreenshots: (params) =>
-      ipcRenderer.invoke('ai:batchAnalyzeScreenshots', params),
-    getConfig: () =>
-      ipcRenderer.invoke('ai:getConfig'),
-    saveConfig: (config) =>
-      ipcRenderer.invoke('ai:saveConfig', config),
-    testConnection: (params) =>
-      ipcRenderer.invoke('ai:testConnection', params),
-    getProgress: () =>
-      ipcRenderer.invoke('ai:getProgress'),
-    onAnalysisProgress: (callback: (data: any) => void) => {
-      const listener = (_event: unknown, data: unknown) => callback(data as any);
-      ipcRenderer.on('ai:analysisProgress', listener);
-      return () => ipcRenderer.removeListener('ai:analysisProgress', listener);
-    },
-  },
+  ai: aiService,
   document: {
-    extractText: (params) =>
-      ipcRenderer.invoke('document:extractText', params),
+    extractText: ipc<{ name: string; content: string }[]>('document:extractText'),
   },
   image: {
-    saveScreenshot: (base64Data, fileName) =>
-      ipcRenderer.invoke('image:saveScreenshot', base64Data, fileName),
+    saveScreenshot: ipc<{ filePath: string; fileName: string }>('image:saveScreenshot'),
   },
   dialog: {
-    showOpenDialog: (options) =>
-      ipcRenderer.invoke('dialog:showOpenDialog', options),
-    showSaveDialog: (options) =>
-      ipcRenderer.invoke('dialog:showSaveDialog', options),
-    showMessageBox: (options) =>
-      ipcRenderer.invoke('dialog:showMessageBox', options),
+    showOpenDialog: ipc<any>('dialog:showOpenDialog'),
+    showSaveDialog: ipc<any>('dialog:showSaveDialog'),
+    showMessageBox: ipc<any>('dialog:showMessageBox'),
   },
-  update: {
-    check: () =>
-      ipcRenderer.invoke('update:check'),
-    download: () =>
-      ipcRenderer.invoke('update:download'),
-    install: () =>
-      ipcRenderer.invoke('update:install'),
-    getStatus: () =>
-      ipcRenderer.invoke('update:getStatus'),
-    getCurrentVersion: () =>
-      ipcRenderer.invoke('update:getCurrentVersion'),
-    onStatusChange: (callback) => {
-      const listener = (_event: unknown, status: unknown) => callback(status as any);
-      ipcRenderer.on('update:status', listener);
-      return () => ipcRenderer.removeListener('update:status', listener);
-    },
-  },
-  getPath: (name: string) =>
-    ipcRenderer.invoke('system:getPath', name),
+  update: updateService,
+  getPath: ipc<string>('system:getPath'),
   shell: {
-    openPath: (filePath: string) =>
-      ipcRenderer.invoke('shell:openPath', filePath),
-    openExternal: (filePath: string) =>
-      ipcRenderer.invoke('shell:openExternal', filePath),
+    openPath: ipc<any>('shell:openPath'),
+    openExternal: ipc<any>('shell:openExternal'),
   },
   fs: {
-    ensureDir: (path: string) =>
-      ipcRenderer.invoke('fs:ensureDir', path),
-    writeFile: (path: string, data: Buffer) =>
-      ipcRenderer.invoke('fs:writeFile', path, data),
+    ensureDir: ipc<void>('fs:ensureDir'),
+    writeFile: ipc<void>('fs:writeFile'),
   },
+
+  on(channel: string, callback: (...args: any[]) => void) {
+    const handler = (_e: IpcRendererEvent, ...args: any[]) => callback(...args);
+    ipcRenderer.on(channel, handler);
+    return () => ipcRenderer.removeListener(channel, handler);
+  },
+
+  sendLog(level: string, message: string) {
+    ipcRenderer.send('log:line', { level, message });
+  },
+
+  versions: {
+    node: () => process.versions.node,
+    chrome: () => process.versions.chrome,
+    electron: () => process.versions.electron,
+  },
+
+  platform: process.platform,
+  isPackaged: process.env.NODE_ENV === 'production',
 };
 
 contextBridge.exposeInMainWorld('api', api);
