@@ -7,8 +7,6 @@ import bcrypt from 'bcryptjs';
 import { wrap } from '../utils/ipc-wrapper';
 
 export function registerUserHandlers(): void {
-  const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d@$!%*?&]{8,}$/;
-
   ipcMain.handle('user:list', wrap(async () => {
       const db = getDb();
       const users = await db.select().from(schema.users);
@@ -30,7 +28,6 @@ export function registerUserHandlers(): void {
       if (!data.username || data.username.length < 3) throw new Error('用户名至少3个字符');
       if (!data.realName) throw new Error('请输入姓名');
       if (!data.password) throw new Error('请输入密码');
-      if (!PASSWORD_REGEX.test(data.password)) throw new Error('密码需8位以上，包含大小写字母和数字');
       const db = getDb();
 
       const existing = await db.select().from(schema.users).where(eq(schema.users.username, data.username)).limit(1);
@@ -64,7 +61,6 @@ export function registerUserHandlers(): void {
       if (data.role !== undefined) updateData.role = data.role;
       if (data.isActive !== undefined) updateData.isActive = data.isActive ? 1 : 0;
       if (data.password) {
-        if (!PASSWORD_REGEX.test(data.password)) throw new Error('密码需8位以上，包含大小写字母和数字');
         updateData.passwordHash = bcrypt.hashSync(data.password, 12);
       }
       await db.update(schema.users).set(updateData).where(eq(schema.users.id, id));

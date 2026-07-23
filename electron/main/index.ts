@@ -9,6 +9,7 @@ import { initDatabase, closeDb, walCheckpoint } from '../db';
 import { getDefaultBasePath } from './paths';
 import { checkAndPerformAutoBackup } from '../services/backup.service';
 import { createTray, destroyTray } from './tray';
+import { initAutoUpdater } from '../services/update.service';
 
 logger.setProductionMode(app.isPackaged);
 log.transports.file.level = 'info';
@@ -83,6 +84,9 @@ function createWindow() {
 
   // 创建托盘图标
   createTray(mainWindow);
+
+  // 初始化自动更新服务
+  initAutoUpdater(mainWindow);
 
   // 关闭按钮最小化到托盘
   mainWindow.on('close', (event: Electron.Event) => {
