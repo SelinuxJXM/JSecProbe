@@ -25,6 +25,8 @@ const aiService = {
   chat: ipc<{ content: string; suggestions: string[] }>('ai:chat'),
   analyzeAssessment: ipc<{ content: string }>('ai:analyzeAssessment'),
   batchAnalyzeScreenshots: ipc<{ content: string }>('ai:batchAnalyzeScreenshots'),
+  analyzeIssue: ipc<{ content: string }>('ai:analyzeIssue'),
+  batchAnalyzeIssues: ipc<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }> }>('ai:batchAnalyzeIssues'),
   getConfig: ipc<any>('ai:getConfig'),
   saveConfig: ipc<void>('ai:saveConfig'),
   testConnection: ipc<any>('ai:testConnection'),
@@ -33,6 +35,11 @@ const aiService = {
     const handler = (_e: IpcRendererEvent, data: any) => callback(data);
     ipcRenderer.on('ai:progress', handler);
     return () => ipcRenderer.removeListener('ai:progress', handler);
+  },
+  onBatchIssueProgress: (callback: (data: { stage: string; message: string; percent: number; current: number; total: number }) => void) => {
+    const handler = (_e: IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on('ai:batchIssueProgress', handler);
+    return () => ipcRenderer.removeListener('ai:batchIssueProgress', handler);
   },
 };
 
