@@ -30,6 +30,7 @@ const R2_CONFIG = {
 let updateSource: 'github' | 'r2' | null = null;
 let r2UpdateInfo: { version: string; sha512: string; size: number } | null = null;
 let r2InstallerPath: string | null = null;
+let pendingCheckFallback = false;
 
 function sendStatusToWindow(status: UpdateStatus) {
   currentStatus = status;
@@ -71,8 +72,8 @@ function parseLatestYml(yml: string): { version: string; sha512: string; size: n
       version = trimmed.substring(8).trim();
     } else if (trimmed.startsWith('sha512:')) {
       sha512 = trimmed.substring(7).trim();
-    } else if (trimmed.startsWith('  size:')) {
-      size = parseInt(trimmed.substring(6).trim(), 10) || 0;
+    } else if (trimmed.startsWith('size:')) {
+      size = parseInt(trimmed.substring(5).trim(), 10) || 0;
     }
   }
   if (!version || !sha512) return null;
@@ -223,6 +224,11 @@ export function initAutoUpdater(window: BrowserWindow) {
   });
 
   autoUpdater.on('error', (error) => {
+    if (pendingCheckFallback) {
+      pendingCheckFallback = false;
+      log.warn('[更新] 检查更新网络错误，即将尝试备用源:', error.message);
+      return;
+    }
     log.error('[更新] 更新出错:', error);
     sendStatusToWindow({
       status: 'error',
@@ -233,7 +239,9 @@ export function initAutoUpdater(window: BrowserWindow) {
   setTimeout(() => {
     log.info('[更新] 启动时自动检查更新');
     if (!process.env.VITE_DEV_SERVER_URL) {
+      pendingCheckFallback = true;
       autoUpdater.checkForUpdates().catch((err: any) => {
+        pendingCheckFallback = false;
         log.warn('[更新] 自动检查更新失败:', err.message);
         checkR2ForUpdates().then((r2Info) => {
           if (r2Info) {
@@ -263,9 +271,11 @@ export function registerUpdateHandlers() {
     r2UpdateInfo = null;
     r2InstallerPath = null;
 
+    pendingCheckFallback = true;
     try {
       await autoUpdater.checkForUpdates();
     } catch (error: any) {
+      pendingCheckFallback = false;
       log.error('[更新] GitHub 检查更新失败:', error.message);
 
       if (isNetworkError(error)) {
