@@ -1,6 +1,6 @@
 import { app, Tray, Menu, nativeImage, BrowserWindow, dialog } from 'electron';
 import { join } from 'path';
-import { initAutoUpdater } from '../services/update.service';
+import { triggerUpdateCheck } from '../services/update.service';
 
 let tray: Tray | null = null;
 
@@ -25,17 +25,15 @@ function showAboutDialog() {
   });
 }
 
-function checkForUpdates(window: BrowserWindow) {
-  try {
-    initAutoUpdater(window);
-  } catch {
-    dialog.showMessageBox({
-      type: 'info',
-      title: '检查更新',
-      message: '当前已是最新版本',
-      buttons: ['确定'],
-    });
-  }
+function checkForUpdates(_window: BrowserWindow) {
+  dialog.showMessageBox({
+    type: 'info',
+    title: '检查更新',
+    message: '正在检查更新...',
+    detail: '请稍候，正在连接服务器检查新版本',
+    buttons: ['确定'],
+  });
+  triggerUpdateCheck();
 }
 
 function buildContextMenu(window: BrowserWindow): Menu {

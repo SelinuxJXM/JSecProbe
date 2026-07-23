@@ -350,9 +350,10 @@ function formatRemainingTime(speed?: number, total?: number, transferred?: numbe
 
 async function checkForUpdates() {
   if (!window.api) return;
-  const res = await window.api.update.check();
-  if (!res.success) {
-    ElMessage.error(res.error?.message || '检查更新失败');
+  try {
+    await window.api.update.check();
+  } catch (err: any) {
+    ElMessage.error(err.message || '检查更新失败');
   }
 }
 

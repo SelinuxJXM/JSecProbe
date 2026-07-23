@@ -32,6 +32,19 @@ let r2UpdateInfo: { version: string; sha512: string; size: number } | null = nul
 let r2InstallerPath: string | null = null;
 let pendingCheckFallback = false;
 
+const GITHUB_CHECK_TIMEOUT = 15000;
+
+function checkWithTimeout(timeoutMs: number = GITHUB_CHECK_TIMEOUT): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('GITHUB_TIMEOUT'));
+    }, timeoutMs);
+    autoUpdater.checkForUpdates()
+      .then(() => { clearTimeout(timer); resolve(); })
+      .catch((err: any) => { clearTimeout(timer); reject(err); });
+  });
+}
+
 function sendStatusToWindow(status: UpdateStatus) {
   currentStatus = status;
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -240,9 +253,13 @@ export function initAutoUpdater(window: BrowserWindow) {
     log.info('[更新] 启动时自动检查更新');
     if (!process.env.VITE_DEV_SERVER_URL) {
       pendingCheckFallback = true;
-      autoUpdater.checkForUpdates().catch((err: any) => {
+      checkWithTimeout().catch((err: any) => {
         pendingCheckFallback = false;
-        log.warn('[更新] 自动检查更新失败:', err.message);
+        if (err.message === 'GITHUB_TIMEOUT') {
+          log.warn('[更新] 自动检查超时，尝试备用源');
+        } else {
+          log.warn('[更新] 自动检查更新失败:', err.message);
+        }
         checkR2ForUpdates().then((r2Info) => {
           if (r2Info) {
             updateSource = 'r2';
@@ -256,6 +273,31 @@ export function initAutoUpdater(window: BrowserWindow) {
       });
     }
   }, 5000);
+}
+
+export function triggerUpdateCheck(): void {
+  if (process.env.VITE_DEV_SERVER_URL) return;
+  if (pendingCheckFallback) return;
+
+  pendingCheckFallback = true;
+  checkWithTimeout().catch((err: any) => {
+    pendingCheckFallback = false;
+    if (err.message === 'GITHUB_TIMEOUT') {
+      log.warn('[更新] 手动检查超时，尝试备用源');
+    } else {
+      log.warn('[更新] 手动检查更新失败:', err.message);
+    }
+    checkR2ForUpdates().then((r2Info) => {
+      if (r2Info) {
+        updateSource = 'r2';
+        r2UpdateInfo = r2Info;
+        sendStatusToWindow({
+          status: 'available',
+          version: r2Info.version,
+        });
+      }
+    }).catch(() => {});
+  });
 }
 
 export function registerUpdateHandlers() {
@@ -273,9 +315,24 @@ export function registerUpdateHandlers() {
 
     pendingCheckFallback = true;
     try {
-      await autoUpdater.checkForUpdates();
+      await checkWithTimeout();
     } catch (error: any) {
       pendingCheckFallback = false;
+      if (error.message === 'GITHUB_TIMEOUT') {
+        log.warn('[更新] GitHub 检查超时，尝试 Cloudflare R2 备用更新源...');
+        const r2Info = await checkR2ForUpdates();
+        if (r2Info) {
+          updateSource = 'r2';
+          r2UpdateInfo = r2Info;
+          sendStatusToWindow({
+            status: 'available',
+            version: r2Info.version,
+          });
+          return;
+        }
+        sendStatusToWindow({ status: 'error', error: 'GitHub 连接超时，请检查网络后重试' });
+        return;
+      }
       log.error('[更新] GitHub 检查更新失败:', error.message);
 
       if (isNetworkError(error)) {
