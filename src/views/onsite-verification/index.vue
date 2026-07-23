@@ -386,6 +386,18 @@ const CATEGORY_TO_DOMAIN: Record<string, string> = {
   management_platform: 'secure_computing',
 };
 
+// 资产类别排序顺序
+const CATEGORY_ORDER: Record<string, number> = {
+  network_device: 1,
+  security_device: 2,
+  server_storage: 3,
+  management_platform: 4,
+  dbms: 5,
+  terminal: 6,
+  business_app: 7,
+  data_resource: 8,
+};
+
 // 全局层面（不需要对应资产，直接显示该层面所有测评项）
 const GLOBAL_DOMAINS = [
   'secure_communication',
@@ -995,7 +1007,11 @@ async function loadAssetTree() {
       }
 
       treeData.value = TEN_DOMAINS.map(domain => {
-        const children = domainMap.get(domain.id) || [];
+        const children = (domainMap.get(domain.id) || []).sort((a: any, b: any) => {
+          const orderA = CATEGORY_ORDER[a.category] || 999;
+          const orderB = CATEGORY_ORDER[b.category] || 999;
+          return orderA - orderB;
+        });
         return {
           id: domain.id,
           label: domain.name,

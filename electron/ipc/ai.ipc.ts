@@ -943,6 +943,252 @@ ${itemsJson}
       });
     }
   });
+
+  ipcMain.handle('ai:analyzeIssue', async (_event, rawParams: {
+    issueId: string;
+    issueTitle: string;
+    issueDescription: string;
+    securityDomain: string;
+    controlPoint: string;
+    controlName: string;
+  }) => {
+    try {
+      const params = sanitize(rawParams);
+      const db = getDb();
+      const configs = await db.select().from(schema.aiConfigs).limit(1);
+      if (configs.length === 0) throw new Error('AI未配置');
+      const config = sanitize(configs[0]);
+      if (!config.apiKey) throw new Error('API Key未配置');
+
+      const model = config.model || '';
+      const temperature = config.temperature ?? 0.3;
+      const apiUrl = ensureApiUrl(config.apiBase);
+      if (!apiUrl) throw new Error('API地址未配置');
+
+      const privacyMode = config.privacyMode === 1;
+      const extraWords = config.sensitiveWords
+        ? config.sensitiveWords.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
+        : [];
+
+      const issueTitle = privacyMode ? desensitizeText(params.issueTitle, extraWords) : params.issueTitle;
+      const issueDescription = privacyMode ? desensitizeText(params.issueDescription, extraWords) : params.issueDescription;
+      const securityDomain = privacyMode ? desensitizeText(params.securityDomain, extraWords) : params.securityDomain;
+      const controlPoint = privacyMode ? desensitizeText(params.controlPoint, extraWords) : params.controlPoint;
+      const controlName = privacyMode ? desensitizeText(params.controlName, extraWords) : params.controlName;
+
+      const systemPrompt = `你是一名专业的等级保护测评师。请根据以下问题信息，生成针对性的整改建议：
+
+问题标题：${issueTitle}
+安全域：${securityDomain}
+控制点：${controlPoint}
+控制项：${controlName}
+问题描述：${issueDescription}
+
+请生成具体、可操作的整改建议，包括：
+1. 针对问题的具体整改措施
+2. 建议采用的技術手段或配置
+3. 整改优先级和注意事项
+
+请以纯文本形式返回整改建议（不需要JSON格式）。`;
+
+      const requestBody = JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: '你是一名专业的等级保护测评师，擅长生成针对性的安全整改建议。请以纯文本形式返回整改建议。' },
+          { role: 'user', content: systemPrompt },
+        ],
+        temperature,
+      });
+
+      const abortController = new AbortController();
+      const timeout = setTimeout(() => {
+        abortController.abort(new Error('请求超时'));
+      }, 60000);
+
+      let response;
+      try {
+        response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${config.apiKey}`,
+          },
+          body: requestBody,
+          signal: abortController.signal,
+        });
+      } catch (fetchError: any) {
+        if (fetchError.name === 'AbortError') throw new Error('AI分析超时');
+        throw fetchError;
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        throw new Error(`API请求失败(${response.status}): ${errorBody}`);
+      }
+
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content || '';
+
+      try {
+        writeOperationLog({
+          action: 'ai_analyze_issue',
+          module: 'ai',
+          targetName: params.issueTitle,
+          description: `AI分析问题整改建议: ${params.issueTitle}`,
+        });
+      } catch (logErr: any) {
+        log.error('[操作日志] 写入AI分析问题日志失败:', logErr.message);
+      }
+
+      return sanitize({ success: true, data: { content } });
+    } catch (error: any) {
+      log.error('AI分析问题错误:', error);
+      return sanitize({
+        success: false,
+        error: { code: 'AI_ANALYZE_ISSUE_ERROR', message: error.message || 'AI分析失败' },
+      });
+    }
+  });
+
+  ipcMain.handle('ai:batchAnalyzeIssues', async (_event, rawParams: {
+    issues: Array<{
+      issueId: string;
+      issueTitle: string;
+      issueDescription: string;
+      securityDomain: string;
+      controlPoint: string;
+      controlName: string;
+    }>;
+  }) => {
+    const sendProgress = (data: { stage: string; message: string; percent: number; current: number; total: number }) => {
+      currentProgress = { ...data, timestamp: Date.now() };
+      try { _event.sender.send('ai:batchIssueProgress', data); } catch (innerErr: any) {
+        log.warn('[批量问题分析] 发送进度失败:', innerErr.message);
+      }
+    };
+
+    try {
+      const params = sanitize(rawParams);
+      const total = params.issues.length;
+      const results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }> = [];
+
+      sendProgress({ stage: 'init', message: '正在读取配置...', percent: 0, current: 0, total });
+
+      const db = getDb();
+      const configs = await db.select().from(schema.aiConfigs).limit(1);
+      if (configs.length === 0) throw new Error('AI未配置');
+      const config = sanitize(configs[0]);
+      if (!config.apiKey) throw new Error('API Key未配置');
+
+      const model = config.model || '';
+      const temperature = config.temperature ?? 0.3;
+      const apiUrl = ensureApiUrl(config.apiBase);
+      if (!apiUrl) throw new Error('API地址未配置');
+
+      const privacyMode = config.privacyMode === 1;
+      const extraWords = config.sensitiveWords
+        ? config.sensitiveWords.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
+        : [];
+
+      for (let i = 0; i < params.issues.length; i++) {
+        const issue = params.issues[i];
+        sendProgress({
+          stage: 'analyzing',
+          message: `正在分析: ${issue.issueTitle}`,
+          percent: Math.round((i / total) * 100),
+          current: i + 1,
+          total,
+        });
+
+        try {
+          const issueTitle = privacyMode ? desensitizeText(issue.issueTitle, extraWords) : issue.issueTitle;
+          const issueDescription = privacyMode ? desensitizeText(issue.issueDescription, extraWords) : issue.issueDescription;
+          const securityDomain = privacyMode ? desensitizeText(issue.securityDomain, extraWords) : issue.securityDomain;
+          const controlPoint = privacyMode ? desensitizeText(issue.controlPoint, extraWords) : issue.controlPoint;
+          const controlName = privacyMode ? desensitizeText(issue.controlName, extraWords) : issue.controlName;
+
+          const systemPrompt = `你是一名专业的等级保护测评师。请根据以下问题信息，生成针对性的整改建议：
+
+问题标题：${issueTitle}
+安全域：${securityDomain}
+控制点：${controlPoint}
+控制项：${controlName}
+问题描述：${issueDescription}
+
+请生成具体、可操作的整改建议，包括：
+1. 针对问题的具体整改措施
+2. 建议采用的技術手段或配置
+3. 整改优先级和注意事项
+
+请以纯文本形式返回整改建议（不需要JSON格式）。`;
+
+          const requestBody = JSON.stringify({
+            model,
+            messages: [
+              { role: 'system', content: '你是一名专业的等级保护测评师，擅长生成针对性的安全整改建议。请以纯文本形式返回整改建议。' },
+              { role: 'user', content: systemPrompt },
+            ],
+            temperature,
+          });
+
+          const abortController = new AbortController();
+          const timeout = setTimeout(() => abortController.abort(new Error('请求超时')), 60000);
+
+          let response;
+          try {
+            response = await fetch(apiUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${config.apiKey}`,
+              },
+              body: requestBody,
+              signal: abortController.signal,
+            });
+          } catch (fetchError: any) {
+            if (fetchError.name === 'AbortError') throw new Error('AI分析超时');
+            throw fetchError;
+          } finally {
+            clearTimeout(timeout);
+          }
+
+          if (!response.ok) {
+            const errorBody = await response.text().catch(() => '');
+            throw new Error(`API请求失败(${response.status}): ${errorBody}`);
+          }
+
+          const data = await response.json();
+          const content = data.choices?.[0]?.message?.content || '';
+          results.push({ issueId: issue.issueId, suggestion: content, success: true });
+        } catch (error: any) {
+          results.push({ issueId: issue.issueId, suggestion: '', success: false, error: error.message });
+        }
+      }
+
+      sendProgress({ stage: 'done', message: '分析完成', percent: 100, current: total, total });
+
+      try {
+        writeOperationLog({
+          action: 'ai_batch_analyze_issues',
+          module: 'ai',
+          description: `AI批量分析问题: 总数=${total}, 成功=${results.filter(r => r.success).length}`,
+        });
+      } catch (logErr: any) {
+        log.error('[操作日志] 写入批量问题分析日志失败:', logErr.message);
+      }
+
+      return sanitize({ success: true, data: { results } });
+    } catch (error: any) {
+      sendProgress({ stage: 'error', message: error.message || '分析失败', percent: 0, current: 0, total: rawParams.issues?.length || 0 });
+      log.error('AI批量分析问题错误:', error);
+      return sanitize({
+        success: false,
+        error: { code: 'AI_BATCH_ISSUE_ERROR', message: error.message || 'AI批量分析失败' },
+      });
+    }
+  });
 }
 
 export { getSharedOcrWorker };

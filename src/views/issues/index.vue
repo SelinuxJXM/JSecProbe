@@ -151,6 +151,13 @@
           >
             批量修改状态 ({{ selectedRows.length }})
           </el-button>
+          <el-button
+            type="primary"
+            size="small"
+            @click="handleBatchAiAnalyze"
+          >
+            🤖 AI批量分析
+          </el-button>
         </div>
         <div class="toolbar-right">
           <el-pagination
@@ -182,7 +189,7 @@
         </el-table-column>
         <el-table-column prop="issueTitle" label="问题标题" min-width="200" sortable="custom">
           <template #default="{ row }">
-            <span class="issue-title-cell" @click="handleView(row)">{{ row.issueTitle }}</span>
+            <span class="issue-title-cell">{{ row.issueTitle }}</span>
           </template>
         </el-table-column>
         <el-table-column label="安全域" width="120" sortable="custom" prop="securityDomain">
@@ -211,11 +218,10 @@
             {{ formatDate(row.createdAt) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="260" fixed="right" align="center">
+        <el-table-column label="操作" width="220" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="handleView(row)">查看</el-button>
             <el-button link type="primary" size="small" @click="handleEdit(row)">编辑</el-button>
-            <el-button link type="success" size="small" @click="handleEvidence(row)">证据</el-button>
+            <el-button link type="success" size="small" @click="handleAiAnalyze(row)">AI分析</el-button>
             <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -225,7 +231,7 @@
     <!-- 问题详情/编辑弹窗 -->
     <el-dialog
       v-model="detailVisible"
-      :title="isEdit ? '编辑问题' : '问题详情'"
+      title="编辑问题"
       width="750px"
       destroy-on-close
     >
@@ -327,31 +333,6 @@
       </template>
     </el-dialog>
 
-    <!-- 证据关联弹窗 -->
-    <el-dialog
-      v-model="evidenceVisible"
-      title="关联证据文件"
-      width="600px"
-      destroy-on-close
-    >
-      <div class="evidence-dialog-content">
-        <div class="evidence-list" v-if="currentIssueEvidence.length > 0">
-          <div v-for="(file, idx) in currentIssueEvidence" :key="idx" class="evidence-item">
-            <span class="evidence-name">{{ file.split('\\').pop()?.split('/').pop() || file }}</span>
-            <el-button link type="danger" size="small" @click="removeEvidence(idx)">移除</el-button>
-          </div>
-        </div>
-        <div v-else class="evidence-empty">暂无关联证据</div>
-        <el-button type="primary" :icon="Plus" @click="addEvidenceFile" class="mt-sm">
-          添加证据文件
-        </el-button>
-      </div>
-      <template #footer>
-        <el-button @click="evidenceVisible = false">关闭</el-button>
-        <el-button type="primary" @click="saveEvidence">保存</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 批量修改状态弹窗 -->
     <el-dialog
       v-model="batchStatusVisible"
@@ -376,6 +357,11 @@
     </el-dialog>
 
     <ReportConfigDialog ref="reportDialogRef" />
+    <IssueAiAnalysis
+      ref="issueAiAnalysisRef"
+      :get-issue-domain-id="getIssueDomainId"
+      @apply-suggestion="handleApplySuggestion"
+    />
   </div>
 </template>
 
@@ -402,12 +388,14 @@ import {
 } from '@element-plus/icons-vue';
 import type { Issue, IssueSummary } from '../../../shared/types';
 import ReportConfigDialog from './report-config-dialog.vue';
+import IssueAiAnalysis from './components/issue-ai-analysis.vue';
 
 const route = useRoute();
 const router = useRouter();
 const projectId = computed(() => route.params.id as string);
 const project = ref<any>(null);
 const reportDialogRef = ref<InstanceType<typeof ReportConfigDialog> | null>(null);
+const issueAiAnalysisRef = ref<InstanceType<typeof IssueAiAnalysis> | null>(null);
 
 function goBack() {
   router.back();
@@ -487,10 +475,6 @@ const formData = reactive<Partial<Issue>>({
   assessor: '',
 });
 
-const evidenceVisible = ref(false);
-const currentIssueId = ref('');
-const currentIssueEvidence = ref<string[]>([]);
-
 const batchStatusVisible = ref(false);
 const batchNewStatus = ref('');
 
@@ -521,13 +505,17 @@ const DOMAIN_ID_TO_NAME: Record<string, string> = {
   'security_maintenance': '安全运维管理',
 };
 
-function getSecurityDomainName(domainId: string): string {
-  return DOMAIN_ID_TO_NAME[domainId] || domainId || '-';
-}
-
 const DOMAIN_NAME_TO_ID: Record<string, string> = {};
 for (const [id, name] of Object.entries(DOMAIN_ID_TO_NAME)) {
   DOMAIN_NAME_TO_ID[name] = id;
+}
+
+function getIssueDomainId(domainName: string): string {
+  return DOMAIN_NAME_TO_ID[domainName] || domainName || '';
+}
+
+function getSecurityDomainName(domainId: string): string {
+  return DOMAIN_ID_TO_NAME[domainId] || domainId || '-';
 }
 
 const complianceRateValue = computed(() => {
@@ -673,12 +661,6 @@ function handleAdd() {
   detailVisible.value = true;
 }
 
-function handleView(row: Issue) {
-  isEdit.value = false;
-  Object.assign(formData, row);
-  detailVisible.value = true;
-}
-
 function handleEdit(row: Issue) {
   isEdit.value = true;
   Object.assign(formData, row);
@@ -711,8 +693,9 @@ async function handleSave() {
 
   saving.value = true;
   try {
+    const submitData = { ...formData };
     if (formData.id) {
-      const res = await window.api.issue.update(formData.id, formData);
+      const res = await window.api.issue.update(formData.id, submitData);
       if (res.success) {
         ElMessage.success('更新成功');
         detailVisible.value = false;
@@ -723,7 +706,7 @@ async function handleSave() {
       }
     } else {
       const res = await window.api.issue.create({
-        ...formData,
+        ...submitData,
         projectId: projectId.value,
       });
       if (res.success) {
@@ -815,55 +798,6 @@ async function confirmBatchStatus() {
   }
 }
 
-function handleEvidence(row: Issue) {
-  currentIssueId.value = row.id;
-  try {
-    currentIssueEvidence.value = row.evidenceFiles ? JSON.parse(row.evidenceFiles) : [];
-  } catch {
-    currentIssueEvidence.value = [];
-  }
-  evidenceVisible.value = true;
-}
-
-async function addEvidenceFile() {
-  if (!window.api) return;
-  const res = await window.api.dialog.showOpenDialog({
-    title: '选择证据文件',
-    filters: [
-      { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp'] },
-      { name: '文档', extensions: ['pdf', 'doc', 'docx', 'md', 'txt'] },
-      { name: '所有文件', extensions: [] },
-    ],
-    properties: ['openFile', 'multiSelections'],
-  });
-  if (!res.success || res.data?.canceled || !res.data?.filePaths) return;
-
-  for (const filePath of res.data.filePaths) {
-    if (!currentIssueEvidence.value.includes(filePath)) {
-      currentIssueEvidence.value.push(filePath);
-    }
-  }
-}
-
-function removeEvidence(index: number) {
-  currentIssueEvidence.value.splice(index, 1);
-}
-
-async function saveEvidence() {
-  try {
-    const res = await window.api.issue.updateEvidence(currentIssueId.value, currentIssueEvidence.value);
-    if (res.success) {
-      ElMessage.success('证据关联已保存');
-      evidenceVisible.value = false;
-      loadIssues();
-    } else {
-      ElMessage.error(res.error?.message || '保存失败');
-    }
-  } catch (error: any) {
-    ElMessage.error(error?.message || '保存失败');
-  }
-}
-
 async function handleGenerate() {
   try {
     await ElMessageBox.confirm(
@@ -933,6 +867,33 @@ async function handleImport() {
 
 async function handleGenerateReport() {
   reportDialogRef.value?.open(projectId.value, project.value?.name || '');
+}
+
+function handleAiAnalyze(row: Issue) {
+  issueAiAnalysisRef.value?.analyzeIssue(row);
+}
+
+async function handleBatchAiAnalyze() {
+  if (issueList.value.length === 0) {
+    ElMessage.warning('当前没有可分析的问题');
+    return;
+  }
+  await issueAiAnalysisRef.value?.batchAnalyzeIssues(issueList.value);
+}
+
+async function handleApplySuggestion(issueId: string, suggestion: string) {
+  if (!window.api) return;
+  try {
+    const res = await window.api.issue.update(issueId, { rectificationSuggestion: suggestion });
+    if (res.success) {
+      ElMessage.success('整改建议已填入');
+      loadIssues();
+    } else {
+      ElMessage.error(res.error?.message || '填入失败');
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.message || '操作失败');
+  }
 }
 
 onMounted(() => {
@@ -1215,13 +1176,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  cursor: pointer;
-  color: var(--color-primary);
   font-weight: 500;
-
-  &:hover {
-    text-decoration: underline;
-  }
 
   svg {
     flex-shrink: 0;
@@ -1252,44 +1207,6 @@ onMounted(() => {
     font-size: 13px;
     color: var(--color-text-primary);
     border-bottom: 1px solid var(--color-border-light) !important;
-  }
-}
-
-.evidence-dialog-content {
-  .evidence-list {
-    max-height: 300px;
-    overflow-y: auto;
-    margin-bottom: 12px;
-  }
-
-  .evidence-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 12px;
-    background: var(--color-bg-page);
-    border-radius: var(--radius-md);
-    margin-bottom: 8px;
-    border: 1px solid var(--color-border-light);
-
-    &:hover {
-      border-color: var(--color-border-default);
-    }
-  }
-
-  .evidence-name {
-    font-size: 13px;
-    color: var(--color-text-primary);
-    word-break: break-all;
-    flex: 1;
-    margin-right: 12px;
-    line-height: 1.5;
-  }
-
-  .evidence-empty {
-    text-align: center;
-    padding: 40px;
-    color: var(--color-text-tertiary);
   }
 }
 

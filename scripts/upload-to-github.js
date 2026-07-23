@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.0.6';
+const TAG = 'v2.0.7';
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,14 +57,17 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.0.6 更新内容
+    body: `## v2.0.7 更新内容
 
-- 更新系统版本号至 2.0.6
-- 修复截图缩略图显示问题（统一数据路径）
-- 修复文件预览功能（PDF/Word/文本）
-- 修复 AI 批量分析忽略非图片文件的问题
-- 增强 AI 返回 JSON 解析容错能力
-- 优化单行 AI 分析支持文档文件`,
+- 更新系统版本号至 2.0.7
+- 修复检查更新功能（initAutoUpdater 未调用）
+- 修复 R2 备用源缺少 releaseDate 和 releaseNotes
+- 移除用户密码复杂度限制
+- 新增问题清单 AI 批量分析和单行分析整改建议功能
+- 优化 AI 分析进度弹窗（5步流程指示器+问题列表进度+时间统计）
+- 修复浅色模式下弹窗按钮不可见的问题
+- 安全计算环境资产按类别排序显示
+- 问题清单页面移除查看和证据按钮,
     draft: false,
     prerelease: false,
   });
