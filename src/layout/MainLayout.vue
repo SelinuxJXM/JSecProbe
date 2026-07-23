@@ -268,7 +268,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue';
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAppStore } from '@/stores/app';
 import { useUserStore } from '@/stores/user';
@@ -401,6 +401,12 @@ onMounted(async () => {
 onUnmounted(() => {
   if (unsubscribe) {
     unsubscribe();
+  }
+});
+
+watch(showUpdateDialog, (visible) => {
+  if (visible) {
+    updateStatus.value = { status: 'idle' };
   }
 });
 

@@ -28,7 +28,7 @@ const R2_CONFIG = {
 };
 
 let updateSource: 'github' | 'r2' | null = null;
-let r2UpdateInfo: { version: string; sha512: string; size: number } | null = null;
+let r2UpdateInfo: { version: string; sha512: string; size: number; releaseDate?: string; releaseNotes?: string } | null = null;
 let r2InstallerPath: string | null = null;
 let pendingCheckFallback = false;
 
@@ -36,12 +36,49 @@ const GITHUB_CHECK_TIMEOUT = 15000;
 
 function checkWithTimeout(timeoutMs: number = GITHUB_CHECK_TIMEOUT): Promise<void> {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const timer = setTimeout(() => {
-      reject(new Error('GITHUB_TIMEOUT'));
+      if (!settled) {
+        settled = true;
+        autoUpdater.removeListener('update-available', onAvailable);
+        autoUpdater.removeListener('update-not-available', onNotAvailable);
+        autoUpdater.removeListener('error', onError);
+        reject(new Error('GITHUB_TIMEOUT'));
+      }
     }, timeoutMs);
-    autoUpdater.checkForUpdates()
-      .then(() => { clearTimeout(timer); resolve(); })
-      .catch((err: any) => { clearTimeout(timer); reject(err); });
+
+    function onAvailable() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      resolve();
+    }
+    function onNotAvailable() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      resolve();
+    }
+    function onError(err: Error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      reject(err);
+    }
+
+    function cleanup() {
+      autoUpdater.removeListener('update-available', onAvailable);
+      autoUpdater.removeListener('update-not-available', onNotAvailable);
+      autoUpdater.removeListener('error', onError);
+    }
+
+    autoUpdater.on('update-available', onAvailable);
+    autoUpdater.on('update-not-available', onNotAvailable);
+    autoUpdater.on('error', onError);
+    autoUpdater.checkForUpdates();
   });
 }
 
@@ -74,11 +111,14 @@ function isNetworkError(error: any): boolean {
   return keywords.some(k => msg.includes(k));
 }
 
-function parseLatestYml(yml: string): { version: string; sha512: string; size: number } | null {
+function parseLatestYml(yml: string): { version: string; sha512: string; size: number; releaseDate?: string; releaseNotes?: string } | null {
   const lines = yml.split('\n');
   let version = '';
   let sha512 = '';
   let size = 0;
+  let releaseDate = '';
+  let releaseNotes = '';
+  let inReleaseNotes = false;
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.startsWith('version:')) {
@@ -87,13 +127,22 @@ function parseLatestYml(yml: string): { version: string; sha512: string; size: n
       sha512 = trimmed.substring(7).trim();
     } else if (trimmed.startsWith('size:')) {
       size = parseInt(trimmed.substring(5).trim(), 10) || 0;
+    } else if (trimmed.startsWith('releaseDate:')) {
+      releaseDate = trimmed.substring(12).trim().replace(/^['"]|['"]$/g, '');
+    } else if (trimmed.startsWith('releaseNotes:')) {
+      inReleaseNotes = true;
+      releaseNotes = trimmed.substring(13).trim();
+    } else if (inReleaseNotes && line.startsWith(' ')) {
+      releaseNotes += '\n' + trimmed;
+    } else {
+      inReleaseNotes = false;
     }
   }
   if (!version || !sha512) return null;
-  return { version, sha512, size };
+  return { version, sha512, size, releaseDate, releaseNotes };
 }
 
-async function checkR2ForUpdates(): Promise<{ version: string; sha512: string; size: number } | null> {
+async function checkR2ForUpdates(): Promise<{ version: string; sha512: string; size: number; releaseDate?: string; releaseNotes?: string } | null> {
   try {
     log.info('[更新-R2] 正在检查 Cloudflare R2 更新源...');
     const response = await net.fetch(`${R2_CONFIG.baseUrl}/latest.yml`, { method: 'GET' });
@@ -267,6 +316,8 @@ export function initAutoUpdater(window: BrowserWindow) {
             sendStatusToWindow({
               status: 'available',
               version: r2Info.version,
+              releaseDate: r2Info.releaseDate,
+              releaseNotes: r2Info.releaseNotes,
             });
           }
         }).catch(() => {});
@@ -294,6 +345,8 @@ export function triggerUpdateCheck(): void {
         sendStatusToWindow({
           status: 'available',
           version: r2Info.version,
+          releaseDate: r2Info.releaseDate,
+          releaseNotes: r2Info.releaseNotes,
         });
       }
     }).catch(() => {});
@@ -327,6 +380,8 @@ export function registerUpdateHandlers() {
           sendStatusToWindow({
             status: 'available',
             version: r2Info.version,
+            releaseDate: r2Info.releaseDate,
+            releaseNotes: r2Info.releaseNotes,
           });
           return;
         }
@@ -344,6 +399,8 @@ export function registerUpdateHandlers() {
           sendStatusToWindow({
             status: 'available',
             version: r2Info.version,
+            releaseDate: r2Info.releaseDate,
+            releaseNotes: r2Info.releaseNotes,
           });
           return;
         }
