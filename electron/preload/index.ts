@@ -26,6 +26,7 @@ const aiService = {
   analyzeAssessment: ipc<{ content: string }>('ai:analyzeAssessment'),
   batchAnalyzeScreenshots: ipc<{ content: string }>('ai:batchAnalyzeScreenshots'),
   analyzeIssue: ipc<{ content: string }>('ai:analyzeIssue'),
+  analyzeIssueDescription: ipc<{ content: string }>('ai:analyzeIssueDescription'),
   batchAnalyzeIssues: ipc<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }> }>('ai:batchAnalyzeIssues'),
   getConfig: ipc<any>('ai:getConfig'),
   saveConfig: ipc<void>('ai:saveConfig'),

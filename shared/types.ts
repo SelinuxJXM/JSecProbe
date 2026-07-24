@@ -402,7 +402,7 @@ export interface ApiBridge {
     getSummary: (projectId: string) => Promise<IpcResponse<IssueSummary>>;
     exportExcel: (projectId: string) => Promise<IpcResponse<string>>;
     batchRemove: (ids: string[]) => Promise<IpcResponse<void>>;
-    batchUpdateStatus: (ids: string[], status: string) => Promise<IpcResponse<void>>;
+    batchUpdateStatus: (ids: string[], status?: string, riskLevel?: string) => Promise<IpcResponse<void>>;
     updateEvidence: (id: string, evidenceFiles: string[]) => Promise<IpcResponse<void>>;
     importExcel: (projectId: string, filePath: string) => Promise<IpcResponse<{ count: number; errors?: string[] }>>;
     downloadTemplate: (projectId: string) => Promise<IpcResponse<string>>;
@@ -472,6 +472,7 @@ export interface ApiBridge {
     analyzeAssessment: (params: { controlPoint: string; requirement: string; command: string; result: string; screenshots?: string[] }) => Promise<IpcResponse<{ content: string }>>;
     batchAnalyzeScreenshots: (params: { items: { id: string; controlPoint: string; requirement: string }[]; screenshots: string[]; documents?: { name: string; content: string }[] }) => Promise<IpcResponse<{ content: string }>>;
     analyzeIssue: (params: { issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string }) => Promise<IpcResponse<{ content: string }>>;
+    analyzeIssueDescription: (params: { issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string }) => Promise<IpcResponse<{ content: string }>>;
     batchAnalyzeIssues: (params: { issues: Array<{ issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string }> }) => Promise<IpcResponse<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }> }>>;
     getConfig: () => Promise<IpcResponse<any>>;
     saveConfig: (config: { apiBase: string; apiKey: string; model: string; temperature: number; privacyMode?: number; sensitiveWords?: string }) => Promise<IpcResponse<void>>;

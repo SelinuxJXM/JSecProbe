@@ -2,7 +2,7 @@
   <!-- 迷你AI进度条（批量分析最小化时显示） -->
   <div v-if="batchMinimized" class="mini-ai-progress" @click="batchProgress.visible = true; batchMinimized = false">
     <div class="mini-ai-progress-header">
-      <span class="mini-ai-progress-title">🤖 AI分析整改建议中</span>
+      <span class="mini-ai-progress-title">📝 AI分析问题描述中</span>
       <span class="mini-ai-progress-percent">{{ batchPercentDisplay }}</span>
     </div>
     <div class="mini-ai-progress-bar-container">
@@ -22,7 +22,7 @@
   >
     <template #header>
       <div class="ai-dialog-header">
-        <span class="ai-dialog-title">🤖 AI整改建议</span>
+        <span class="ai-dialog-title">📝 AI分析问题描述</span>
         <button class="ai-close-btn" @click="singleDialogVisible = false" title="关闭">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -54,7 +54,7 @@
         <div class="step-connector" :class="{ active: singleStep > 4 }"></div>
         <div class="flow-step" :class="{ active: singleStep >= 5, done: singleStep > 5 }">
           <div class="step-icon">{{ singleStep > 5 ? '✓' : '5' }}</div>
-          <div class="step-label">生成建议</div>
+          <div class="step-label">生成描述</div>
         </div>
       </div>
     </div>
@@ -70,7 +70,7 @@
         <div class="section-content">{{ currentIssue?.issueTitle || '-' }}</div>
       </div>
       <div class="result-section">
-        <div class="section-title">整改建议</div>
+        <div class="section-title">问题描述</div>
         <div class="section-content conclusion-text">{{ singleResult }}</div>
       </div>
     </div>
@@ -79,7 +79,7 @@
       <div class="dialog-footer">
         <el-button @click="singleDialogVisible = false">取消</el-button>
         <el-button type="primary" :disabled="singleLoading || !singleResult" @click="applySingleResult">
-          确认填入整改建议
+          确认填入问题描述
         </el-button>
       </div>
     </template>
@@ -89,7 +89,7 @@
   <el-dialog v-model="batchProgress.visible" width="600px" :close-on-click-modal="false" :show-close="false" :close-on-press-escape="false" class="ai-batch-dialog">
     <template #header>
       <div class="ai-dialog-header">
-        <span class="ai-dialog-title">🤖 AI批量分析整改建议</span>
+        <span class="ai-dialog-title">📝 AI批量分析问题描述</span>
         <div class="ai-dialog-header-actions">
           <button v-if="batchProgress.percent < 100 && batchProgress.stage !== 'error'" class="ai-minimize-btn" @click="batchProgress.visible = false; batchMinimized = true" title="最小化">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -169,7 +169,7 @@
         <span class="loading-dot"></span>
         <span class="loading-dot"></span>
         <span class="loading-dot"></span>
-        <span class="loading-hint-text">AI正在分析生成整改建议，请耐心等待...</span>
+        <span class="loading-hint-text">AI正在分析生成问题描述，请耐心等待...</span>
       </div>
     </div>
     <template #footer>
@@ -190,7 +190,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'applySuggestion', issueId: string, suggestion: string): void;
+  (e: 'applyDescription', issueId: string, description: string): void;
 }>();
 
 // ==================== 单条分析状态 ====================
@@ -206,7 +206,7 @@ const singleStepTexts = [
   '正在编码输入数据...',
   '正在提交给AI分析...',
   'AI正在分析中，请耐心等待...',
-  '正在生成整改建议...',
+  '正在生成问题描述...',
 ];
 
 // ==================== 批量分析状态 ====================
@@ -225,7 +225,6 @@ const batchSuccessCount = ref(0);
 const batchFailedCount = ref(0);
 const batchIssueList = ref<Array<{ issueId: string; issueTitle: string; failed: boolean }>>([]);
 
-let unsubscribeBatchProgress: (() => void) | null = null;
 let batchStartTime = 0;
 let batchTimerInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -239,10 +238,10 @@ function formatTime(seconds: number): string {
 }
 
 // ==================== 单条分析 ====================
-async function analyzeIssue(issue: Issue) {
+async function analyzeIssueDescription(issue: Issue) {
   if (!window.api) return;
 
-  console.log('[issue-ai-analysis.analyzeIssue] 开始分析, issueId:', issue.id, 'issueTitle:', issue.issueTitle);
+  console.log('[issue-description-analysis.analyzeIssueDescription] 开始分析, issueId:', issue.id, 'issueTitle:', issue.issueTitle);
 
   currentIssue.value = issue;
   singleDialogVisible.value = true;
@@ -268,24 +267,25 @@ async function analyzeIssue(issue: Issue) {
       controlPoint: issue.controlPoint || '',
       controlName: issue.controlName || '',
     };
-    console.log('[issue-ai-analysis.analyzeIssue] 调用IPC, params:', JSON.stringify(params));
+    console.log('[issue-description-analysis.analyzeIssueDescription] 调用IPC, params:', JSON.stringify(params));
 
-    const res = await window.api.ai.analyzeIssue(params);
+    const res = await window.api.ai.analyzeIssueDescription(params);
 
-    console.log('[issue-ai-analysis.analyzeIssue] IPC返回, success:', res.success, 'hasData:', !!res.data);
+    console.log('[issue-description-analysis.analyzeIssueDescription] IPC返回, success:', res.success, 'hasData:', !!res.data);
 
     singleStep.value = 5;
     singleLoadingText.value = singleStepTexts[4];
 
     if (res.success && res.data) {
       singleResult.value = res.data.content;
-      console.log('[issue-ai-analysis.analyzeIssue] AI返回内容长度:', res.data.content.length);
+      console.log('[issue-description-analysis.analyzeIssueDescription] AI返回内容长度:', res.data.content.length);
+      console.log('[issue-description-analysis.analyzeIssueDescription] AI返回内容:', res.data.content);
     } else {
       singleResult.value = null;
-      console.error('[issue-ai-analysis.analyzeIssue] AI分析失败:', res.error);
+      console.error('[issue-description-analysis.analyzeIssueDescription] AI分析失败:', res.error);
     }
   } catch (err: any) {
-    console.error('[issue-ai-analysis.analyzeIssue] IPC调用异常:', err.message);
+    console.error('[issue-description-analysis.analyzeIssueDescription] IPC调用异常:', err.message);
     singleResult.value = null;
   } finally {
     clearInterval(stepInterval);
@@ -295,15 +295,19 @@ async function analyzeIssue(issue: Issue) {
 
 function applySingleResult() {
   if (!singleResult.value || !currentIssue.value) return;
-  emit('applySuggestion', currentIssue.value.id, singleResult.value);
+  emit('applyDescription', currentIssue.value.id, singleResult.value);
   singleDialogVisible.value = false;
 }
 
 // ==================== 批量分析 ====================
-async function batchAnalyzeIssues(issues: Issue[]) {
+async function batchAnalyzeIssueDescriptions(issues: Issue[]) {
   if (!window.api || issues.length === 0) return;
 
-  console.log('[issue-ai-analysis.batchAnalyzeIssues] 开始批量分析, 问题总数:', issues.length);
+  console.log('[issue-description-analysis.batchAnalyzeIssueDescriptions] 开始批量分析, 问题总数:', issues.length);
+  console.log('[issue-description-analysis.batchAnalyzeIssueDescriptions] 问题列表:', JSON.stringify(issues.map(i => ({
+    issueId: i.id,
+    issueTitle: i.issueTitle,
+  }))));
 
   batchProgress.value = { visible: true, percent: 0, message: '准备中...', stage: 'init', current: 0, total: issues.length };
   batchMinimized.value = false;
@@ -327,48 +331,65 @@ async function batchAnalyzeIssues(issues: Issue[]) {
     }
   }, 1000);
 
-  unsubscribeBatchProgress = window.api.ai.onBatchIssueProgress((data) => {
-    batchProgress.value = { ...batchProgress.value, ...data };
-    console.log('[issue-ai-analysis.batchAnalyzeIssues] 进度更新:', JSON.stringify(data));
-  });
-
   try {
-    const params = {
-      issues: issues.map(issue => ({
-        issueId: issue.id,
-        issueTitle: issue.issueTitle,
-        issueDescription: issue.issueDescription || '',
-        securityDomain: props.getIssueDomainId(issue.securityDomain || ''),
-        controlPoint: issue.controlPoint || '',
-        controlName: issue.controlName || '',
-      })),
-    };
-    console.log('[issue-ai-analysis.batchAnalyzeIssues] 调用IPC, 问题数:', params.issues.length);
-
-    const res = await window.api.ai.batchAnalyzeIssues(params);
-
-    console.log('[issue-ai-analysis.batchAnalyzeIssues] IPC返回, success:', res.success, 'hasData:', !!res.data);
-
-    if (res.success && res.data) {
-      for (const result of res.data.results) {
-        if (result.success && result.suggestion) {
-          emit('applySuggestion', result.issueId, result.suggestion);
+    // 批量分析：逐个调用API（避免并发过多导致API限流）
+    const results: Array<{ issueId: string; description: string; success: boolean }> = [];
+    
+    for (let i = 0; i < issues.length; i++) {
+      const issue = issues[i];
+      try {
+        batchProgress.value = { 
+          ...batchProgress.value, 
+          percent: Math.round((i / issues.length) * 100),
+          message: `正在分析: ${issue.issueTitle}`,
+          current: i + 1,
+        };
+        
+        console.log(`[issue-description-analysis.batchAnalyzeIssueDescriptions] [${i + 1}/${issues.length}] 开始分析: ${issue.issueTitle}`);
+        
+        const res = await window.api.ai.analyzeIssueDescription({
+          issueId: issue.id,
+          issueTitle: issue.issueTitle,
+          issueDescription: issue.issueDescription || '',
+          securityDomain: props.getIssueDomainId(issue.securityDomain || ''),
+          controlPoint: issue.controlPoint || '',
+          controlName: issue.controlName || '',
+        });
+        
+        if (res.success && res.data) {
+          results.push({ issueId: issue.id, description: res.data.content, success: true });
           batchSuccessCount.value++;
+          console.log(`[issue-description-analysis.batchAnalyzeIssueDescriptions] [${i + 1}/${issues.length}] 分析成功, 返回内容长度: ${res.data.content.length}`);
         } else {
+          results.push({ issueId: issue.id, description: '', success: false });
           batchFailedCount.value++;
-          const item = batchIssueList.value.find(i => i.issueId === result.issueId);
+          const item = batchIssueList.value.find(item => item.issueId === issue.id);
           if (item) item.failed = true;
+          console.error(`[issue-description-analysis.batchAnalyzeIssueDescriptions] [${i + 1}/${issues.length}] 分析失败: ${res.error?.message || '未知错误'}`);
         }
+      } catch (err: any) {
+        results.push({ issueId: issue.id, description: '', success: false });
+        batchFailedCount.value++;
+        const item = batchIssueList.value.find(item => item.issueId === issue.id);
+        if (item) item.failed = true;
+        console.error(`[issue-description-analysis.batchAnalyzeIssueDescriptions] [${i + 1}/${issues.length}] 异常: ${err.message}`);
       }
-      console.log('[issue-ai-analysis.batchAnalyzeIssues] 批量分析完成, 成功:', batchSuccessCount.value, '失败:', batchFailedCount.value);
+    }
+
+    batchProgress.value = { ...batchProgress.value, percent: 100, message: '分析完成', stage: 'done', current: issues.length };
+    
+    console.log(`[issue-description-analysis.batchAnalyzeIssueDescriptions] 批量分析完成, 成功: ${batchSuccessCount.value}, 失败: ${batchFailedCount.value}`);
+    
+    // 逐个回填结果
+    for (const result of results) {
+      if (result.success && result.description) {
+        emit('applyDescription', result.issueId, result.description);
+      }
     }
   } catch (err: any) {
-    console.error('[issue-ai-analysis.batchAnalyzeIssues] IPC调用异常:', err.message);
+    console.error('[issue-description-analysis.batchAnalyzeIssueDescriptions] 批量分析异常:', err.message);
+    batchProgress.value = { ...batchProgress.value, stage: 'error', message: '分析过程中发生错误' };
   } finally {
-    if (unsubscribeBatchProgress) {
-      unsubscribeBatchProgress();
-      unsubscribeBatchProgress = null;
-    }
     if (batchTimerInterval) {
       clearInterval(batchTimerInterval);
       batchTimerInterval = null;
@@ -377,17 +398,14 @@ async function batchAnalyzeIssues(issues: Issue[]) {
 }
 
 onBeforeUnmount(() => {
-  if (unsubscribeBatchProgress) {
-    unsubscribeBatchProgress();
-  }
   if (batchTimerInterval) {
     clearInterval(batchTimerInterval);
   }
 });
 
 defineExpose({
-  analyzeIssue,
-  batchAnalyzeIssues,
+  analyzeIssueDescription,
+  batchAnalyzeIssueDescriptions,
 });
 </script>
 
@@ -596,13 +614,13 @@ defineExpose({
   min-width: 400px;
   max-width: 600px;
   width: auto;
-  background: linear-gradient(135deg, #1B5FD9 0%, #3B82F6 100%);
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: #fff;
   padding: 8px 16px;
   cursor: pointer;
   border-bottom: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(27, 95, 217, 0.4);
+  box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
   transition: all 0.2s ease;
 
   &:hover {

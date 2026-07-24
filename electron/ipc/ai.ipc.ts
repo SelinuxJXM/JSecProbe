@@ -954,6 +954,13 @@ ${itemsJson}
   }) => {
     try {
       const params = sanitize(rawParams);
+      console.log('[ai:analyzeIssue] 调用参数:', JSON.stringify({
+        issueId: params.issueId,
+        issueTitle: params.issueTitle,
+        securityDomain: params.securityDomain,
+        controlPoint: params.controlPoint,
+        controlName: params.controlName,
+      }));
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) throw new Error('AI未配置');
@@ -964,6 +971,14 @@ ${itemsJson}
       const temperature = config.temperature ?? 0.3;
       const apiUrl = ensureApiUrl(config.apiBase);
       if (!apiUrl) throw new Error('API地址未配置');
+
+      console.log('[ai:analyzeIssue] AI配置:', JSON.stringify({
+        model,
+        temperature,
+        apiUrl,
+        privacyMode: config.privacyMode === 1,
+        apiKeyPrefix: config.apiKey ? config.apiKey.substring(0, 4) + '***' : 'null',
+      }));
 
       const privacyMode = config.privacyMode === 1;
       const extraWords = config.sensitiveWords
@@ -976,7 +991,7 @@ ${itemsJson}
       const controlPoint = privacyMode ? desensitizeText(params.controlPoint, extraWords) : params.controlPoint;
       const controlName = privacyMode ? desensitizeText(params.controlName, extraWords) : params.controlName;
 
-      const systemPrompt = `你是一名专业的等级保护测评师。请根据以下问题信息，生成针对性的整改建议：
+      const systemPrompt = `你是一名专业的等级保护测评师。请根据以下问题信息，撰写一段连贯的整改建议：
 
 问题标题：${issueTitle}
 安全域：${securityDomain}
@@ -984,24 +999,31 @@ ${itemsJson}
 控制项：${controlName}
 问题描述：${issueDescription}
 
-请生成具体、可操作的整改建议，包括：
-1. 针对问题的具体整改措施
-2. 建议采用的技術手段或配置
-3. 整改优先级和注意事项
+要求：
+- 以"整改措施："开头
+- 描述具体的整改措施（需要执行什么操作、修改什么配置、部署什么安全机制等）
+- 引用具体的技术手段、配置命令、安全产品或防护措施
+- 包含整改优先级和注意事项
+- 语句连贯、逻辑清晰，形成一段完整的整改建议描述
+- 严禁编造不存在的内容，所有建议必须基于问题描述中的实际情况
+- 不要分点列举，保持段落形式
 
 请以纯文本形式返回整改建议（不需要JSON格式）。`;
 
       const requestBody = JSON.stringify({
         model,
         messages: [
-          { role: 'system', content: '你是一名专业的等级保护测评师，擅长生成针对性的安全整改建议。请以纯文本形式返回整改建议。' },
+          { role: 'system', content: '你是一名专业的等级保护测评师，擅长撰写连贯的安全整改建议描述。请以纯文本段落形式返回整改建议，不需要JSON格式。' },
           { role: 'user', content: systemPrompt },
         ],
         temperature,
       });
 
+      console.log('[ai:analyzeIssue] 发送API请求, 请求体大小:', Buffer.byteLength(requestBody, 'utf8'), 'bytes');
+
       const abortController = new AbortController();
       const timeout = setTimeout(() => {
+        console.warn('[ai:analyzeIssue] 请求超时(60s)，终止请求');
         abortController.abort(new Error('请求超时'));
       }, 60000);
 
@@ -1023,13 +1045,21 @@ ${itemsJson}
         clearTimeout(timeout);
       }
 
+      console.log('[ai:analyzeIssue] API响应状态:', response.status);
+
       if (!response.ok) {
         const errorBody = await response.text().catch(() => '');
         throw new Error(`API请求失败(${response.status}): ${errorBody}`);
       }
 
       const data = await response.json();
-      const content = data.choices?.[0]?.message?.content || '';
+      let content = data.choices?.[0]?.message?.content || '';
+      // 移除所有前导换行符和回车符
+      content = content.replace(/^[\r\n]+/, '').trim();
+
+      console.log('[ai:analyzeIssue] AI返回内容长度:', content.length);
+      console.log('[ai:analyzeIssue] AI返回内容前200字符:', content.substring(0, 200));
+      console.log('[ai:analyzeIssue] AI返回内容首字符charCode:', content.charCodeAt(0), content.charCodeAt(1), content.charCodeAt(2));
 
       try {
         writeOperationLog({
@@ -1044,10 +1074,152 @@ ${itemsJson}
 
       return sanitize({ success: true, data: { content } });
     } catch (error: any) {
+      console.error('[ai:analyzeIssue] 错误:', error.message);
       log.error('AI分析问题错误:', error);
       return sanitize({
         success: false,
         error: { code: 'AI_ANALYZE_ISSUE_ERROR', message: error.message || 'AI分析失败' },
+      });
+    }
+  });
+
+  ipcMain.handle('ai:analyzeIssueDescription', async (_event, rawParams: {
+    issueId: string;
+    issueTitle: string;
+    issueDescription: string;
+    securityDomain: string;
+    controlPoint: string;
+    controlName: string;
+  }) => {
+    try {
+      const params = sanitize(rawParams);
+      console.log('[ai:analyzeIssueDescription] 调用参数:', JSON.stringify({
+        issueId: params.issueId,
+        issueTitle: params.issueTitle,
+        securityDomain: params.securityDomain,
+        controlPoint: params.controlPoint,
+        controlName: params.controlName,
+      }));
+      const db = getDb();
+      const configs = await db.select().from(schema.aiConfigs).limit(1);
+      if (configs.length === 0) throw new Error('AI未配置');
+      const config = sanitize(configs[0]);
+      if (!config.apiKey) throw new Error('API Key未配置');
+
+      const model = config.model || '';
+      const temperature = config.temperature ?? 0.3;
+      const apiUrl = ensureApiUrl(config.apiBase);
+      if (!apiUrl) throw new Error('API地址未配置');
+
+      console.log('[ai:analyzeIssueDescription] AI配置:', JSON.stringify({
+        model,
+        temperature,
+        apiUrl,
+        privacyMode: config.privacyMode === 1,
+        apiKeyPrefix: config.apiKey ? config.apiKey.substring(0, 4) + '***' : 'null',
+      }));
+
+      const privacyMode = config.privacyMode === 1;
+      const extraWords = config.sensitiveWords
+        ? config.sensitiveWords.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
+        : [];
+
+      const issueTitle = privacyMode ? desensitizeText(params.issueTitle, extraWords) : params.issueTitle;
+      const issueDescription = privacyMode ? desensitizeText(params.issueDescription, extraWords) : params.issueDescription;
+      const securityDomain = privacyMode ? desensitizeText(params.securityDomain, extraWords) : params.securityDomain;
+      const controlPoint = privacyMode ? desensitizeText(params.controlPoint, extraWords) : params.controlPoint;
+      const controlName = privacyMode ? desensitizeText(params.controlName, extraWords) : params.controlName;
+
+      const systemPrompt = `你是一名专业的等级保护测评师。请根据以下问题信息，提取出一句话的核心问题描述。
+
+问题标题：${issueTitle}
+安全域：${securityDomain}
+控制点：${controlPoint}
+控制项：${controlName}
+当前问题描述：${issueDescription}
+
+要求：
+- 用一句话（不超过50字）概括问题的本质
+- 直接指出安全风险或合规缺失，不要描述核查过程
+- 不要包含"经核查"、"经访谈"等前缀
+- 不要包含具体命令、路径等细节信息
+- 聚焦于"存在什么风险"或"缺少什么防护"
+
+示例：
+- "SSH登录失败锁定策略未配置，存在暴力破解风险"
+- "系统密码复杂度策略未启用，易受字典攻击"
+- "日志审计功能未开启，无法追溯安全事件"
+
+请直接返回问题描述文本，不要JSON格式，不要解释。`;
+
+      const requestBody = JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: '你是一名专业的等级保护测评师，擅长从问题信息中提炼核心安全问题和风险描述。' },
+          { role: 'user', content: systemPrompt },
+        ],
+        temperature,
+      });
+
+      console.log('[ai:analyzeIssueDescription] 发送API请求, 请求体大小:', Buffer.byteLength(requestBody, 'utf8'), 'bytes');
+
+      const abortController = new AbortController();
+      const timeout = setTimeout(() => {
+        console.warn('[ai:analyzeIssueDescription] 请求超时(60s)，终止请求');
+        abortController.abort(new Error('请求超时'));
+      }, 60000);
+
+      let response;
+      try {
+        response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${config.apiKey}`,
+          },
+          body: requestBody,
+          signal: abortController.signal,
+        });
+      } catch (fetchError: any) {
+        if (fetchError.name === 'AbortError') throw new Error('AI分析超时');
+        throw fetchError;
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      console.log('[ai:analyzeIssueDescription] API响应状态:', response.status);
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        throw new Error(`API请求失败(${response.status}): ${errorBody}`);
+      }
+
+      const data = await response.json();
+      let content = data.choices?.[0]?.message?.content || '';
+      // 移除所有前导换行符和回车符
+      content = content.replace(/^[\r\n]+/, '').trim().replace(/^["'"']|["'"']$/g, '');
+
+      console.log('[ai:analyzeIssueDescription] AI返回内容长度:', content.length);
+      console.log('[ai:analyzeIssueDescription] AI返回内容:', content);
+
+      try {
+        writeOperationLog({
+          action: 'ai_analyze_issue_description',
+          module: 'ai',
+          targetName: params.issueTitle,
+          description: `AI分析问题描述: ${params.issueTitle}`,
+        });
+      } catch (logErr: any) {
+        log.error('[操作日志] 写入AI分析问题描述日志失败:', logErr.message);
+      }
+
+      return sanitize({ success: true, data: { content } });
+    } catch (error: any) {
+      console.error('[ai:analyzeIssueDescription] 错误:', error.message);
+      log.error('AI分析问题描述错误:', error);
+      return sanitize({
+        success: false,
+        error: { code: 'AI_ANALYZE_ISSUE_DESC_ERROR', message: error.message || 'AI分析失败' },
       });
     }
   });
@@ -1074,6 +1246,12 @@ ${itemsJson}
       const total = params.issues.length;
       const results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }> = [];
 
+      console.log('[ai:batchAnalyzeIssues] 开始批量分析, 问题总数:', total);
+      console.log('[ai:batchAnalyzeIssues] 问题列表:', JSON.stringify(params.issues.map((i: any) => ({
+        issueId: i.issueId,
+        issueTitle: i.issueTitle,
+      }))));
+
       sendProgress({ stage: 'init', message: '正在读取配置...', percent: 0, current: 0, total });
 
       const db = getDb();
@@ -1087,10 +1265,21 @@ ${itemsJson}
       const apiUrl = ensureApiUrl(config.apiBase);
       if (!apiUrl) throw new Error('API地址未配置');
 
+      console.log('[ai:batchAnalyzeIssues] AI配置:', JSON.stringify({
+        model,
+        temperature,
+        apiUrl,
+        privacyMode: config.privacyMode === 1,
+        apiKeyPrefix: config.apiKey ? config.apiKey.substring(0, 4) + '***' : 'null',
+      }));
+
       const privacyMode = config.privacyMode === 1;
       const extraWords = config.sensitiveWords
         ? config.sensitiveWords.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
         : [];
+
+      let successCount = 0;
+      let failCount = 0;
 
       for (let i = 0; i < params.issues.length; i++) {
         const issue = params.issues[i];
@@ -1103,13 +1292,15 @@ ${itemsJson}
         });
 
         try {
+          console.log(`[ai:batchAnalyzeIssues] [${i + 1}/${total}] 开始分析: ${issue.issueTitle}`);
+
           const issueTitle = privacyMode ? desensitizeText(issue.issueTitle, extraWords) : issue.issueTitle;
           const issueDescription = privacyMode ? desensitizeText(issue.issueDescription, extraWords) : issue.issueDescription;
           const securityDomain = privacyMode ? desensitizeText(issue.securityDomain, extraWords) : issue.securityDomain;
           const controlPoint = privacyMode ? desensitizeText(issue.controlPoint, extraWords) : issue.controlPoint;
           const controlName = privacyMode ? desensitizeText(issue.controlName, extraWords) : issue.controlName;
 
-          const systemPrompt = `你是一名专业的等级保护测评师。请根据以下问题信息，生成针对性的整改建议：
+          const systemPrompt = `你是一名专业的等级保护测评师。请根据以下问题信息，撰写一段连贯的整改建议：
 
 问题标题：${issueTitle}
 安全域：${securityDomain}
@@ -1117,17 +1308,21 @@ ${itemsJson}
 控制项：${controlName}
 问题描述：${issueDescription}
 
-请生成具体、可操作的整改建议，包括：
-1. 针对问题的具体整改措施
-2. 建议采用的技術手段或配置
-3. 整改优先级和注意事项
+要求：
+- 以"整改措施："开头
+- 描述具体的整改措施（需要执行什么操作、修改什么配置、部署什么安全机制等）
+- 引用具体的技术手段、配置命令、安全产品或防护措施
+- 包含整改优先级和注意事项
+- 语句连贯、逻辑清晰，形成一段完整的整改建议描述
+- 严禁编造不存在的内容，所有建议必须基于问题描述中的实际情况
+- 不要分点列举，保持段落形式
 
 请以纯文本形式返回整改建议（不需要JSON格式）。`;
 
           const requestBody = JSON.stringify({
             model,
             messages: [
-              { role: 'system', content: '你是一名专业的等级保护测评师，擅长生成针对性的安全整改建议。请以纯文本形式返回整改建议。' },
+              { role: 'system', content: '你是一名专业的等级保护测评师，擅长撰写连贯的安全整改建议描述。请以纯文本段落形式返回整改建议，不需要JSON格式。' },
               { role: 'user', content: systemPrompt },
             ],
             temperature,
@@ -1160,14 +1355,21 @@ ${itemsJson}
           }
 
           const data = await response.json();
-          const content = data.choices?.[0]?.message?.content || '';
+          // 移除所有前导换行符和回车符
+          const content = (data.choices?.[0]?.message?.content || '').replace(/^[\r\n]+/, '').trim();
           results.push({ issueId: issue.issueId, suggestion: content, success: true });
+          successCount++;
+          console.log(`[ai:batchAnalyzeIssues] [${i + 1}/${total}] 分析成功, 返回内容长度: ${content.length}`);
         } catch (error: any) {
           results.push({ issueId: issue.issueId, suggestion: '', success: false, error: error.message });
+          failCount++;
+          console.error(`[ai:batchAnalyzeIssues] [${i + 1}/${total}] 分析失败: ${error.message}`);
         }
       }
 
       sendProgress({ stage: 'done', message: '分析完成', percent: 100, current: total, total });
+
+      console.log(`[ai:batchAnalyzeIssues] 批量分析完成, 成功: ${successCount}, 失败: ${failCount}`);
 
       try {
         writeOperationLog({
@@ -1182,6 +1384,7 @@ ${itemsJson}
       return sanitize({ success: true, data: { results } });
     } catch (error: any) {
       sendProgress({ stage: 'error', message: error.message || '分析失败', percent: 0, current: 0, total: rawParams.issues?.length || 0 });
+      console.error('[ai:batchAnalyzeIssues] 错误:', error.message);
       log.error('AI批量分析问题错误:', error);
       return sanitize({
         success: false,
