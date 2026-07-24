@@ -468,7 +468,8 @@ export function registerAssessmentHandlers(): void {
       const resultMap: Record<string, string> = {
         compliant: '符合', conform: '符合', partial: '部分符合',
         non_compliant: '不符合', nonconform: '不符合',
-        not_applicable: '不适用', na: '不适用', untested: '',
+        not_applicable: '不适用', notapplicable: '不适用', na: '不适用', 'n/a': '不适用', 'N/A': '不适用',
+        untested: '', '': '',
       };
 
       const records = await db.query.assessmentRecords.findMany({ where: eq(schema.assessmentRecords.projectId, projectId) });
@@ -536,7 +537,8 @@ export function registerAssessmentHandlers(): void {
           for (const item of extItems) {
             seqNo++;
             const record = recordMap.get(item.id);
-            const compliance = resultMap[record?.result || ''] || '';
+            const resultValue = record?.result?.toString().toLowerCase().trim() || '';
+            const compliance = resultMap[resultValue] || '';
             const findings = record?.findings || '';
             const evidence = record?.evidence || '';
             const resultRecord = findings || evidence;
@@ -769,8 +771,12 @@ export function registerAssessmentHandlers(): void {
         'non_compliant': '不符合',
         'nonconform': '不符合',
         'not_applicable': '不适用',
+        'notapplicable': '不适用',
         'na': '不适用',
+        'n/a': '不适用',
+        'N/A': '不适用',
         'untested': '',
+        '': '',
       };
       
       const CATEGORY_TO_DOMAIN: Record<string, string> = {
@@ -867,7 +873,8 @@ export function registerAssessmentHandlers(): void {
           for (const item of extItems) {
             seqNo++;
             const record = recordMap.get(item.id);
-            const compliance = resultMap[record?.result || ''] || '';
+            const resultValue = record?.result?.toString().toLowerCase().trim() || '';
+            const compliance = resultMap[resultValue] || '';
             const findings = record?.findings || '';
             const evidence = record?.evidence || '';
             const resultRecord = findings || evidence;
