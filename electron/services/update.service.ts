@@ -27,12 +27,22 @@ const R2_CONFIG = {
   baseUrl: 'https://data.semove.ccwu.cc',
 };
 
-let updateSource: 'github' | 'r2' | null = null;
+const GITCODE_CONFIG = {
+  owner: 'giver',
+  repo: 'JSecProbe',
+  baseUrl: 'https://gitcode.com',
+  apiBaseUrl: 'https://gitcode.com/api/v5',
+};
+
+let updateSource: 'gitcode' | 'github' | 'r2' | null = null;
 let r2UpdateInfo: { version: string; sha512: string; size: number; releaseDate?: string; releaseNotes?: string } | null = null;
+let gitcodeUpdateInfo: { version: string; sha512: string; size: number; releaseDate?: string; releaseNotes?: string; installerUrl: string } | null = null;
 let r2InstallerPath: string | null = null;
+let gitcodeInstallerPath: string | null = null;
 let pendingCheckFallback = false;
 
 const GITHUB_CHECK_TIMEOUT = 15000;
+const GITCODE_CHECK_TIMEOUT = 15000;
 
 function checkWithTimeout(timeoutMs: number = GITHUB_CHECK_TIMEOUT): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -229,6 +239,137 @@ async function downloadFromR2(version: string, expectedSha512: string): Promise<
   return destPath;
 }
 
+async function checkGitCodeForUpdates(): Promise<{ version: string; sha512: string; size: number; releaseDate?: string; releaseNotes?: string; installerUrl: string } | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        log.warn('[更新-GitCode] 检查超时');
+        resolve(null);
+      }
+    }, GITCODE_CHECK_TIMEOUT);
+
+    (async () => {
+      try {
+        log.info('[更新-GitCode] 正在检查 GitCode 更新源...');
+        const apiUrl = `${GITCODE_CONFIG.apiBaseUrl}/repos/${GITCODE_CONFIG.owner}/${GITCODE_CONFIG.repo}/releases/latest`;
+        const response = await net.fetch(apiUrl, { method: 'GET', headers: { 'Accept': 'application/json' } });
+        if (!response.ok) {
+          log.warn(`[更新-GitCode] 获取 Release 信息失败: HTTP ${response.status}`);
+          if (!settled) { settled = true; clearTimeout(timer); resolve(null); }
+          return;
+        }
+        const release: any = await response.json();
+        if (!release || !release.assets || release.assets.length === 0) {
+          log.warn('[更新-GitCode] Release 没有附件');
+          if (!settled) { settled = true; clearTimeout(timer); resolve(null); }
+          return;
+        }
+        let latestYmlAsset = release.assets.find((a: any) => a.name === 'latest.yml');
+        if (!latestYmlAsset) {
+          log.warn('[更新-GitCode] 未找到 latest.yml 附件');
+          if (!settled) { settled = true; clearTimeout(timer); resolve(null); }
+          return;
+        }
+        let latestYmlUrl = latestYmlAsset.browser_download_url || latestYmlAsset.url;
+        if (!latestYmlUrl) {
+          latestYmlUrl = `https://gitcode.com/${GITCODE_CONFIG.owner}/${GITCODE_CONFIG.repo}/releases/download/${release.tag_name}/latest.yml`;
+        }
+        log.info(`[更新-GitCode] 获取 latest.yml: ${latestYmlUrl}`);
+        const ymlResponse = await net.fetch(latestYmlUrl, { method: 'GET' });
+        if (!ymlResponse.ok) {
+          log.warn(`[更新-GitCode] 获取 latest.yml 失败: HTTP ${ymlResponse.status}`);
+          if (!settled) { settled = true; clearTimeout(timer); resolve(null); }
+          return;
+        }
+        const ymlText = await ymlResponse.text();
+        const info = parseLatestYml(ymlText);
+        if (!info) {
+          log.warn('[更新-GitCode] 解析 latest.yml 失败');
+          if (!settled) { settled = true; clearTimeout(timer); resolve(null); }
+          return;
+        }
+        const currentVersion = app.getVersion();
+        log.info(`[更新-GitCode] 当前版本: ${currentVersion}, GitCode 版本: ${info.version}`);
+        if (compareVersions(info.version, currentVersion) <= 0) {
+          log.info('[更新-GitCode] GitCode 上无新版本');
+          if (!settled) { settled = true; clearTimeout(timer); resolve(null); }
+          return;
+        }
+        let installerName = `JSecProbe Setup ${info.version}.exe`;
+        let installerAsset = release.assets.find((a: any) => a.name === installerName);
+        if (!installerAsset) {
+          installerAsset = release.assets.find((a: any) => a.name.endsWith('.exe'));
+        }
+        if (!installerAsset) {
+          log.warn('[更新-GitCode] 未找到安装包附件');
+          if (!settled) { settled = true; clearTimeout(timer); resolve(null); }
+          return;
+        }
+        let installerUrl = installerAsset.browser_download_url || installerAsset.url;
+        if (!installerUrl) {
+          installerUrl = `https://gitcode.com/${GITCODE_CONFIG.owner}/${GITCODE_CONFIG.repo}/releases/download/${release.tag_name}/${installerName}`;
+        }
+        if (!settled) { settled = true; clearTimeout(timer); resolve({ ...info, installerUrl }); }
+      } catch (error: any) {
+        if (!settled) { settled = true; clearTimeout(timer); log.warn('[更新-GitCode] 检查失败:', error.message); resolve(null); }
+      }
+    })();
+  });
+}
+
+async function downloadFromGitCode(installerUrl: string, version: string, expectedSha512: string): Promise<string> {
+  const installerName = `JSecProbe Setup ${version}.exe`;
+  const tempDir = app.getPath('temp');
+  const destPath = path.join(tempDir, installerName);
+  log.info(`[更新-GitCode] 开始下载: ${installerUrl}`);
+  const response = await net.fetch(installerUrl, { method: 'GET' });
+  if (!response.ok) {
+    throw new Error(`下载失败: HTTP ${response.status}`);
+  }
+  const contentLength = parseInt(response.headers.get('content-length') || '0', 10);
+  const reader = response.body!.getReader();
+  const writeStream = fs.createWriteStream(destPath);
+  let received = 0;
+  let lastTime = Date.now();
+  let lastReceived = 0;
+  let speed = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    writeStream.write(Buffer.from(value));
+    received += value.length;
+    const now = Date.now();
+    if (now - lastTime >= 500) {
+      speed = (received - lastReceived) / ((now - lastTime) / 1000);
+      lastTime = now;
+      lastReceived = received;
+    }
+    if (contentLength > 0) {
+      const percent = Math.min(Math.round((received / contentLength) * 100), 100);
+      sendStatusToWindow({
+        status: 'downloading',
+        downloadProgress: percent,
+        downloadSpeed: speed,
+        downloadTransferred: received,
+        downloadTotal: contentLength,
+        version,
+      });
+    }
+  }
+  writeStream.end();
+  log.info('[更新-GitCode] 校验文件完整性...');
+  const fileBuffer = fs.readFileSync(destPath);
+  const actualSha512 = crypto.createHash('sha512').update(fileBuffer).digest('base64');
+  if (actualSha512 !== expectedSha512) {
+    fs.unlinkSync(destPath);
+    throw new Error('SHA512 校验失败，下载文件可能已损坏');
+  }
+  log.info('[更新-GitCode] SHA512 校验通过');
+  return destPath;
+}
+
 export function initAutoUpdater(window: BrowserWindow) {
   mainWindow = window;
 
@@ -246,6 +387,7 @@ export function initAutoUpdater(window: BrowserWindow) {
     log.info('[更新] 发现新版本:', info.version);
     updateSource = 'github';
     r2UpdateInfo = null;
+    gitcodeUpdateInfo = null;
     sendStatusToWindow({
       status: 'available',
       version: info.version,
@@ -301,26 +443,41 @@ export function initAutoUpdater(window: BrowserWindow) {
   setTimeout(() => {
     log.info('[更新] 启动时自动检查更新');
     if (!process.env.VITE_DEV_SERVER_URL) {
+      if (pendingCheckFallback) return;
       pendingCheckFallback = true;
-      checkWithTimeout().catch((err: any) => {
-        pendingCheckFallback = false;
-        if (err.message === 'GITHUB_TIMEOUT') {
-          log.warn('[更新] 自动检查超时，尝试备用源');
-        } else {
-          log.warn('[更新] 自动检查更新失败:', err.message);
+      checkGitCodeForUpdates().then((gitcodeInfo) => {
+        if (gitcodeInfo) {
+          updateSource = 'gitcode';
+          gitcodeUpdateInfo = gitcodeInfo;
+          sendStatusToWindow({
+            status: 'available',
+            version: gitcodeInfo.version,
+            releaseDate: gitcodeInfo.releaseDate,
+            releaseNotes: gitcodeInfo.releaseNotes,
+          });
+          return;
         }
-        checkR2ForUpdates().then((r2Info) => {
-          if (r2Info) {
-            updateSource = 'r2';
-            r2UpdateInfo = r2Info;
-            sendStatusToWindow({
-              status: 'available',
-              version: r2Info.version,
-              releaseDate: r2Info.releaseDate,
-              releaseNotes: r2Info.releaseNotes,
-            });
+        return checkWithTimeout().catch((err: any) => {
+          if (err.message === 'GITHUB_TIMEOUT') {
+            log.warn('[更新] 自动检查超时，尝试备用源');
+          } else {
+            log.warn('[更新] 自动检查更新失败:', err.message);
           }
-        }).catch(() => {});
+          return checkR2ForUpdates().then((r2Info) => {
+            if (r2Info) {
+              updateSource = 'r2';
+              r2UpdateInfo = r2Info;
+              sendStatusToWindow({
+                status: 'available',
+                version: r2Info.version,
+                releaseDate: r2Info.releaseDate,
+                releaseNotes: r2Info.releaseNotes,
+              });
+            }
+          });
+        });
+      }).catch(() => {}).finally(() => {
+        pendingCheckFallback = false;
       });
     }
   }, 5000);
@@ -331,25 +488,39 @@ export function triggerUpdateCheck(): void {
   if (pendingCheckFallback) return;
 
   pendingCheckFallback = true;
-  checkWithTimeout().catch((err: any) => {
-    pendingCheckFallback = false;
-    if (err.message === 'GITHUB_TIMEOUT') {
-      log.warn('[更新] 手动检查超时，尝试备用源');
-    } else {
-      log.warn('[更新] 手动检查更新失败:', err.message);
+  checkGitCodeForUpdates().then((gitcodeInfo) => {
+    if (gitcodeInfo) {
+      updateSource = 'gitcode';
+      gitcodeUpdateInfo = gitcodeInfo;
+      sendStatusToWindow({
+        status: 'available',
+        version: gitcodeInfo.version,
+        releaseDate: gitcodeInfo.releaseDate,
+        releaseNotes: gitcodeInfo.releaseNotes,
+      });
+      return;
     }
-    checkR2ForUpdates().then((r2Info) => {
-      if (r2Info) {
-        updateSource = 'r2';
-        r2UpdateInfo = r2Info;
-        sendStatusToWindow({
-          status: 'available',
-          version: r2Info.version,
-          releaseDate: r2Info.releaseDate,
-          releaseNotes: r2Info.releaseNotes,
-        });
+    return checkWithTimeout().catch((err: any) => {
+      if (err.message === 'GITHUB_TIMEOUT') {
+        log.warn('[更新] 手动检查超时，尝试备用源');
+      } else {
+        log.warn('[更新] 手动检查更新失败:', err.message);
       }
-    }).catch(() => {});
+      return checkR2ForUpdates().then((r2Info) => {
+        if (r2Info) {
+          updateSource = 'r2';
+          r2UpdateInfo = r2Info;
+          sendStatusToWindow({
+            status: 'available',
+            version: r2Info.version,
+            releaseDate: r2Info.releaseDate,
+            releaseNotes: r2Info.releaseNotes,
+          });
+        }
+      });
+    });
+  }).catch(() => {}).finally(() => {
+    pendingCheckFallback = false;
   });
 }
 
@@ -364,11 +535,27 @@ export function registerUpdateHandlers() {
     log.info('[更新] 检查更新');
     updateSource = null;
     r2UpdateInfo = null;
+    gitcodeUpdateInfo = null;
     r2InstallerPath = null;
+    gitcodeInstallerPath = null;
+
+    const gitcodeInfo = await checkGitCodeForUpdates();
+    if (gitcodeInfo) {
+      updateSource = 'gitcode';
+      gitcodeUpdateInfo = gitcodeInfo;
+      sendStatusToWindow({
+        status: 'available',
+        version: gitcodeInfo.version,
+        releaseDate: gitcodeInfo.releaseDate,
+        releaseNotes: gitcodeInfo.releaseNotes,
+      });
+      return;
+    }
 
     pendingCheckFallback = true;
     try {
       await checkWithTimeout();
+      pendingCheckFallback = false;
     } catch (error: any) {
       pendingCheckFallback = false;
       if (error.message === 'GITHUB_TIMEOUT') {
@@ -413,6 +600,19 @@ export function registerUpdateHandlers() {
   }, 'update'));
 
   ipcMain.handle('update:download', wrap(async () => {
+    if (updateSource === 'gitcode') {
+      log.info('[更新-GitCode] 开始从 GitCode 下载更新');
+      if (!gitcodeUpdateInfo) {
+        const info = await checkGitCodeForUpdates();
+        if (!info) throw new Error('无法获取更新信息，请重新检查更新');
+        gitcodeUpdateInfo = info;
+      }
+      const destPath = await downloadFromGitCode(gitcodeUpdateInfo.installerUrl, gitcodeUpdateInfo.version, gitcodeUpdateInfo.sha512);
+      gitcodeInstallerPath = destPath;
+      sendStatusToWindow({ status: 'downloaded', version: gitcodeUpdateInfo.version });
+      return;
+    }
+
     if (updateSource === 'r2') {
       log.info('[更新-R2] 开始从 Cloudflare R2 下载更新');
       if (!r2UpdateInfo) {
@@ -431,6 +631,16 @@ export function registerUpdateHandlers() {
   }, 'update'));
 
   ipcMain.handle('update:install', wrap(async () => {
+    if (updateSource === 'gitcode' && gitcodeInstallerPath) {
+      log.info('[更新-GitCode] 安装更新:', gitcodeInstallerPath);
+      spawn(gitcodeInstallerPath, ['/S'], {
+        detached: true,
+        stdio: 'ignore',
+      }).unref();
+      app.quit();
+      return;
+    }
+
     if (updateSource === 'r2' && r2InstallerPath) {
       log.info('[更新-R2] 安装更新:', r2InstallerPath);
       spawn(r2InstallerPath, ['/S'], {

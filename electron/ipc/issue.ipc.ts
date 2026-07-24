@@ -231,13 +231,13 @@ export function registerIssueHandlers(): void {
     })
   );
 
-  ipcMain.handle('issue:batchUpdateStatus', wrap(async (_event, ids: string[], status: string) => {
+  ipcMain.handle('issue:batchUpdateStatus', wrap(async (_event, ids: string[], status?: string, riskLevel?: string) => {
       const db = getDb();
       const now = new Date().toISOString();
-      await db.update(schema.issues).set({
-        status,
-        updatedAt: now,
-      }).where(inArray(schema.issues.id, ids));
+      const updateData: any = { updatedAt: now };
+      if (status) updateData.status = status;
+      if (riskLevel) updateData.riskLevel = riskLevel;
+      await db.update(schema.issues).set(updateData).where(inArray(schema.issues.id, ids));
     })
   );
 

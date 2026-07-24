@@ -149,15 +149,29 @@
             :disabled="selectedRows.length === 0"
             @click="handleBatchStatus"
           >
-            批量修改状态 ({{ selectedRows.length }})
+            批量修改 ({{ selectedRows.length }})
           </el-button>
-          <el-button
-            type="primary"
-            size="small"
-            @click="handleBatchAiAnalyze"
-          >
-            🤖 AI批量分析
-          </el-button>
+          <el-dropdown @command="handleAiBatchCommand" trigger="click">
+            <el-button type="primary" size="small">
+              🤖 AI分析<el-icon class="el-icon--right"><arrow-down /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="describe">
+                  📝 批量分析问题描述
+                  <span class="dropdown-scope-hint">
+                    {{ selectedRows.length > 0 ? `(选中${selectedRows.length}个)` : '(全部)' }}
+                  </span>
+                </el-dropdown-item>
+                <el-dropdown-item command="suggestion">
+                  💡 批量分析整改建议
+                  <span class="dropdown-scope-hint">
+                    {{ selectedRows.length > 0 ? `(选中${selectedRows.length}个)` : '(全部)' }}
+                  </span>
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
         <div class="toolbar-right">
           <el-pagination
@@ -218,11 +232,20 @@
             {{ formatDate(row.createdAt) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="220" fixed="right" align="center">
+        <el-table-column label="操作" width="260" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="handleEdit(row)">编辑</el-button>
-            <el-button link type="success" size="small" @click="handleAiAnalyze(row)">AI分析</el-button>
-            <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
+            <el-tooltip content="编辑问题" placement="top" :show-after="500">
+              <el-button link type="primary" size="small" :icon="Edit" @click="handleEdit(row)" />
+            </el-tooltip>
+            <el-tooltip content="AI生成问题描述" placement="top" :show-after="500">
+              <el-button link type="primary" size="small" :icon="Reading" @click="handleAiDescribe(row)" />
+            </el-tooltip>
+            <el-tooltip content="AI生成整改建议" placement="top" :show-after="500">
+              <el-button link type="success" size="small" :icon="MagicStick" @click="handleAiAnalyze(row)" />
+            </el-tooltip>
+            <el-tooltip content="删除问题" placement="top" :show-after="500">
+              <el-button link type="danger" size="small" :icon="Delete" @click="handleDelete(row)" />
+            </el-tooltip>
           </template>
         </el-table-column>
       </el-table>
@@ -333,16 +356,23 @@
       </template>
     </el-dialog>
 
-    <!-- 批量修改状态弹窗 -->
+    <!-- 批量修改弹窗 -->
     <el-dialog
       v-model="batchStatusVisible"
-      title="批量修改状态"
-      width="400px"
+      title="批量修改"
+      width="450px"
       destroy-on-close
     >
-      <el-form label-width="80px">
-        <el-form-item label="新状态">
-          <el-select v-model="batchNewStatus" placeholder="请选择状态" style="width: 100%">
+      <el-form label-width="100px">
+        <el-form-item label="风险等级">
+          <el-select v-model="batchNewRiskLevel" placeholder="请选择风险等级（不修改则留空）" style="width: 100%" clearable>
+            <el-option label="高风险" value="high" />
+            <el-option label="中风险" value="medium" />
+            <el-option label="低风险" value="low" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-select v-model="batchNewStatus" placeholder="请选择状态（不修改则留空）" style="width: 100%" clearable>
             <el-option label="待整改" value="pending" />
             <el-option label="整改中" value="rectifying" />
             <el-option label="已整改" value="resolved" />
@@ -361,6 +391,11 @@
       ref="issueAiAnalysisRef"
       :get-issue-domain-id="getIssueDomainId"
       @apply-suggestion="handleApplySuggestion"
+    />
+    <IssueDescriptionAnalysis
+      ref="issueDescriptionAnalysisRef"
+      :get-issue-domain-id="getIssueDomainId"
+      @apply-description="handleApplyDescription"
     />
   </div>
 </template>
@@ -382,13 +417,17 @@ import {
   HomeFilled,
   DArrowRight,
   ArrowLeft,
+  ArrowDown,
   Delete,
   Edit,
+  MagicStick,
+  Reading,
   Upload,
 } from '@element-plus/icons-vue';
 import type { Issue, IssueSummary } from '../../../shared/types';
 import ReportConfigDialog from './report-config-dialog.vue';
 import IssueAiAnalysis from './components/issue-ai-analysis.vue';
+import IssueDescriptionAnalysis from './components/issue-description-analysis.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -396,6 +435,7 @@ const projectId = computed(() => route.params.id as string);
 const project = ref<any>(null);
 const reportDialogRef = ref<InstanceType<typeof ReportConfigDialog> | null>(null);
 const issueAiAnalysisRef = ref<InstanceType<typeof IssueAiAnalysis> | null>(null);
+const issueDescriptionAnalysisRef = ref<InstanceType<typeof IssueDescriptionAnalysis> | null>(null);
 
 function goBack() {
   router.back();
@@ -477,6 +517,7 @@ const formData = reactive<Partial<Issue>>({
 
 const batchStatusVisible = ref(false);
 const batchNewStatus = ref('');
+const batchNewRiskLevel = ref('');
 
 const domainList = computed(() => [
   '安全物理环境',
@@ -773,19 +814,23 @@ async function handleBatchDelete() {
 function handleBatchStatus() {
   if (selectedRows.value.length === 0) return;
   batchNewStatus.value = '';
+  batchNewRiskLevel.value = '';
   batchStatusVisible.value = true;
 }
 
 async function confirmBatchStatus() {
-  if (!batchNewStatus.value) {
-    ElMessage.warning('请选择新状态');
+  if (!batchNewStatus.value && !batchNewRiskLevel.value) {
+    ElMessage.warning('请至少选择风险等级或状态中的一项');
     return;
   }
   try {
     const ids = selectedRows.value.map(r => r.id);
-    const res = await window.api.issue.batchUpdateStatus(ids, batchNewStatus.value);
+    const res = await window.api.issue.batchUpdateStatus(ids, batchNewStatus.value || undefined, batchNewRiskLevel.value || undefined);
     if (res.success) {
-      ElMessage.success(`成功更新 ${ids.length} 个问题的状态`);
+      const updateParts: string[] = [];
+      if (batchNewRiskLevel.value) updateParts.push('风险等级');
+      if (batchNewStatus.value) updateParts.push('状态');
+      ElMessage.success(`成功更新 ${ids.length} 个问题的${updateParts.join('和')}`);
       selectedRows.value = [];
       batchStatusVisible.value = false;
       loadIssues();
@@ -873,20 +918,52 @@ function handleAiAnalyze(row: Issue) {
   issueAiAnalysisRef.value?.analyzeIssue(row);
 }
 
-async function handleBatchAiAnalyze() {
-  if (issueList.value.length === 0) {
+function handleAiDescribe(row: Issue) {
+  issueDescriptionAnalysisRef.value?.analyzeIssueDescription(row);
+}
+
+function handleAiBatchCommand(command: string) {
+  // 智能切换分析范围：如果有选中行，则分析选中的；否则分析所有
+  const targetIssues = selectedRows.value.length > 0 ? selectedRows.value : issueList.value;
+  
+  if (targetIssues.length === 0) {
     ElMessage.warning('当前没有可分析的问题');
     return;
   }
-  await issueAiAnalysisRef.value?.batchAnalyzeIssues(issueList.value);
+  
+  const scopeText = selectedRows.value.length > 0 ? `选中的 ${selectedRows.value.length} 个` : '全部';
+  console.log(`[handleAiBatchCommand] 分析范围: ${scopeText}`);
+  
+  if (command === 'describe') {
+    issueDescriptionAnalysisRef.value?.batchAnalyzeIssueDescriptions(targetIssues);
+  } else if (command === 'suggestion') {
+    issueAiAnalysisRef.value?.batchAnalyzeIssues(targetIssues);
+  }
 }
 
 async function handleApplySuggestion(issueId: string, suggestion: string) {
   if (!window.api) return;
+  console.log('[handleApplySuggestion] issueId:', issueId, 'suggestion长度:', suggestion.length);
+  console.log('[handleApplySuggestion] suggestion前50字符:', JSON.stringify(suggestion.substring(0, 50)));
   try {
     const res = await window.api.issue.update(issueId, { rectificationSuggestion: suggestion });
     if (res.success) {
       ElMessage.success('整改建议已填入');
+      loadIssues();
+    } else {
+      ElMessage.error(res.error?.message || '填入失败');
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.message || '操作失败');
+  }
+}
+
+async function handleApplyDescription(issueId: string, description: string) {
+  if (!window.api) return;
+  try {
+    const res = await window.api.issue.update(issueId, { issueDescription: description });
+    if (res.success) {
+      ElMessage.success('问题描述已填入');
       loadIssues();
     } else {
       ElMessage.error(res.error?.message || '填入失败');
@@ -1170,6 +1247,12 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.dropdown-scope-hint {
+  font-size: 12px;
+  color: #909399;
+  margin-left: 8px;
 }
 
 .issue-title-cell {

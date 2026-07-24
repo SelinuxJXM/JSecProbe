@@ -6,16 +6,10 @@ const http = require('http');
 const ROOT = path.resolve(__dirname, '..');
 const DIST_DIR = path.join(ROOT, 'dist');
 
-const TOKEN = process.env.GITHUB_TOKEN;
-const OWNER = 'SelinuxJXM';
+const TOKEN = process.env.GITCODE_TOKEN;
+const OWNER = 'giver';
 const REPO = 'JSecProbe';
-const TAG = 'v2.0.8';
-
-if (!TOKEN) {
-  console.error('Error: GITHUB_TOKEN environment variable is not set');
-  console.error('Usage: set GITHUB_TOKEN=your_token && node scripts/upload-to-github.js');
-  process.exit(1);
-}
+const API_BASE = 'https://gitcode.com/api/v5';
 
 function getPkgVersion() {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
@@ -43,41 +37,28 @@ function httpsRequest(url, options, body) {
     });
     req.on('error', reject);
     if (body) {
-      if (typeof body === 'string') {
-        req.write(body);
-      } else {
-        req.write(body);
-      }
+      req.write(body);
     }
     req.end();
   });
 }
 
-async function createRelease() {
-  const body = JSON.stringify({
-    tag_name: TAG,
-    name: TAG,
-    body: `## v2.0.8 更新内容
-
-- 更新系统版本号至 2.0.8
-- 修复更新检查竞态条件 Bug（pendingCheckFallback 标志位未正确重置）
-- 新增 GitCode 作为主更新源（国内访问更快）
-- 新增 GitCode 发布脚本 (scripts/upload-to-gitcode.js)
-- 支持三源更新机制（GitCode → GitHub → Cloudflare R2）
-- 问题清单 AI 分析功能优化（整改建议去除多余空行）
-- 新增问题清单批量修改支持风险等级和状态
-- 新增问题清单自定义批量分析（选中/全部）
-    `,
+async function createRelease(version) {
+  const releaseData = {
+    tag_name: `v${version}`,
+    name: `v${version}`,
+    body: `## v${version} 更新内容\n\n- 详见 GitHub Releases 了解详细更新内容`,
     draft: false,
     prerelease: false,
-  });
+  };
 
-  const url = `https://api.github.com/repos/${OWNER}/${REPO}/releases`;
+  const body = JSON.stringify(releaseData);
+  const url = `${API_BASE}/repos/${OWNER}/${REPO}/releases`;
   const options = {
     method: 'POST',
     headers: {
-      Authorization: `token ${TOKEN}`,
-      Accept: 'application/vnd.github.v3+json',
+      Authorization: `Bearer ${TOKEN}`,
+      Accept: 'application/json',
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(body),
       'User-Agent': 'JSecProbe-Release-Script',
@@ -90,14 +71,13 @@ async function createRelease() {
     return release;
   } catch (err) {
     console.log(`Error creating release: ${err.message}`);
-    // Try to get existing release
     try {
-      const getUrl = `https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/${TAG}`;
+      const getUrl = `${API_BASE}/repos/${OWNER}/${REPO}/releases/tags/v${version}`;
       const getOptions = {
         method: 'GET',
         headers: {
-          Authorization: `token ${TOKEN}`,
-          Accept: 'application/vnd.github.v3+json',
+          Authorization: `Bearer ${TOKEN}`,
+          Accept: 'application/json',
           'User-Agent': 'JSecProbe-Release-Script',
         },
       };
@@ -113,14 +93,13 @@ async function createRelease() {
 
 async function uploadAsset(releaseId, filePath, fileName) {
   const fileBuffer = fs.readFileSync(filePath);
-  const encodedName = encodeURIComponent(fileName);
-  const url = `https://uploads.github.com/repos/${OWNER}/${REPO}/releases/${releaseId}/assets?name=${encodedName}`;
+  const url = `${API_BASE}/repos/${OWNER}/${REPO}/releases/${releaseId}/assets?name=${encodeURIComponent(fileName)}`;
 
   const options = {
     method: 'POST',
     headers: {
-      Authorization: `token ${TOKEN}`,
-      Accept: 'application/vnd.github.v3+json',
+      Authorization: `Bearer ${TOKEN}`,
+      Accept: 'application/json',
       'Content-Type': 'application/octet-stream',
       'Content-Length': fileBuffer.length,
       'User-Agent': 'JSecProbe-Release-Script',
@@ -134,8 +113,7 @@ async function uploadAsset(releaseId, filePath, fileName) {
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try {
-            const result = JSON.parse(data);
-            resolve(result);
+            resolve(JSON.parse(data));
           } catch {
             resolve(data);
           }
@@ -151,10 +129,16 @@ async function uploadAsset(releaseId, filePath, fileName) {
 }
 
 async function main() {
-  const version = getPkgVersion();
-  console.log(`=== 上传 v${version} 到 GitHub Releases ===\n`);
+  if (!TOKEN) {
+    console.error('Error: GITCODE_TOKEN environment variable is not set');
+    console.error('Usage: set GITCODE_TOKEN=your_token && node scripts/upload-to-gitcode.js');
+    process.exit(1);
+  }
 
-  const release = await createRelease();
+  const version = getPkgVersion();
+  console.log(`=== 上传 v${version} 到 GitCode Releases ===\n`);
+
+  const release = await createRelease(version);
   const releaseId = release.id;
 
   const files = [
@@ -182,14 +166,14 @@ async function main() {
     process.stdout.write(`Uploading ${file.name} (${fileSize} MB)... `);
 
     try {
-      const result = await uploadAsset(releaseId, file.path, file.name);
+      await uploadAsset(releaseId, file.path, file.name);
       console.log('OK');
     } catch (err) {
       console.log(`FAILED: ${err.message}`);
     }
   }
 
-  console.log(`\nDone! Release URL: ${release.html_url}`);
+  console.log(`\nDone! Release URL: https://gitcode.com/${OWNER}/${REPO}/releases`);
 }
 
 main().catch((err) => {
