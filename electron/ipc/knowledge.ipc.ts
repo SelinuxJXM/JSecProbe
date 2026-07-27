@@ -62,24 +62,28 @@ export function registerKnowledgeHandlers(): void {
       return { id, ...data };
     }));
 
-  ipcMain.handle('knowledge:deleteCategory', wrap(async (_event, id: string) => {
+  ipcMain.handle('knowledge:deleteCategory', wrap((_event, id: string) => {
       const db = getDb();
       const allIds: string[] = [];
       const queue: string[] = [id];
       while (queue.length > 0) {
         const currentId = queue.shift()!;
         allIds.push(currentId);
-        const children = await db.select({ id: schema.knowledgeCategories.id })
+        const children = db.select({ id: schema.knowledgeCategories.id })
           .from(schema.knowledgeCategories)
-          .where(eq(schema.knowledgeCategories.parentId, currentId));
+          .where(eq(schema.knowledgeCategories.parentId, currentId))
+          .all();
         queue.push(...children.map(c => c.id));
       }
-      await db.transaction(async (tx) => {
+      db.transaction((tx) => {
         for (const cid of allIds) {
-          await tx.update(schema.knowledgeDocuments)
+          tx.update(schema.knowledgeDocuments)
             .set({ categoryId: '' })
-            .where(eq(schema.knowledgeDocuments.categoryId, cid));
-          await tx.delete(schema.knowledgeCategories).where(eq(schema.knowledgeCategories.id, cid));
+            .where(eq(schema.knowledgeDocuments.categoryId, cid))
+            .run();
+          tx.delete(schema.knowledgeCategories)
+            .where(eq(schema.knowledgeCategories.id, cid))
+            .run();
         }
       });
     }));
@@ -589,7 +593,8 @@ export function registerKnowledgeHandlers(): void {
   ipcMain.handle('knowledge:readExcelFile', wrap(async (_event, filePath: string, sheetName?: string) => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const XLSX = require('xlsx');
-      const workbook = XLSX.readFile(filePath);
+      const resolvedPath = await resolvePath(filePath);
+      const workbook = XLSX.readFile(resolvedPath);
       const sheets = workbook.SheetNames;
       const targetSheet = sheetName || sheets[0];
       const worksheet = workbook.Sheets[targetSheet];
@@ -602,7 +607,8 @@ export function registerKnowledgeHandlers(): void {
   ipcMain.handle('knowledge:readWordFile', wrap(async (_event, filePath: string) => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const mammoth = require('mammoth');
-      const result = await mammoth.convertToHtml({ path: filePath });
+      const resolvedPath = await resolvePath(filePath);
+      const result = await mammoth.convertToHtml({ path: resolvedPath });
       return { html: result.value };
     }));
 }

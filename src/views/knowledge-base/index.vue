@@ -80,6 +80,7 @@
               :all-categories="allCategories"
               @select="selectCategory"
               @toggle="toggleNode"
+              @context-menu="handleContextMenu"
             />
           </div>
         </div>
@@ -649,7 +650,7 @@ const commandVersion = ref(0);
 const editingCommandId = ref<string | null>(null);
 
 const expandedNodes = reactive<Record<string, boolean>>({});
-const expandedIds = reactive<Set<string>>(new Set());
+const expandedIds = ref(new Set<string>());
 
 const rootCategories = computed(() => {
   return allCategories.value.filter(c => !c.parentId);
@@ -657,7 +658,14 @@ const rootCategories = computed(() => {
 
 const totalDocuments = computed(() => pagination.total);
 
-const allDocCount = computed(() => pagination.total);
+const totalAllDocCount = ref(0);
+
+const allDocCount = computed(() => {
+  if (selectedCategoryId.value) {
+    return totalAllDocCount.value;
+  }
+  return pagination.total;
+});
 
 const selectedCategoryName = computed(() => {
   if (!selectedCategoryId.value) return '全部文档';
@@ -743,10 +751,10 @@ function renderMarkdown(text: string): string {
 
 function toggleNode(id: string) {
   expandedNodes[id] = !expandedNodes[id];
-  if (expandedIds.has(id)) {
-    expandedIds.delete(id);
+  if (expandedIds.value.has(id)) {
+    expandedIds.value.delete(id);
   } else {
-    expandedIds.add(id);
+    expandedIds.value.add(id);
   }
 }
 
@@ -766,6 +774,14 @@ function selectCategory(catId: string) {
 function closeContextMenu() {
   contextMenuVisible.value = false;
   document.removeEventListener('click', closeContextMenu);
+}
+
+function handleContextMenu(event: MouseEvent, node: KnowledgeCategory) {
+  contextMenuX.value = event.clientX;
+  contextMenuY.value = event.clientY;
+  contextMenuCategory.value = node;
+  contextMenuVisible.value = true;
+  document.addEventListener('click', closeContextMenu);
 }
 
 function editCategory(cat: KnowledgeCategory | null) {
@@ -814,12 +830,12 @@ async function deleteCategory(cat: KnowledgeCategory | null) {
   try {
     const res = await window.api.knowledge.deleteCategory(cat.id);
     if (res.success) {
-      ElMessage.success('分类删除成功');
       if (selectedCategoryId.value && selectedCategoryId.value === cat.id) {
         selectedCategoryId.value = '';
       }
-      loadCategories();
-      loadDocuments();
+      await loadCategories();
+      await loadDocuments();
+      ElMessage.success('分类删除成功');
     }
   } catch {
     ElMessage.error('删除失败');
@@ -882,6 +898,19 @@ async function loadCategories() {
   const res = await window.api.knowledge.listCategories();
   if (res.success && res.data) {
     allCategories.value = res.data;
+    const newCatIds = new Set(res.data.map(c => c.id));
+    const newExpandedIds = new Set<string>();
+    expandedIds.value.forEach(id => {
+      if (newCatIds.has(id)) {
+        newExpandedIds.add(id);
+      }
+    });
+    expandedIds.value = newExpandedIds;
+    Object.keys(expandedNodes).forEach(id => {
+      if (!newCatIds.has(id)) {
+        delete expandedNodes[id];
+      }
+    });
     res.data.forEach(cat => {
       if (!cat.parentId) {
         expandedNodes[cat.id] = true;
@@ -916,6 +945,9 @@ async function loadDocuments() {
     if (res.success && res.data) {
       documentList.value = res.data.list;
       pagination.total = res.data.total;
+      if (!selectedCategoryId.value) {
+        totalAllDocCount.value = res.data.total;
+      }
     }
   } finally {
     loading.value = false;
