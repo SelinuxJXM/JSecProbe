@@ -5,6 +5,7 @@ import log from 'electron-log';
 import crypto from 'crypto';
 import { wrap } from '../utils/ipc-wrapper';
 import { getAppDataPath } from '../main/paths';
+import { toRelativePath, resolvePath } from '../utils/path-resolver';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const MAX_TEXT_SIZE = 1 * 1024 * 1024;
@@ -26,26 +27,6 @@ function isValidImage(buffer: Buffer, ext: string): boolean {
   const magic = IMAGE_MAGIC_NUMBERS[ext];
   if (!magic) return false;
   return buffer.subarray(0, magic.length).equals(magic);
-}
-
-async function validatePath(inputPath: string): Promise<string> {
-  const resolved = path.resolve(inputPath);
-  const dataPath = await getAppDataPath();
-  const allowedPaths = [
-    dataPath,
-    path.join(dataPath, 'screenshots'),
-    path.join(dataPath, 'evidence'),
-    path.join(dataPath, 'knowledge'),
-    path.join(dataPath, 'temp'),
-  ];
-  const isAllowed = allowedPaths.some(base => {
-    const resolvedBase = path.resolve(base);
-    return resolved === resolvedBase || resolved.startsWith(resolvedBase + path.sep);
-  });
-  if (!isAllowed) {
-    throw new Error(`路径访问被拒绝: ${inputPath} (仅允许访问应用数据目录)`);
-  }
-  return resolved;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -104,7 +85,8 @@ export function registerScreenshotHandlers(): void {
       if (fs.statSync(existingPath).isFile()) {
         const existingHash = crypto.createHash('md5').update(fs.readFileSync(existingPath)).digest('hex');
         if (existingHash === fileHash) {
-          return { path: existingPath, name: existing };
+          const relativePath = await toRelativePath(existingPath);
+          return { path: relativePath, name: existing };
         }
       }
     }
@@ -115,7 +97,8 @@ export function registerScreenshotHandlers(): void {
 
     fs.copyFileSync(filePath, targetPath);
 
-    return { path: targetPath, name: targetName };
+    const relativePath = await toRelativePath(targetPath);
+    return { path: relativePath, name: targetName };
   }, { moduleName: 'screenshot' }));
 
   ipcMain.handle('screenshot:saveFromBase64', wrap(async (_event, { projectId, itemId, base64Data }: { projectId: string; itemId: string; base64Data: string }) => {
@@ -139,9 +122,10 @@ export function registerScreenshotHandlers(): void {
 
     fs.writeFileSync(targetPath, buffer);
 
-    log.info('screenshot saved to:', targetPath, 'size:', buffer.length);
+    const relativePath = await toRelativePath(targetPath);
+    log.info('screenshot saved to:', relativePath, 'size:', buffer.length);
 
-    return { path: targetPath, name: targetName };
+    return { path: relativePath, name: targetName };
   }, { moduleName: 'screenshot' }));
 
   ipcMain.handle('screenshot:uploadFile', wrap(async (_event, { projectId, itemId, filePath }: { projectId: string; itemId: string; filePath: string }) => {
@@ -172,7 +156,8 @@ export function registerScreenshotHandlers(): void {
       if (fs.statSync(existingPath).isFile()) {
         const existingHash = crypto.createHash('md5').update(fs.readFileSync(existingPath)).digest('hex');
         if (existingHash === fileHash) {
-          return { path: existingPath, name: existing };
+          const relativePath = await toRelativePath(existingPath);
+          return { path: relativePath, name: existing };
         }
       }
     }
@@ -183,18 +168,18 @@ export function registerScreenshotHandlers(): void {
 
     fs.copyFileSync(filePath, targetPath);
 
-    return { path: targetPath, name: targetName };
+    const relativePath = await toRelativePath(targetPath);
+    return { path: relativePath, name: targetName };
   }, { moduleName: 'screenshot' }));
 
   ipcMain.handle('screenshot:getBase64', wrap(async (_event, { filePath }: { filePath: string }) => {
     if (!filePath || typeof filePath !== 'string') {
       throw new Error('文件路径无效');
     }
-    // 先尝试直接读取文件，如果不存在则尝试在应用数据目录中查找
-    let resolvedPath = filePath;
+
+    const resolvedPath = await resolvePath(filePath);
     if (!fs.existsSync(resolvedPath)) {
-      // 如果直接路径不存在，尝试验证是否在允许的应用数据目录中
-      resolvedPath = await validatePath(filePath);
+      throw new Error('文件不存在: ' + filePath);
     }
 
     const stat = fs.statSync(resolvedPath);
@@ -214,9 +199,10 @@ export function registerScreenshotHandlers(): void {
     if (!filePath || typeof filePath !== 'string') {
       throw new Error('文件路径无效');
     }
-    let resolvedPath = filePath;
+
+    const resolvedPath = await resolvePath(filePath);
     if (!fs.existsSync(resolvedPath)) {
-      resolvedPath = await validatePath(filePath);
+      throw new Error('文件不存在: ' + filePath);
     }
 
     const ext = path.extname(resolvedPath).toLowerCase();
@@ -237,9 +223,10 @@ export function registerScreenshotHandlers(): void {
     if (!filePath || typeof filePath !== 'string') {
       throw new Error('文件路径无效');
     }
-    let resolvedPath = filePath;
+
+    const resolvedPath = await resolvePath(filePath);
     if (!fs.existsSync(resolvedPath)) {
-      resolvedPath = await validatePath(filePath);
+      throw new Error('文件不存在: ' + filePath);
     }
 
     const ext = path.extname(resolvedPath).toLowerCase();
@@ -257,9 +244,9 @@ export function registerScreenshotHandlers(): void {
   }, { moduleName: 'screenshot' }));
 
   ipcMain.handle('screenshot:deleteFile', wrap(async (_event, { filePath }: { filePath: string }) => {
-    const safePath = await validatePath(filePath);
-    if (fs.existsSync(safePath)) {
-      fs.unlinkSync(safePath);
+    const resolvedPath = await resolvePath(filePath);
+    if (fs.existsSync(resolvedPath)) {
+      fs.unlinkSync(resolvedPath);
     }
     return { success: true };
   }, { moduleName: 'screenshot' }));
@@ -281,6 +268,8 @@ export function registerScreenshotHandlers(): void {
     }
 
     fs.writeFileSync(targetPath, buffer);
-    return { filePath: targetPath, fileName };
+
+    const relativePath = await toRelativePath(targetPath);
+    return { filePath: relativePath, fileName };
   }, { moduleName: 'screenshot' }));
 }

@@ -1,6 +1,6 @@
 {
   "name": "mlps-assessment-tool",
-  "version": "2.0.9",
+  "version": "2.1.0",
   "description": "JSecProbe - 等级保护现场测评系统",
   "main": "dist-electron/main/index.js",
   "author": "景景",
@@ -47,15 +47,14 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@aws-sdk/client-s3": "^3.1086.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^20.11.0",
     "@vitejs/plugin-vue": "^5.0.0",
-    "drizzle-kit": "^0.20.0",
     "electron": "^29.4.6",
     "electron-builder": "^24.13.3",
     "electron-rebuild": "^3.2.9",
+    "esbuild": "^0.21.5",
     "rcedit": "^5.0.1",
     "sass": "^1.71.0",
     "tsx": "^4.7.0",

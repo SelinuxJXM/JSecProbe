@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.0.8';
+const TAG = 'v2.1.0';
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');

@@ -25,35 +25,6 @@ const DOMAIN_ID_TO_NAME: Record<string, string> = {
   'security_maintenance': '安全运维管理',
 };
 
-// 安全域中文名称到ID映射（用于导入）
-const DOMAIN_NAME_TO_ID: Record<string, string> = {
-  '安全物理环境': 'secure_physical',
-  '安全通信网络': 'secure_communication',
-  '安全区域边界': 'secure_boundary',
-  '安全计算环境': 'secure_computing',
-  '安全管理中心': 'secure_management',
-  '安全管理制度': 'security_management',
-  '安全管理机构': 'security_organization',
-  '安全管理人员': 'security_personnel',
-  '安全建设管理': 'security_construction',
-  '安全运维管理': 'security_maintenance',
-};
-
-function getSecurityDomainName(domainId: string): string {
-  return DOMAIN_ID_TO_NAME[domainId] || domainId || '-';
-}
-
-function parseSecurityDomain(value: string): string {
-  if (!value) return '';
-  const trimmed = value.trim();
-  // 如果是中文，转换为ID
-  if (DOMAIN_NAME_TO_ID[trimmed]) return DOMAIN_NAME_TO_ID[trimmed];
-  // 如果已经是ID，直接返回
-  if (DOMAIN_ID_TO_NAME[trimmed]) return trimmed;
-  // 未知值，原样返回
-  return trimmed;
-}
-
 async function getAllowedBasePaths(): Promise<string[]> {
   const dataPath = await getAppDataPath();
   return [
@@ -80,7 +51,6 @@ async function validatePath(inputPath: string): Promise<string> {
 }
 
 const MAX_EXCEL_SIZE = 50 * 1024 * 1024;
-const MAX_EXCEL_ROWS = 10000;
 
 export function registerIssueHandlers(): void {
   ipcMain.handle('issue:list', wrap(async (_event, params: {
@@ -140,17 +110,67 @@ export function registerIssueHandlers(): void {
 
       let list: any[];
       if (sortField) {
+        // 用户指定了排序字段，按指定字段排序
         list = await db.select().from(schema.issues)
           .where(whereClause)
           .orderBy(sortFn(sortField))
           .limit(pageSize)
           .offset((page - 1) * pageSize);
       } else {
-        list = await db.select().from(schema.issues)
-          .where(whereClause)
-          .orderBy(desc(schema.issues.createdAt))
-          .limit(pageSize)
-          .offset((page - 1) * pageSize);
+        // 默认排序：先获取所有符合条件的数据，在应用层按安全域和资产类型排序，再分页
+        const allList = await db.select().from(schema.issues).where(whereClause);
+
+        // 获取资产信息用于排序
+        const allAssetIds = [...new Set(allList.map((i: any) => i.assetId).filter(Boolean))];
+        const assetNameMap: Record<string, any> = {};
+        if (allAssetIds.length > 0) {
+          const assetRows = await db.select().from(schema.assets).where(inArray(schema.assets.id, allAssetIds));
+          assetRows.forEach((a: any) => { assetNameMap[a.id] = a; });
+        }
+
+        // 安全域排序顺序
+        const DOMAIN_ORDER = [
+          'secure_physical', 'secure_communication', 'secure_boundary',
+          'secure_computing', 'secure_management', 'security_management',
+          'security_organization', 'security_personnel', 'security_construction', 'security_maintenance',
+        ];
+
+        // 安全计算环境资产类型排序
+        const ASSET_TYPE_ORDER = [
+          'network_device',    // 网络设备
+          'security_device',   // 安全设备
+          'server_storage',    // 服务器
+          'dbms',              // 数据库
+          'management_platform', // 系统管理平台
+          'business_app',      // 应用系统
+          'terminal',           // 终端
+          'data_resource',      // 数据资源
+          'data_category',      // 数据分类
+        ];
+
+        // 按安全域排序，安全计算环境按资产类型排序
+        allList.sort((a: any, b: any) => {
+          const domainIdxA = DOMAIN_ORDER.indexOf(a.securityDomain);
+          const domainIdxB = DOMAIN_ORDER.indexOf(b.securityDomain);
+          if (domainIdxA !== domainIdxB) return (domainIdxA === -1 ? 999 : domainIdxA) - (domainIdxB === -1 ? 999 : domainIdxB);
+
+          // 同属安全计算环境时，按资产类型排序
+          if (a.securityDomain === 'secure_computing' && b.securityDomain === 'secure_computing') {
+            const assetA = assetNameMap[a.assetId];
+            const assetB = assetNameMap[b.assetId];
+            const typeA = assetA?.category || '';
+            const typeB = assetB?.category || '';
+            const typeIdxA = ASSET_TYPE_ORDER.indexOf(typeA);
+            const typeIdxB = ASSET_TYPE_ORDER.indexOf(typeB);
+            if (typeIdxA !== typeIdxB) return (typeIdxA === -1 ? 999 : typeIdxA) - (typeIdxB === -1 ? 999 : typeIdxB);
+          }
+
+          return 0;
+        });
+
+        // 分页
+        const startIndex = (page - 1) * pageSize;
+        list = allList.slice(startIndex, startIndex + pageSize);
       }
 
       // 获取资产名称映射
@@ -264,6 +284,53 @@ export function registerIssueHandlers(): void {
           eq(schema.assessmentRecords.projectId, projectId),
           sql`result IN ('non_compliant', 'nonconform', 'partial')`
         ));
+
+      // 安全域排序顺序
+      const DOMAIN_ORDER = [
+        'secure_physical', 'secure_communication', 'secure_boundary',
+        'secure_computing', 'secure_management', 'security_management',
+        'security_organization', 'security_personnel', 'security_construction', 'security_maintenance',
+      ];
+
+      // 安全计算环境资产类型排序
+      const ASSET_TYPE_ORDER = [
+        'network_device',    // 网络设备
+        'security_device',   // 安全设备
+        'server_storage',    // 服务器
+        'dbms',              // 数据库
+        'management_platform', // 系统管理平台
+        'business_app',      // 应用系统
+        'terminal',           // 终端
+        'data_resource',      // 数据资源
+        'data_category',      // 数据分类
+      ];
+
+      // 获取项目所有资产，用于排序
+      const allAssets = await db.select().from(schema.assets).where(eq(schema.assets.projectId, projectId));
+      const assetMap = new Map<string, any>();
+      allAssets.forEach((a: any) => assetMap.set(a.id, a));
+
+      // 按安全域排序，安全计算环境按资产类型排序
+      records.sort((a: any, b: any) => {
+        const itemA = a.assessment_items;
+        const itemB = b.assessment_items;
+        const domainIdxA = DOMAIN_ORDER.indexOf(itemA.domain);
+        const domainIdxB = DOMAIN_ORDER.indexOf(itemB.domain);
+        if (domainIdxA !== domainIdxB) return (domainIdxA === -1 ? 999 : domainIdxA) - (domainIdxB === -1 ? 999 : domainIdxB);
+
+        // 同属安全计算环境时，按资产类型排序
+        if (itemA.domain === 'secure_computing' && itemB.domain === 'secure_computing') {
+          const assetA = assetMap.get(a.assessment_records.assetId);
+          const assetB = assetMap.get(b.assessment_records.assetId);
+          const typeA = assetA?.category || '';
+          const typeB = assetB?.category || '';
+          const typeIdxA = ASSET_TYPE_ORDER.indexOf(typeA);
+          const typeIdxB = ASSET_TYPE_ORDER.indexOf(typeB);
+          if (typeIdxA !== typeIdxB) return (typeIdxA === -1 ? 999 : typeIdxA) - (typeIdxB === -1 ? 999 : typeIdxB);
+        }
+
+        return 0;
+      });
 
       let count = 0;
 
@@ -447,90 +514,135 @@ export function registerIssueHandlers(): void {
       const projectName = project?.name || '未知项目';
       let issues = await db.select().from(schema.issues).where(eq(schema.issues.projectId, projectId));
 
-      issues = issues.sort((a: any, b: any) => {
+      // 获取资产信息用于排序
+      const assetIds = [...new Set(issues.map((i: any) => i.assetId).filter(Boolean))];
+      const assetMap: Record<string, any> = {};
+      if (assetIds.length > 0) {
+        const assetRows = await db.select().from(schema.assets).where(inArray(schema.assets.id, assetIds));
+        assetRows.forEach((a: any) => { assetMap[a.id] = a; });
+      }
+      issues = issues.map((item: any) => ({
+        ...item,
+        assetName: item.assetId ? (assetMap[item.assetId]?.name || '-') : '-',
+        assetCategory: item.assetId ? (assetMap[item.assetId]?.category || '') : '',
+      }));
+
+      // 安全域排序顺序
+      const DOMAIN_ORDER = [
+        'secure_physical', 'secure_communication', 'secure_boundary',
+        'secure_computing', 'secure_management', 'security_management',
+        'security_organization', 'security_personnel', 'security_construction', 'security_maintenance',
+      ];
+
+      // 安全计算环境资产类型排序
+      const ASSET_TYPE_ORDER = [
+        'network_device',    // 网络设备
+        'security_device',   // 安全设备
+        'server_storage',    // 服务器
+        'dbms',              // 数据库
+        'management_platform', // 系统管理平台
+        'business_app',      // 应用系统
+        'terminal',           // 终端
+        'data_resource',      // 数据资源
+        'data_category',      // 数据分类
+      ];
+
+      // 按安全域排序，安全计算环境按资产类型排序
+      issues.sort((a: any, b: any) => {
+        const domainIdxA = DOMAIN_ORDER.indexOf(a.securityDomain);
+        const domainIdxB = DOMAIN_ORDER.indexOf(b.securityDomain);
+        if (domainIdxA !== domainIdxB) return (domainIdxA === -1 ? 999 : domainIdxA) - (domainIdxB === -1 ? 999 : domainIdxB);
+
+        // 同属安全计算环境时，按资产类型排序
+        if (a.securityDomain === 'secure_computing' && b.securityDomain === 'secure_computing') {
+          const typeIdxA = ASSET_TYPE_ORDER.indexOf(a.assetCategory);
+          const typeIdxB = ASSET_TYPE_ORDER.indexOf(b.assetCategory);
+          if (typeIdxA !== typeIdxB) return (typeIdxA === -1 ? 999 : typeIdxA) - (typeIdxB === -1 ? 999 : typeIdxB);
+          // 同资产类型时，按资产名称排序
+          const nameA = a.assetName || '';
+          const nameB = b.assetName || '';
+          if (nameA !== nameB) return nameA.localeCompare(nameB);
+        }
+
+        // 其他情况按风险等级排序
         const riskOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
         return (riskOrder[a.riskLevel] || 99) - (riskOrder[b.riskLevel] || 99);
       });
 
-      // 获取资产名称映射
-      const assetIds = [...new Set(issues.map((i: any) => i.assetId).filter(Boolean))];
-      const assetNameMap: Record<string, string> = {};
-      if (assetIds.length > 0) {
-        const assetRows = await db.select({ id: schema.assets.id, name: schema.assets.name }).from(schema.assets).where(inArray(schema.assets.id, assetIds));
-        assetRows.forEach((a: any) => { assetNameMap[a.id] = a.name; });
-      }
-      issues = issues.map((item: any) => ({
-        ...item,
-        assetName: item.assetId ? (assetNameMap[item.assetId] || '-') : '-',
-      }));
+      // 按安全域分组
+      const issuesByDomain: Record<string, any[]> = {};
+      DOMAIN_ORDER.forEach(domain => { issuesByDomain[domain] = []; });
+      issues.forEach((issue: any) => {
+        const domain = issue.securityDomain;
+        if (!issuesByDomain[domain]) issuesByDomain[domain] = [];
+        issuesByDomain[domain].push(issue);
+      });
 
       const workbook = new ExcelJS.Workbook();
-      const worksheet = workbook.addWorksheet('问题清单');
 
       const columns = [
         { header: '序号', key: 'index', width: 7 },
         { header: '风险等级', key: 'riskLevel', width: 10 },
-        { header: '安全域', key: 'securityDomain', width: 16 },
         { header: '测评对象', key: 'assetName', width: 18 },
         { header: '控制点', key: 'controlPoint', width: 16 },
         { header: '控制项', key: 'controlName', width: 20 },
-        { header: '问题标题', key: 'issueTitle', width: 30 },
         { header: '问题描述', key: 'issueDescription', width: 40 },
         { header: '整改建议', key: 'rectificationSuggestion', width: 40 },
-        { header: '整改日期', key: 'fixedDate', width: 14 },
         { header: '整改描述', key: 'fixedDescription', width: 30 },
-        { header: '测评人', key: 'assessor', width: 12 },
         { header: '状态', key: 'status', width: 10 },
-        { header: '创建时间', key: 'createdAt', width: 18 },
       ];
-      worksheet.columns = columns as ExcelJS.Column[];
 
       const riskMap: Record<string, string> = { high: '高风险', medium: '中风险', low: '低风险' };
       const statusMap: Record<string, string> = { pending: '待整改', rectifying: '整改中', resolved: '已整改', closed: '已关闭' };
 
-      const headerRow = worksheet.getRow(1);
-      headerRow.eachCell((cell) => {
-        styleCell(cell, { bold: true, fontSize: 12, fontColor: 'FFFFFFFF', bgColor: 'FF409EFF', alignH: 'center', alignV: 'middle', border: 'medium' });
-      });
-      headerRow.height = 28;
+      // 为每个安全域创建sheet
+      DOMAIN_ORDER.forEach(domain => {
+        const domainIssues = issuesByDomain[domain];
+        if (!domainIssues || domainIssues.length === 0) return;
 
-      const dataColIndexes = columns.map((_, i) => i + 1);
+        const domainName = DOMAIN_ID_TO_NAME[domain] || domain;
+        const worksheet = workbook.addWorksheet(domainName);
 
-      issues.forEach((issue: any, index) => {
-        const row = worksheet.addRow({
-          index: index + 1,
-          riskLevel: riskMap[issue.riskLevel] || issue.riskLevel,
-          securityDomain: getSecurityDomainName(issue.securityDomain),
-          assetName: issue.assetName || '-',
-          controlPoint: issue.controlPoint,
-          controlName: issue.controlName,
-          issueTitle: issue.issueTitle,
-          issueDescription: issue.issueDescription,
-          rectificationSuggestion: issue.rectificationSuggestion || '',
-          fixedDate: issue.fixedDate || '',
-          fixedDescription: issue.fixedDescription || '',
-          assessor: issue.assessor || '',
-          status: statusMap[issue.status] || issue.status,
-          createdAt: issue.createdAt,
+        worksheet.columns = columns as ExcelJS.Column[];
+
+        const headerRow = worksheet.getRow(1);
+        headerRow.eachCell((cell) => {
+          styleCell(cell, { bold: true, fontSize: 12, fontColor: 'FFFFFFFF', bgColor: 'FF409EFF', alignH: 'center', alignV: 'middle', border: 'medium' });
         });
+        headerRow.height = 28;
 
-        const rowHeight = getRowMaxHeight(row, dataColIndexes, worksheet);
-        row.height = rowHeight;
+        const dataColIndexes = columns.map((_, i) => i + 1);
 
-        const isZebra = index % 2 === 1;
-        const riskColor = issue.riskLevel === 'high' ? 'FFC62828' : issue.riskLevel === 'medium' ? 'FFF57F17' : issue.riskLevel === 'low' ? 'FF2E7D32' : null;
-
-        row.eachCell((cell, colNumber) => {
-          styleCell(cell, {
-            bgColor: isZebra ? 'FFF7F9FC' : undefined,
-            alignH: colNumber === 1 ? 'center' : 'left',
-            alignV: 'middle',
-            border: 'thin',
+        domainIssues.forEach((issue: any, index) => {
+          const row = worksheet.addRow({
+            index: index + 1,
+            riskLevel: riskMap[issue.riskLevel] || issue.riskLevel,
+            assetName: issue.assetName || '-',
+            controlPoint: issue.controlPoint,
+            controlName: issue.controlName,
+            issueDescription: issue.issueDescription,
+            rectificationSuggestion: issue.rectificationSuggestion || '',
+            fixedDescription: issue.fixedDescription || '',
+            status: statusMap[issue.status] || issue.status,
           });
-          // Keep risk level color highlighting
-          if (colNumber === 2 && riskColor) {
-            cell.font = { size: 11, bold: true, color: { argb: riskColor } };
-          }
+
+          const rowHeight = getRowMaxHeight(row, dataColIndexes, worksheet);
+          row.height = rowHeight;
+
+          const isZebra = index % 2 === 1;
+          const riskColor = issue.riskLevel === 'high' ? 'FFC62828' : issue.riskLevel === 'medium' ? 'FFF57F17' : issue.riskLevel === 'low' ? 'FF2E7D32' : null;
+
+          row.eachCell((cell, colNumber) => {
+            styleCell(cell, {
+              bgColor: isZebra ? 'FFF7F9FC' : undefined,
+              alignH: colNumber === 1 ? 'center' : 'left',
+              alignV: 'middle',
+              border: 'thin',
+            });
+            if (colNumber === 2 && riskColor) {
+              cell.font = { size: 11, bold: true, color: { argb: riskColor } };
+            }
+          });
         });
       });
 
@@ -547,103 +659,187 @@ export function registerIssueHandlers(): void {
 
   ipcMain.handle('issue:downloadTemplate', wrap(async (_event, _projectId: string) => {
       const workbook = new ExcelJS.Workbook();
-      const worksheet = workbook.addWorksheet('问题清单');
 
       const columns = [
         { header: '序号', key: 'index', width: 7 },
         { header: '风险等级', key: 'riskLevel', width: 10 },
-        { header: '安全域', key: 'securityDomain', width: 16 },
         { header: '测评对象', key: 'assetName', width: 18 },
         { header: '控制点', key: 'controlPoint', width: 16 },
         { header: '控制项', key: 'controlName', width: 20 },
-        { header: '问题标题', key: 'issueTitle', width: 30 },
         { header: '问题描述', key: 'issueDescription', width: 40 },
         { header: '整改建议', key: 'rectificationSuggestion', width: 40 },
-        { header: '整改日期', key: 'fixedDate', width: 14 },
         { header: '整改描述', key: 'fixedDescription', width: 30 },
-        { header: '测评人', key: 'assessor', width: 12 },
         { header: '状态', key: 'status', width: 10 },
-        { header: '创建时间', key: 'createdAt', width: 18 },
-      ];
-      worksheet.columns = columns as ExcelJS.Column[];
-
-      // Header row
-      const headerRow = worksheet.getRow(1);
-      headerRow.eachCell((cell) => {
-        styleCell(cell, { bold: true, fontSize: 12, fontColor: 'FFFFFFFF', bgColor: 'FF409EFF', alignH: 'center', alignV: 'middle', border: 'medium' });
-      });
-      headerRow.height = 28;
-
-      // Example data
-      const examples = [
-        {
-          riskLevel: '高风险',
-          securityDomain: '安全计算环境',
-          assetName: '应用服务器',
-          controlPoint: '身份鉴别',
-          controlName: '应对登录的用户进行身份标识和鉴别',
-          issueTitle: '未设置密码复杂度策略',
-          issueDescription: '系统未配置密码复杂度要求，允许使用简单密码',
-          rectificationSuggestion: '在系统安全策略中配置密码复杂度要求，包括最小长度、大小写字母、数字和特殊字符组合',
-          fixedDate: '',
-          fixedDescription: '',
-          assessor: '张三',
-          status: '待整改',
-          createdAt: new Date().toISOString().slice(0, 10),
-        },
-        {
-          riskLevel: '中风险',
-          securityDomain: '安全区域边界',
-          assetName: '下一代防火墙',
-          controlPoint: '边界防护',
-          controlName: '应能够在网络边界处监视入侵行为',
-          issueTitle: '入侵检测规则未及时更新',
-          issueDescription: '入侵检测系统的检测规则库超过3个月未更新',
-          rectificationSuggestion: '定期更新入侵检测规则库，建议每月至少更新一次',
-          fixedDate: '',
-          fixedDescription: '',
-          assessor: '李四',
-          status: '整改中',
-          createdAt: new Date().toISOString().slice(0, 10),
-        },
-        {
-          riskLevel: '低风险',
-          securityDomain: '安全管理制度',
-          assetName: '-',
-          controlPoint: '管理制度',
-          controlName: '应制定信息安全工作的总体方针和安全策略',
-          issueTitle: '信息安全方针策略文档需更新',
-          issueDescription: '信息安全总体方针文档内容陈旧，未反映当前业务实际情况',
-          rectificationSuggestion: '根据当前业务发展和安全要求，更新信息安全总体方针文档',
-          fixedDate: new Date().toISOString().slice(0, 10),
-          fixedDescription: '已完成方针文档更新并发布',
-          assessor: '王五',
-          status: '已整改',
-          createdAt: new Date().toISOString().slice(0, 10),
-        },
       ];
 
-      examples.forEach((example, index) => {
-        const row = worksheet.addRow({
-          index: index + 1,
-          ...example,
+      // 示例数据，按安全域分组（10个安全域）
+      const examplesByDomain: Record<string, any[]> = {
+        '安全物理环境': [
+          {
+            riskLevel: '中风险',
+            assetName: '机房',
+            controlPoint: '物理位置选择',
+            controlName: '应选择在具有防震、防风和防雨等能力的建筑内',
+            issueDescription: '机房位于建筑物顶层，存在漏水风险',
+            rectificationSuggestion: '建议对机房进行防水处理，或选择低楼层机房',
+            fixedDescription: '',
+            status: '待整改',
+          },
+        ],
+        '安全通信网络': [
+          {
+            riskLevel: '中风险',
+            assetName: '核心交换机',
+            controlPoint: '网络架构',
+            controlName: '应保证网络设备的业务处理能力满足业务高峰期需要',
+            issueDescription: '核心交换机在业务高峰期CPU利用率超过80%，存在性能瓶颈',
+            rectificationSuggestion: '建议升级核心交换机设备，或增加负载分担设备',
+            fixedDescription: '',
+            status: '待整改',
+          },
+        ],
+        '安全区域边界': [
+          {
+            riskLevel: '中风险',
+            assetName: '下一代防火墙',
+            controlPoint: '边界防护',
+            controlName: '应能够在网络边界处监视入侵行为',
+            issueDescription: '入侵检测系统的检测规则库超过3个月未更新',
+            rectificationSuggestion: '定期更新入侵检测规则库，建议每月至少更新一次',
+            fixedDescription: '',
+            status: '整改中',
+          },
+        ],
+        '安全计算环境': [
+          {
+            riskLevel: '高风险',
+            assetName: '应用服务器',
+            controlPoint: '身份鉴别',
+            controlName: '应对登录的用户进行身份标识和鉴别',
+            issueDescription: '系统未配置密码复杂度要求，允许使用简单密码',
+            rectificationSuggestion: '在系统安全策略中配置密码复杂度要求，包括最小长度、大小写字母、数字和特殊字符组合',
+            fixedDescription: '',
+            status: '待整改',
+          },
+          {
+            riskLevel: '中风险',
+            assetName: '数据库服务器',
+            controlPoint: '访问控制',
+            controlName: '应授予管理用户所需的最小权限',
+            issueDescription: '数据库用户权限配置过大，未遵循最小权限原则',
+            rectificationSuggestion: '按照最小权限原则重新配置数据库用户权限',
+            fixedDescription: '',
+            status: '整改中',
+          },
+        ],
+        '安全管理中心': [
+          {
+            riskLevel: '中风险',
+            assetName: '安全管理系统',
+            controlPoint: '系统管理',
+            controlName: '应对设备进行集中管控',
+            issueDescription: '未对所有安全设备进行集中管控，管理分散',
+            rectificationSuggestion: '建议部署统一安全管理平台，实现安全设备的集中管控',
+            fixedDescription: '',
+            status: '待整改',
+          },
+        ],
+        '安全管理制度': [
+          {
+            riskLevel: '低风险',
+            assetName: '-',
+            controlPoint: '管理制度',
+            controlName: '应制定信息安全工作的总体方针和安全策略',
+            issueDescription: '信息安全总体方针文档内容陈旧，未反映当前业务实际情况',
+            rectificationSuggestion: '根据当前业务发展和安全要求，更新信息安全总体方针文档',
+            fixedDescription: '已完成方针文档更新并发布',
+            status: '已整改',
+          },
+        ],
+        '安全管理机构': [
+          {
+            riskLevel: '低风险',
+            assetName: '-',
+            controlPoint: '岗位设置',
+            controlName: '应设立系统管理员、安全管理员等岗位',
+            issueDescription: '已设置安全管理员岗位，但职责划分不够清晰',
+            rectificationSuggestion: '建议明确各安全岗位职责，形成书面文件',
+            fixedDescription: '',
+            status: '待整改',
+          },
+        ],
+        '安全管理人员': [
+          {
+            riskLevel: '低风险',
+            assetName: '-',
+            controlPoint: '人员考核',
+            controlName: '应对定期进行安全意识教育和培训',
+            issueDescription: '本年度安全培训计划已制定，但执行记录不完整',
+            rectificationSuggestion: '建议完善安全培训记录，包括培训内容、参加人员等',
+            fixedDescription: '',
+            status: '待整改',
+          },
+        ],
+        '安全建设管理': [
+          {
+            riskLevel: '中风险',
+            assetName: '-',
+            controlPoint: '工程实施',
+            controlName: '应制定工程实施方案和控制措施',
+            issueDescription: '安全工程实施方案中未明确安全控制措施',
+            rectificationSuggestion: '建议补充完善工程实施方案中的安全控制措施',
+            fixedDescription: '',
+            status: '待整改',
+          },
+        ],
+        '安全运维管理': [
+          {
+            riskLevel: '中风险',
+            assetName: '-',
+            controlPoint: '环境管理',
+            controlName: '应建立机房安全管理制度',
+            issueDescription: '机房安全管理制度已建立，但部分条款需要更新',
+            rectificationSuggestion: '建议对机房安全管理制度进行修订完善',
+            fixedDescription: '',
+            status: '待整改',
+          },
+        ],
+      };
+
+      // 为每个安全域创建sheet
+      Object.entries(examplesByDomain).forEach(([domainName, examples]) => {
+        const worksheet = workbook.addWorksheet(domainName);
+
+        worksheet.columns = columns as ExcelJS.Column[];
+
+        const headerRow = worksheet.getRow(1);
+        headerRow.eachCell((cell) => {
+          styleCell(cell, { bold: true, fontSize: 12, fontColor: 'FFFFFFFF', bgColor: 'FF409EFF', alignH: 'center', alignV: 'middle', border: 'medium' });
         });
+        headerRow.height = 28;
 
-        const riskColor = example.riskLevel === '高风险' ? 'FFC62828' : example.riskLevel === '中风险' ? 'FFF57F17' : example.riskLevel === '低风险' ? 'FF2E7D32' : null;
-        const isZebra = index % 2 === 1;
-
-        row.eachCell((cell, colNumber) => {
-          styleCell(cell, {
-            bgColor: isZebra ? 'FFF7F9FC' : undefined,
-            alignH: colNumber === 1 ? 'center' : 'left',
-            alignV: 'middle',
-            border: 'thin',
+        examples.forEach((example, index) => {
+          const row = worksheet.addRow({
+            index: index + 1,
+            ...example,
           });
-          if (colNumber === 2 && riskColor) {
-            cell.font = { size: 11, bold: true, color: { argb: riskColor } };
-          }
+
+          const riskColor = example.riskLevel === '高风险' ? 'FFC62828' : example.riskLevel === '中风险' ? 'FFF57F17' : example.riskLevel === '低风险' ? 'FF2E7D32' : null;
+          const isZebra = index % 2 === 1;
+
+          row.eachCell((cell, colNumber) => {
+            styleCell(cell, {
+              bgColor: isZebra ? 'FFF7F9FC' : undefined,
+              alignH: colNumber === 1 ? 'center' : 'left',
+              alignV: 'middle',
+              border: 'thin',
+            });
+            if (colNumber === 2 && riskColor) {
+              cell.font = { size: 11, bold: true, color: { argb: riskColor } };
+            }
+          });
+          row.height = 40;
         });
-        row.height = 40;
       });
 
       const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -671,15 +867,20 @@ export function registerIssueHandlers(): void {
       
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.readFile(safePath);
-      const worksheet = workbook.getWorksheet('问题清单') || workbook.worksheets[0];
 
-      if (!worksheet) {
-        throw new Error('Excel文件中未找到工作表');
-      }
-      
-      if (worksheet.rowCount > MAX_EXCEL_ROWS) {
-        throw new Error(`Excel行数过多 (最大${MAX_EXCEL_ROWS}行)`);
-      }
+      // 安全域中文名称到ID映射
+      const DOMAIN_NAME_TO_ID: Record<string, string> = {
+        '安全物理环境': 'secure_physical',
+        '安全通信网络': 'secure_communication',
+        '安全区域边界': 'secure_boundary',
+        '安全计算环境': 'secure_computing',
+        '安全管理中心': 'secure_management',
+        '安全管理制度': 'security_management',
+        '安全管理机构': 'security_organization',
+        '安全管理人员': 'security_personnel',
+        '安全建设管理': 'security_construction',
+        '安全运维管理': 'security_maintenance',
+      };
 
       const now = new Date().toISOString();
       const errors: string[] = [];
@@ -697,54 +898,60 @@ export function registerIssueHandlers(): void {
         '已关闭': 'closed',
       };
 
-      const headerRow = worksheet.getRow(1);
-      const colMap: Record<string, number> = {};
-      headerRow.eachCell((cell, colNumber) => {
-        const header = cell.value ? String(cell.value).trim() : '';
-        colMap[header] = colNumber;
-      });
+      // 遍历所有sheet，根据sheet名称确定安全域
+      workbook.worksheets.forEach((worksheet) => {
+        if (!worksheet) return;
+        if (worksheet.rowCount < 2) return; // 只有标题行，没有数据
 
-      for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
-        try {
-          const getCell = (header: string) => {
-            const col = colMap[header];
-            if (!col) return '';
-            const cell = worksheet.getRow(rowNumber).getCell(col);
-            return cell.value ? String(cell.value) : '';
-          };
+        const sheetName = worksheet.name;
+        const securityDomain = DOMAIN_NAME_TO_ID[sheetName] || '';
 
-          const validRiskLevels = ['high', 'medium', 'low'];
-          const validStatuses = ['pending', 'rectifying', 'resolved', 'closed'];
+        const headerRow = worksheet.getRow(1);
+        const colMap: Record<string, number> = {};
+        headerRow.eachCell((cell, colNumber) => {
+          const header = cell.value ? String(cell.value).trim() : '';
+          colMap[header] = colNumber;
+        });
 
-          const riskLevelRaw = getCell('风险等级');
-          const riskLevel = riskReverseMap[riskLevelRaw] || (validRiskLevels.includes(riskLevelRaw) ? riskLevelRaw : 'medium');
-          const statusRaw = getCell('状态');
-          const status = statusReverseMap[statusRaw] || (validStatuses.includes(statusRaw) ? statusRaw : 'pending');
+        for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+          try {
+            const getCell = (header: string) => {
+              const col = colMap[header];
+              if (!col) return '';
+              const cell = worksheet.getRow(rowNumber).getCell(col);
+              return cell.value ? String(cell.value) : '';
+            };
 
-          const issueTitle = getCell('问题标题');
-          if (!issueTitle) continue;
+            const validRiskLevels = ['high', 'medium', 'low'];
+            const validStatuses = ['pending', 'rectifying', 'resolved', 'closed'];
 
-          rowsToInsert.push({
-            id: randomUUID(),
-            projectId,
-            securityDomain: parseSecurityDomain(getCell('安全域')),
-            controlPoint: getCell('控制点'),
-            controlName: getCell('控制项'),
-            issueTitle,
-            issueDescription: getCell('问题描述'),
-            rectificationSuggestion: getCell('整改建议'),
-            fixedDate: getCell('整改日期'),
-            fixedDescription: getCell('整改描述'),
-            assessor: getCell('测评人'),
-            riskLevel,
-            status,
-            createdAt: now,
-            updatedAt: now,
-          });
-        } catch (err: any) {
-          errors.push(`第${rowNumber}行: ${err.message}`);
+            const riskLevelRaw = getCell('风险等级');
+            const riskLevel = riskReverseMap[riskLevelRaw] || (validRiskLevels.includes(riskLevelRaw) ? riskLevelRaw : 'medium');
+            const statusRaw = getCell('状态');
+            const status = statusReverseMap[statusRaw] || (validStatuses.includes(statusRaw) ? statusRaw : 'pending');
+
+            const controlName = getCell('控制项');
+            if (!controlName) continue;
+
+            rowsToInsert.push({
+              id: randomUUID(),
+              projectId,
+              securityDomain,
+              controlPoint: getCell('控制点'),
+              controlName,
+              issueDescription: getCell('问题描述'),
+              rectificationSuggestion: getCell('整改建议'),
+              fixedDescription: getCell('整改描述'),
+              riskLevel,
+              status,
+              createdAt: now,
+              updatedAt: now,
+            });
+          } catch (err: any) {
+            errors.push(`${sheetName} 第${rowNumber}行: ${err.message}`);
+          }
         }
-      }
+      });
 
       let count = 0;
       if (rowsToInsert.length > 0) {

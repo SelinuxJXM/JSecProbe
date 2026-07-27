@@ -201,9 +201,9 @@
             {{ (pagination.page - 1) * pagination.pageSize + $index + 1 }}
           </template>
         </el-table-column>
-        <el-table-column prop="issueTitle" label="问题标题" min-width="200" sortable="custom">
+        <el-table-column prop="issueDescription" label="问题描述" min-width="200" sortable="custom">
           <template #default="{ row }">
-            <span class="issue-title-cell">{{ row.issueTitle }}</span>
+            <span class="issue-description-cell">{{ row.issueDescription }}</span>
           </template>
         </el-table-column>
         <el-table-column label="安全域" width="120" sortable="custom" prop="securityDomain">
@@ -220,16 +220,9 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="100" align="center" sortable="custom">
+        <el-table-column prop="rectificationSuggestion" label="整改建议" min-width="200" sortable="custom">
           <template #default="{ row }">
-            <el-tag :type="getStatusTagType(row.status)">
-              {{ getStatusLabel(row.status) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="createdAt" label="创建时间" width="170" sortable="custom">
-          <template #default="{ row }">
-            {{ formatDate(row.createdAt) }}
+            {{ row.rectificationSuggestion }}
           </template>
         </el-table-column>
         <el-table-column label="操作" width="260" fixed="right" align="center">
@@ -583,34 +576,6 @@ function getRiskTagType(level: string) {
     low: 'success',
   };
   return map[level] || 'info';
-}
-
-function getStatusLabel(status: string) {
-  const map: Record<string, string> = {
-    pending: '待整改',
-    rectifying: '整改中',
-    resolved: '已整改',
-    closed: '已关闭',
-  };
-  return map[status] || status;
-}
-
-function getStatusTagType(status: string) {
-  const map: Record<string, string> = {
-    pending: 'danger',
-    rectifying: 'warning',
-    resolved: 'success',
-    closed: 'info',
-  };
-  return map[status] || 'info';
-}
-
-function formatDate(date: string) {
-  if (!date) return '';
-  const d = new Date(date);
-  if (isNaN(d.getTime())) return '';
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 async function loadSummary() {
@@ -1255,7 +1220,7 @@ onMounted(() => {
   margin-left: 8px;
 }
 
-.issue-title-cell {
+.issue-description-cell {
   display: flex;
   align-items: center;
   gap: 8px;
