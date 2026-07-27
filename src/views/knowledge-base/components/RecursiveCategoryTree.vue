@@ -14,7 +14,7 @@
         }"
         :style="{ paddingLeft: (depth * 16 + 12) + 'px' }"
         @click="handleSelect(node)"
-        @contextmenu.stop.prevent="handleContextMenu(node)"
+        @contextmenu.stop.prevent="handleContextMenu($event, node)"
       >
         <span
           v-if="hasChildren(node.id)"
@@ -52,8 +52,8 @@
         </svg>
 
         <span class="tree-node-label">{{ node.name }}</span>
-        <span v-if="node.documentCount" class="tree-node-count">
-          {{ node.documentCount }}
+        <span class="tree-node-count" :class="{ 'is-zero': getTotalDocumentCount(node.id) === 0 }">
+          {{ getTotalDocumentCount(node.id) }}
         </span>
       </div>
 
@@ -75,17 +75,9 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import type { KnowledgeCategory } from '../../../../shared/types';
 
-interface CategoryNode {
-  id: string;
-  parentId?: string;
-  name: string;
-  icon?: string;
-  color?: string;
-  sortOrder: number;
-  documentCount: number;
-  children?: CategoryNode[];
-}
+type CategoryNode = KnowledgeCategory;
 
 const props = withDefaults(defineProps<{
   categories: CategoryNode[];
@@ -136,6 +128,16 @@ function getChildrenOf(parentId: string): CategoryNode[] {
     });
 }
 
+function getTotalDocumentCount(categoryId: string): number {
+  const category = props.allCategories.find(c => c.id === categoryId);
+  let count = category?.documentCount || 0;
+  const children = getChildrenOf(categoryId);
+  for (const child of children) {
+    count += getTotalDocumentCount(child.id);
+  }
+  return count;
+}
+
 function handleSelect(node: CategoryNode): void {
   emitSelect(node.id);
   if (hasChildren(node.id)) {
@@ -147,9 +149,8 @@ function toggleExpand(id: string): void {
   emitToggle(id);
 }
 
-function handleContextMenu(node: CategoryNode): void {
-  // 右键事件交由父组件处理菜单显示
-  emitContextMenu({} as MouseEvent, node);
+function handleContextMenu(event: MouseEvent, node: CategoryNode): void {
+  emitContextMenu(event, node);
 }
 </script>
 
@@ -221,6 +222,12 @@ function handleContextMenu(node: CategoryNode): void {
   min-width: 20px;
   text-align: center;
   flex-shrink: 0;
+}
+
+.tree-node-count.is-zero {
+  background: transparent;
+  color: var(--color-text-tertiary, #c0c4cc);
+  padding: 1px 4px;
 }
 
 .tree-node-children {

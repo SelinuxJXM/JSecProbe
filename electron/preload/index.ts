@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
 import * as fs from 'fs';
+import { resolvePathSync } from '../utils/path-resolver';
 
 const ipc = <T = any>(channel: string) => (...args: any[]): Promise<T> => ipcRenderer.invoke(channel, ...args);
 
@@ -148,16 +149,16 @@ const api = {
     readWordFile: ipc<{ html: string }>('knowledge:readWordFile'),
   },
   file: {
-    exists: (filePath: string) => fs.existsSync(filePath),
+    exists: (filePath: string) => fs.existsSync(resolvePathSync(filePath)),
     readAsArrayBuffer: (filePath: string): { success: boolean; data?: number[]; error?: string } => {
       try {
-        const buf = fs.readFileSync(filePath);
+        const buf = fs.readFileSync(resolvePathSync(filePath));
         return { success: true, data: Array.from(buf) };
       } catch (err: any) {
         return { success: false, error: err.message };
       }
     },
-    readAsText: (filePath: string, encoding: BufferEncoding = 'utf-8') => fs.readFileSync(filePath, encoding),
+    readAsText: (filePath: string, encoding: BufferEncoding = 'utf-8') => fs.readFileSync(resolvePathSync(filePath), encoding),
   },
   system: {
     getInfo: ipc<any>('system:getInfo'),

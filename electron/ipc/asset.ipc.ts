@@ -408,16 +408,14 @@ export function registerAssetHandlers(): void {
     })
   );
 
-  ipcMain.handle('asset:remove', wrap(async (_event, id: string) => {
+  ipcMain.handle('asset:remove', wrap((_event, id: string) => {
       const db = getDb();
-      const asset = await db.query.assets.findFirst({
-        where: eq(schema.assets.id, id),
+      const asset = db.select().from(schema.assets).where(eq(schema.assets.id, id)).get();
+      db.transaction((tx) => {
+        tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.assetId, id)).run();
+        tx.delete(schema.assets).where(eq(schema.assets.id, id)).run();
       });
-      await db.transaction(async (tx) => {
-        await tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.assetId, id));
-        await tx.delete(schema.assets).where(eq(schema.assets.id, id));
-      });
-      await writeOperationLog({
+      writeOperationLog({
         action: 'delete',
         module: 'asset',
         targetId: id,
@@ -427,12 +425,12 @@ export function registerAssetHandlers(): void {
     })
   );
 
-  ipcMain.handle('asset:batchRemove', wrap(async (_event, ids: string[]) => {
+  ipcMain.handle('asset:batchRemove', wrap((_event, ids: string[]) => {
       const db = getDb();
-      await db.transaction(async (tx) => {
+      db.transaction((tx) => {
         for (const id of ids) {
-          await tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.assetId, id));
-          await tx.delete(schema.assets).where(eq(schema.assets.id, id));
+          tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.assetId, id)).run();
+          tx.delete(schema.assets).where(eq(schema.assets.id, id)).run();
         }
       });
     })

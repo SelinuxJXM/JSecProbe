@@ -493,17 +493,15 @@ export function registerProjectHandlers(): void {
 
   ipcMain.handle('project:remove', wrap(async (_event, id: string) => {
       const db = getDb();
-      const project = await db.query.projects.findFirst({
-        where: eq(schema.projects.id, id),
+      const project = db.select().from(schema.projects).where(eq(schema.projects.id, id)).get();
+      db.transaction((tx) => {
+        tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.projectId, id)).run();
+        tx.delete(schema.issues).where(eq(schema.issues.projectId, id)).run();
+        tx.delete(schema.projectMembers).where(eq(schema.projectMembers.projectId, id)).run();
+        tx.delete(schema.assets).where(eq(schema.assets.projectId, id)).run();
+        tx.delete(schema.projects).where(eq(schema.projects.id, id)).run();
       });
-      await db.transaction(async (tx) => {
-        await tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.projectId, id));
-        await tx.delete(schema.issues).where(eq(schema.issues.projectId, id));
-        await tx.delete(schema.projectMembers).where(eq(schema.projectMembers.projectId, id));
-        await tx.delete(schema.assets).where(eq(schema.assets.projectId, id));
-        await tx.delete(schema.projects).where(eq(schema.projects.id, id));
-      });
-      await writeOperationLog({
+      writeOperationLog({
         action: 'delete',
         module: 'project',
         targetId: id,

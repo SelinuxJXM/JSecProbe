@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { getAppDataPath } from '../main/paths';
+import { getAppDataPath, getAppDataPathSync } from '../main/paths';
 
 /**
  * 将绝对路径转换为相对路径（相对于 appDataPath）
@@ -41,19 +41,32 @@ export async function toAbsolutePaths(relativePaths: string[]): Promise<string[]
 }
 
 /**
+ * 同步解析路径：如果是相对路径则转为绝对路径，否则直接返回
+ */
+export function resolvePathSync(inputPath: string): string {
+  if (!inputPath) return '';
+
+  if (path.isAbsolute(inputPath)) {
+    return inputPath;
+  }
+
+  const appDataPath = getAppDataPathSync();
+  const normalized = inputPath.replace(/\//g, path.sep);
+  const fullPath = path.join(appDataPath, normalized);
+  return fullPath;
+}
+
+/**
  * 解析路径：如果是相对路径则转为绝对路径，否则直接返回
  */
 export async function resolvePath(inputPath: string): Promise<string> {
   if (!inputPath) return '';
 
-  const appDataPath = await getAppDataPath();
-  const resolvedBase = path.resolve(appDataPath);
-  const resolved = path.resolve(inputPath);
-
-  if (resolved.startsWith(resolvedBase + path.sep) || resolved === resolvedBase) {
+  if (path.isAbsolute(inputPath)) {
     return inputPath;
   }
 
+  const appDataPath = await getAppDataPath();
   const normalized = inputPath.replace(/\//g, path.sep);
   const fullPath = path.join(appDataPath, normalized);
   return fullPath;

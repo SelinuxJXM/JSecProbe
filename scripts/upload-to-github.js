@@ -57,16 +57,18 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.0.8 更新内容
+    body: `## v2.1.0 更新内容
 
-- 更新系统版本号至 2.0.8
-- 修复更新检查竞态条件 Bug（pendingCheckFallback 标志位未正确重置）
-- 新增 GitCode 作为主更新源（国内访问更快）
-- 新增 GitCode 发布脚本 (scripts/upload-to-gitcode.js)
-- 支持三源更新机制（GitCode → GitHub → Cloudflare R2）
-- 问题清单 AI 分析功能优化（整改建议去除多余空行）
-- 新增问题清单批量修改支持风险等级和状态
-- 新增问题清单自定义批量分析（选中/全部）
+- 更新系统版本号至 2.1.0
+- 新增相对路径存储机制，修复生产环境重启后文件找不到的问题
+- 新增 path-resolver.ts 路径转换工具函数
+- 新增 path-migration.ts 数据迁移工具（启动时自动迁移旧数据）
+- 修改文件上传/读取逻辑，使用相对路径存储
+- 修改测评记录导出逻辑，兼容新旧路径格式
+- 修改知识库文档逻辑，使用相对路径存储
+- 更新应用图标
+- 清理未使用的代码和依赖
+- 修复 TypeScript 类型错误
     `,
     draft: false,
     prerelease: false,

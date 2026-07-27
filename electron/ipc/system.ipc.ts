@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { FileFilter } from '../../shared/types';
 import { getAppDataPath, setAppDataPath } from '../main/paths';
+import { resolvePath } from '../utils/path-resolver';
 import { createFullBackup, restoreFromZipBackup, restoreFromLegacyBackup, restoreFromZipBackupIncremental, previewZipBackup, listBackups } from '../services/backup.service';
 import { wrap } from '../utils/ipc-wrapper';
 
@@ -36,7 +37,7 @@ async function getAllowedBasePaths(): Promise<string[]> {
 }
 
 async function validatePath(inputPath: string): Promise<string> {
-  const resolved = path.resolve(inputPath);
+  const resolved = await resolvePath(inputPath);
   const allowedPaths = await getAllowedBasePaths();
   const isAllowed = allowedPaths.some(base => {
     const resolvedBase = path.resolve(base);

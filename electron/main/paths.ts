@@ -40,6 +40,13 @@ function writeConfig(config: Record<string, any>): void {
   }
 }
 
+export function getAppDataPathSync(): string {
+  if (!appDataPath) {
+    appDataPath = resolve(getDefaultBasePath());
+  }
+  return appDataPath;
+}
+
 export async function getAppDataPath(): Promise<string> {
   if (appDataPath) return appDataPath;
   

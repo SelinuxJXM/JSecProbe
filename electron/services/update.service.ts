@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, net } from 'electron';
+import { app, BrowserWindow, ipcMain, net, shell } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import log from 'electron-log';
 import * as fs from 'fs';
@@ -6,6 +6,15 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { spawn } from 'child_process';
 import { wrap } from '../utils/ipc-wrapper';
+
+function getSafeTempDir(): string {
+  const appDataPath = app.getPath('temp');
+  const safeDir = path.join(appDataPath, 'jsecprobe-updates');
+  if (!fs.existsSync(safeDir)) {
+    fs.mkdirSync(safeDir, { recursive: true });
+  }
+  return safeDir;
+}
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -182,7 +191,7 @@ async function checkR2ForUpdates(): Promise<{ version: string; sha512: string; s
 async function downloadFromR2(version: string, expectedSha512: string): Promise<string> {
   const installerName = `JSecProbe Setup ${version}.exe`;
   const downloadUrl = `${R2_CONFIG.baseUrl}/${encodeURIComponent(installerName)}`;
-  const tempDir = app.getPath('temp');
+  const tempDir = getSafeTempDir();
   const destPath = path.join(tempDir, installerName);
 
   log.info(`[更新-R2] 开始下载: ${downloadUrl}`);
@@ -321,7 +330,7 @@ async function checkGitCodeForUpdates(): Promise<{ version: string; sha512: stri
 
 async function downloadFromGitCode(installerUrl: string, version: string, expectedSha512: string): Promise<string> {
   const installerName = `JSecProbe Setup ${version}.exe`;
-  const tempDir = app.getPath('temp');
+  const tempDir = getSafeTempDir();
   const destPath = path.join(tempDir, installerName);
   log.info(`[更新-GitCode] 开始下载: ${installerUrl}`);
   const response = await net.fetch(installerUrl, { method: 'GET' });
@@ -631,22 +640,36 @@ export function registerUpdateHandlers() {
   }, 'update'));
 
   ipcMain.handle('update:install', wrap(async () => {
-    if (updateSource === 'gitcode' && gitcodeInstallerPath) {
-      log.info('[更新-GitCode] 安装更新:', gitcodeInstallerPath);
-      spawn(gitcodeInstallerPath, ['/S'], {
-        detached: true,
-        stdio: 'ignore',
-      }).unref();
-      app.quit();
-      return;
-    }
-
-    if (updateSource === 'r2' && r2InstallerPath) {
-      log.info('[更新-R2] 安装更新:', r2InstallerPath);
-      spawn(r2InstallerPath, ['/S'], {
-        detached: true,
-        stdio: 'ignore',
-      }).unref();
+    const installerPath = updateSource === 'gitcode' ? gitcodeInstallerPath : r2InstallerPath;
+    if (installerPath) {
+      log.info(`[更新-${updateSource}] 安装更新: ${installerPath}`);
+      try {
+        await shell.openPath(installerPath);
+      } catch (err: any) {
+        log.warn(`[更新] shell.openPath 失败: ${err.message}，尝试 spawn`);
+        await new Promise<void>((resolve) => {
+          const child = spawn(installerPath, ['/S'], {
+            detached: true,
+            stdio: 'ignore',
+          });
+          child.on('error', (spawnErr: any) => {
+            if (spawnErr.code === 'EBUSY') {
+              log.warn('[更新] 文件被占用，5秒后重试...');
+              setTimeout(() => {
+                spawn(installerPath, ['/S'], { detached: true, stdio: 'ignore' }).unref();
+              }, 5000);
+            } else {
+              log.error('[更新] spawn 错误:', spawnErr);
+            }
+            resolve();
+          });
+          child.on('spawn', () => {
+            child.unref();
+            resolve();
+          });
+          setTimeout(resolve, 3000);
+        });
+      }
       app.quit();
       return;
     }
