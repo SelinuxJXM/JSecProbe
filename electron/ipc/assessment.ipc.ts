@@ -12,6 +12,7 @@ import { pathToFileURL } from 'url';
 import { styleCell, getRowMaxHeight } from '../utils/excel-helper';
 import { wrap } from '../utils/ipc-wrapper';
 import { validateUuid, validateNotEmpty, validateComplianceStatus, sanitizeInput } from '../utils/validation';
+import { resolvePath } from '../utils/path-resolver';
 
 export function registerAssessmentHandlers(): void {
   // 根据项目等级和扩展类型筛选测评项
@@ -548,7 +549,12 @@ export function registerAssessmentHandlers(): void {
               try {
                 const parsed = JSON.parse(record.screenshotPaths);
                 if (Array.isArray(parsed)) {
-                  allFilePaths = parsed.filter((p: string) => fs.existsSync(p));
+                  for (const p of parsed) {
+                    const resolvedPath = await resolvePath(p);
+                    if (fs.existsSync(resolvedPath)) {
+                      allFilePaths.push(resolvedPath);
+                    }
+                  }
                 }
               } catch {}
             }
@@ -594,10 +600,10 @@ export function registerAssessmentHandlers(): void {
                 try {
                   const ext = path.extname(imgPath).toLowerCase().replace('.', '');
                   const excelExt = ext === 'jpg' ? 'jpeg' : ext;
-                  
+
                   const colIndex = 5;
                   const rowOffset = imgIdx * ((maxImgHeight + padding) / rowHeightPx);
-                  
+
                   const imageId = workbook.addImage({
                     filename: imgPath,
                     extension: excelExt as any,
@@ -616,7 +622,7 @@ export function registerAssessmentHandlers(): void {
             if (nonImagePaths.length > 0) {
               const evidenceCell = dataRow.getCell(6);
               const baseText = evidenceCell.value || '';
-              
+
               let currentRowIdx = 0;
               nonImagePaths.forEach((p, idx) => {
                 const fileName = p.split('\\').pop()?.split('/').pop() || p;
@@ -624,7 +630,7 @@ export function registerAssessmentHandlers(): void {
                 const typeLabel = ext === 'pdf' ? 'PDF' : ext === 'doc' || ext === 'docx' ? 'Word' : ext === 'xls' || ext === 'xlsx' ? 'Excel' : ext === 'md' || ext === 'txt' ? '文本' : '文件';
                 const displayText = `📎 ${typeLabel}: ${fileName}`;
                 const fileUrl = 'file:///' + p.replace(/\\/g, '/');
-                
+
                 if (idx === 0 && baseText) {
                   evidenceCell.value = {
                     richText: [
@@ -648,10 +654,10 @@ export function registerAssessmentHandlers(): void {
                     } as any;
                   }
                 }
-                
+
                 currentRowIdx++;
               });
-              
+
               evidenceCell.alignment = { wrapText: true, vertical: 'middle', horizontal: 'left' };
             }
 
@@ -730,7 +736,20 @@ export function registerAssessmentHandlers(): void {
         'security_construction': '安全建设管理',
         'security_maintenance': '安全运维管理',
       };
-      
+
+      const DOMAIN_SHEETS = [
+        { domain: 'secure_physical', sheetName: '安全物理环境' },
+        { domain: 'secure_communication', sheetName: '安全通信网络' },
+        { domain: 'secure_boundary', sheetName: '安全区域边界' },
+        { domain: 'secure_computing', sheetName: '安全计算环境' },
+        { domain: 'secure_management', sheetName: '安全管理中心' },
+        { domain: 'security_management', sheetName: '安全管理制度' },
+        { domain: 'security_organization', sheetName: '安全管理机构' },
+        { domain: 'security_personnel', sheetName: '安全管理人员' },
+        { domain: 'security_construction', sheetName: '安全建设管理' },
+        { domain: 'security_maintenance', sheetName: '安全运维管理' },
+      ];
+
       const EXTENSION_GROUPS = [
         { key: 'general', label: '安全通用要求' },
         { key: 'cloud', label: '云计算安全扩展要求' },
@@ -884,7 +903,12 @@ export function registerAssessmentHandlers(): void {
               try {
                 const parsed = JSON.parse(record.screenshotPaths);
                 if (Array.isArray(parsed)) {
-                  allFilePaths = parsed.filter((p: string) => fs.existsSync(p));
+                  for (const p of parsed) {
+                    const resolvedPath = await resolvePath(p);
+                    if (fs.existsSync(resolvedPath)) {
+                      allFilePaths.push(resolvedPath);
+                    }
+                  }
                 }
               } catch {}
             }
@@ -1028,40 +1052,73 @@ export function registerAssessmentHandlers(): void {
         worksheet.getRow(1).height = 28;
       }
       
+      // 安全计算环境资产排序优先级
+      const ASSET_TYPE_ORDER = [
+        'network_device',    // 网络设备
+        'security_device',   // 安全设备
+        'server_storage',    // 服务器
+        'dbms',              // 数据库
+        'management_platform', // 系统管理平台
+        'business_app',      // 应用系统
+        'terminal',           // 终端
+        'data_resource',      // 数据资源
+        'data_category',      // 数据分类
+      ];
+
       let assets: any[] = [];
-      
-      // 1. 导出全局测评层面
-      if (domainIds && domainIds.length > 0) {
-        for (const domainId of domainIds) {
-          const sheetName = `${DOMAIN_NAMES[domainId] || domainId}_全局层面`;
-          await addSheet(sheetName, domainId, globalRecordMap);
-        }
-      }
-      
-      // 2. 导出资产相关测评记录
+
+      // 收集需要导出的资产，并按领域分组
       if (assetIds && assetIds.length > 0) {
         assets = await db.query.assets.findMany({
           where: inArray(schema.assets.id, assetIds),
         });
-        
-        // 按资产ID建立记录映射
-        const assetRecordMaps = new Map<string, Map<string, any>>();
-        for (const asset of assets) {
+      }
+
+      // 按领域分组资产，并按 ASSET_TYPE_ORDER 排序
+      const domainAssetsMap = new Map<string, any[]>();
+      for (const asset of assets) {
+        const domainId = CATEGORY_TO_DOMAIN[asset.category] || 'secure_computing';
+        if (!domainAssetsMap.has(domainId)) {
+          domainAssetsMap.set(domainId, []);
+        }
+        domainAssetsMap.get(domainId)!.push(asset);
+      }
+      // 对每个领域内的资产按类型排序
+      for (const [, assetsInDomain] of domainAssetsMap) {
+        assetsInDomain.sort((a, b) => {
+          const orderA = ASSET_TYPE_ORDER.indexOf(a.category);
+          const orderB = ASSET_TYPE_ORDER.indexOf(b.category);
+          return (orderA === -1 ? 999 : orderA) - (orderB === -1 ? 999 : orderB);
+        });
+      }
+
+      // 按领域顺序遍历：每个领域先导出全局层面，再按资产类型顺序导出该领域的资产
+      for (const { domain: domainKey } of DOMAIN_SHEETS) {
+        // 判断是否需要导出该领域
+        const hasGlobalData = !domainIds || domainIds.length === 0 || domainIds.includes(domainKey);
+        const hasAssetData = domainAssetsMap.has(domainKey);
+
+        if (!hasGlobalData && !hasAssetData) continue;
+
+        // 1. 导出全局层面
+        if (hasGlobalData) {
+          const sheetName = `${DOMAIN_NAMES[domainKey] || domainKey}_全局层面`;
+          await addSheet(sheetName, domainKey, globalRecordMap);
+        }
+
+        // 2. 导出该领域的资产（按资产类型排序）
+        const assetsInDomain = domainAssetsMap.get(domainKey) || [];
+        for (const asset of assetsInDomain) {
+          const domainId = CATEGORY_TO_DOMAIN[asset.category] || 'secure_computing';
+          const domainName = DOMAIN_NAMES[domainId] || domainId;
           const assetRecords = allRecords.filter(r => r.assetId === asset.id);
           const recordMap = new Map<string, any>();
           assetRecords.forEach(r => recordMap.set(r.itemId, r));
-          assetRecordMaps.set(asset.id, recordMap);
-        }
-        
-        for (const asset of assets) {
-          const domainId = CATEGORY_TO_DOMAIN[asset.category] || 'secure_computing';
-          const domainName = DOMAIN_NAMES[domainId] || domainId;
-          const recordMap = assetRecordMaps.get(asset.id) || new Map<string, any>();
           const sheetName = `${domainName}_${asset.name}`;
           await addSheet(sheetName, domainId, recordMap);
         }
       }
-      
+
       // 检查是否有数据可导出
       if (workbook.worksheets.length === 0) {
         return { success: false, error: { message: '没有可导出的数据' } };

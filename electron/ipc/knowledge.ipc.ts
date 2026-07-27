@@ -7,6 +7,7 @@ import { eq, and, like, or } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { getAppDataPath } from '../main/paths';
 import { wrap } from '../utils/ipc-wrapper';
+import { toRelativePath, resolvePath } from '../utils/path-resolver';
 
 const MAX_EXCEL_SIZE = 50 * 1024 * 1024;
 const MAX_EXCEL_ROWS = 10000;
@@ -346,7 +347,8 @@ export function registerKnowledgeHandlers(): void {
       const buffer = Buffer.from(fileInfo.data);
       fs.writeFileSync(filePath, buffer);
 
-      return { filePath, fileName };
+      const relativePath = await toRelativePath(filePath);
+      return { filePath: relativePath, fileName };
     }));
 
   // 上传文档（将文件复制到上传目录并创建数据库记录）
@@ -376,6 +378,8 @@ export function registerKnowledgeHandlers(): void {
       const destPath = path.join(uploadDir, fileName);
       fs.copyFileSync(srcPath, destPath);
 
+      const relativePath = await toRelativePath(destPath);
+
       const db = getDb();
       const id = randomUUID();
       const now = new Date().toISOString();
@@ -387,7 +391,7 @@ export function registerKnowledgeHandlers(): void {
         description: description || '',
         version: version || '1.0',
         tags: tags || '',
-        filePath: destPath,
+        filePath: relativePath,
         uploadDate: now,
         createdAt: now,
         updatedAt: now,
@@ -398,16 +402,18 @@ export function registerKnowledgeHandlers(): void {
 
   // 读取文件内容
   ipcMain.handle('knowledge:readFile', wrap(async (_event, filePath: string) => {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      return { content, fileName: path.basename(filePath) };
+      const resolvedPath = await resolvePath(filePath);
+      const content = fs.readFileSync(resolvedPath, 'utf-8');
+      return { content, fileName: path.basename(resolvedPath) };
     }));
 
-  // 删除上传的文件
-  ipcMain.handle('knowledge:deleteFile', wrap(async (_event, filePath: string) => {
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    }));
+    // 删除上传的文件
+    ipcMain.handle('knowledge:deleteFile', wrap(async (_event, filePath: string) => {
+        const resolvedPath = await resolvePath(filePath);
+        if (fs.existsSync(resolvedPath)) {
+          fs.unlinkSync(resolvedPath);
+        }
+      }));
 
   // 获取知识库统计
   ipcMain.handle('knowledge:getStats', wrap(async () => {
@@ -474,14 +480,18 @@ export function registerKnowledgeHandlers(): void {
       if (!doc) {
         throw new Error('文档不存在');
       }
-      if (!doc.filePath || !fs.existsSync(doc.filePath)) {
+      if (!doc.filePath) {
+        throw new Error('文档文件路径为空');
+      }
+      const resolvedPath = await resolvePath(doc.filePath);
+      if (!fs.existsSync(resolvedPath)) {
         throw new Error('文档文件不存在');
       }
-      return { path: doc.filePath, title: doc.title };
+      return { path: resolvedPath, title: doc.title };
     }));
 
-  // 下载并保存文档（复制到用户选择的位置）
-  ipcMain.handle('knowledge:downloadAndSave', wrap(async (_event, id: string) => {
+    // 下载并保存文档（复制到用户选择的位置）
+    ipcMain.handle('knowledge:downloadAndSave', wrap(async (_event, id: string) => {
       const db = getDb();
       const result = await db.select().from(schema.knowledgeDocuments)
         .where(eq(schema.knowledgeDocuments.id, id)).limit(1);
@@ -489,11 +499,15 @@ export function registerKnowledgeHandlers(): void {
       if (!doc) {
         throw new Error('文档不存在');
       }
-      if (!doc.filePath || !fs.existsSync(doc.filePath)) {
+      if (!doc.filePath) {
+        return { saved: false };
+      }
+      const resolvedPath = await resolvePath(doc.filePath);
+      if (!fs.existsSync(resolvedPath)) {
         return { saved: false };
       }
       const { dialog } = await import('electron');
-      const ext = path.extname(doc.filePath);
+      const ext = path.extname(resolvedPath);
       const defaultName = `${doc.title}${ext}`;
       const result2 = await dialog.showSaveDialog({
         defaultPath: defaultName,
@@ -502,7 +516,7 @@ export function registerKnowledgeHandlers(): void {
       if (result2.canceled || !result2.filePath) {
         return { saved: false };
       }
-      fs.copyFileSync(doc.filePath, result2.filePath);
+      fs.copyFileSync(resolvedPath, result2.filePath);
       return { saved: true, path: result2.filePath };
     }));
 

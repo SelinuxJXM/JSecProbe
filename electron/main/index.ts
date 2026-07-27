@@ -10,6 +10,7 @@ import { getDefaultBasePath } from './paths';
 import { checkAndPerformAutoBackup } from '../services/backup.service';
 import { createTray, destroyTray } from './tray';
 import { initAutoUpdater } from '../services/update.service';
+import { migrateAllPaths } from '../utils/path-migration';
 
 logger.setProductionMode(app.isPackaged);
 log.transports.file.level = 'info';
@@ -41,6 +42,7 @@ async function initializeApp() {
   try {
     cleanupLockFile();
     await initDatabase();
+    await migrateAllPaths();
     registerIpcHandlers();
   } catch (error: any) {
     log.error('应用初始化失败:', error);
