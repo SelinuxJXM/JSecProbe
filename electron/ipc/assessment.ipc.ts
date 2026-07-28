@@ -277,11 +277,30 @@ export function registerAssessmentHandlers(): void {
         domainItemCounts[item.domain] = (domainItemCounts[item.domain] || 0) + 1;
       }
 
-      // 总项数 = 每个层面的（资产数 × 该层面测评项数）之和
+      // 全局层面列表（这些层面没有对应资产，但测评项需要计入总项数）
+      const GLOBAL_DOMAINS = [
+        'secure_communication',
+        'secure_management',
+        'security_management',
+        'security_organization',
+        'security_personnel',
+        'security_construction',
+        'security_maintenance',
+      ];
+
+      // 总项数 = 每个层面的（资产数 × 该层面测评项数）之和 + 全局层面的测评项数
       let total = 0;
       for (const [domainId, assetCount] of Object.entries(domainAssetCounts)) {
         const itemCount = domainItemCounts[domainId] || 0;
         total += assetCount * itemCount;
+      }
+
+      // 加上全局层面的测评项数量（全局层面无资产，直接累加）
+      for (const domainId of GLOBAL_DOMAINS) {
+        const itemCount = domainItemCounts[domainId] || 0;
+        if (itemCount > 0 && !domainAssetCounts[domainId]) {
+          total += itemCount;
+        }
       }
 
       // 构建适用范围条件（用于子查询过滤itemId）
