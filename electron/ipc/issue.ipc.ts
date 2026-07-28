@@ -462,7 +462,7 @@ export function registerIssueHandlers(): void {
         .where(and(
           eq(schema.assessmentRecords.projectId, projectId),
           inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-          sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform')`
+          sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'notapplicable')`
         ));
 
       const compliantRecords = await db
@@ -480,7 +480,7 @@ export function registerIssueHandlers(): void {
         .where(and(
           eq(schema.assessmentRecords.projectId, projectId),
           inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-          sql`result = 'not_applicable'`
+          sql`result = 'notapplicable'`
         ));
 
       const tested = testedRecords[0]?.value || 0;

@@ -325,7 +325,7 @@ export function registerAssessmentHandlers(): void {
         .where(and(
           eq(schema.assessmentRecords.projectId, projectId),
           inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-          sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'not_applicable')`
+          sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'notapplicable')`
         ));
 
       // 符合：结果为符合（不包含部分符合）
@@ -345,7 +345,7 @@ export function registerAssessmentHandlers(): void {
         .where(and(
           eq(schema.assessmentRecords.projectId, projectId),
           inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-          sql`result = 'not_applicable'`
+          sql`result = 'notapplicable'`
         ));
 
       const tested = testedRecords[0]?.value || 0;
