@@ -351,7 +351,7 @@ export function registerAssessmentHandlers(): void {
       const tested = testedRecords[0]?.value || 0;
       const compliant = compliantRecords[0]?.value || 0;
       const na = naRecords[0]?.value || 0;
-      const complianceRate = (tested + na) > 0 ? Math.round((compliant / (tested + na)) * 100) : 0;
+      const complianceRate = tested > 0 ? Math.round((compliant / tested) * 100) : 0;
 
       return {
         total,
