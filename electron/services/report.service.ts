@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, desc, sql } from 'drizzle-orm';
+import { eq, desc, sql, and, or, lte, inArray, count } from 'drizzle-orm';
 import {
   Document,
   Paragraph,
@@ -100,14 +100,8 @@ export class ReportService {
     }
     const domainStats = Object.entries(domainCounts).map(([name, count]) => ({ name, count }));
 
-    const stats = await db.select({
-      total: sql<number>`count(*)`,
-      compliant: sql<number>`sum(case when ${schema.assessmentRecords.result} IN ('compliant', 'conform') then 1 else 0 end)`,
-      nonCompliant: sql<number>`sum(case when ${schema.assessmentRecords.result} IN ('non_compliant', 'nonconform') then 1 else 0 end)`,
-      partial: sql<number>`sum(case when ${schema.assessmentRecords.result} = 'partial' then 1 else 0 end)`,
-      notApplicable: sql<number>`sum(case when ${schema.assessmentRecords.result} = 'notapplicable' then 1 else 0 end)`,
-      untested: sql<number>`sum(case when ${schema.assessmentRecords.result} = 'untested' then 1 else 0 end)`,
-    }).from(schema.assessmentRecords).where(eq(schema.assessmentRecords.projectId, projectId));
+    // 获取测评指标统计数据（与现场核查页面保持一致）
+    const assessmentStats = await this.getAssessmentStats(projectId, project?.standardId || 'gb-t-22239-2019-l3');
 
     return {
       project,
@@ -125,7 +119,187 @@ export class ReportService {
         domainStats,
       },
       assets,
-      assessmentStats: stats[0] || { total: 0, compliant: 0, nonCompliant: 0, partial: 0 },
+      assessmentStats,
+    };
+  }
+
+  /**
+   * 获取测评指标统计数据（与现场核查页面 getProgress 保持一致）
+   */
+  private async getAssessmentStats(projectId: string, standardId: string): Promise<any> {
+    const db = getDb();
+
+    const EXT_TYPE_MAP: Record<string, string> = {
+      '安全通用要求': 'general',
+      '云计算安全扩展要求': 'cloud',
+      '移动互联安全扩展要求': 'mobile',
+      '物联网安全扩展要求': 'iot',
+      '工业控制系统安全扩展要求': 'industrial',
+      '大数据安全扩展要求': 'bigdata',
+      '大数据安全扩展要求（国标附录）': 'bigdata',
+      '关键信息基础设施安全扩展要求': 'cii',
+    };
+
+    const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
+    if (!project) {
+      return { total: 0, compliant: 0, nonCompliant: 0, partial: 0, notApplicable: 0, untested: 0, tested: 0 };
+    }
+
+    const projectExtCodes: string[] = [];
+    if (project.extensionType) {
+      for (const t of project.extensionType.split(',').filter(Boolean)) {
+        const code = EXT_TYPE_MAP[t.trim()] || t.trim();
+        if (!projectExtCodes.includes(code)) projectExtCodes.push(code);
+      }
+    }
+
+    const extOrConditions = [eq(schema.assessmentItems.extensionType, 'general')];
+    for (const ext of projectExtCodes) {
+      extOrConditions.push(eq(schema.assessmentItems.extensionType, ext));
+    }
+    const extOr = or(...extOrConditions);
+
+    // 按资产统计总项数
+    const assets = await db.query.assets.findMany({
+      where: and(
+        eq(schema.assets.projectId, projectId),
+        eq(schema.assets.isAssessmentTarget, 1),
+      ),
+    });
+
+    const CATEGORY_TO_DOMAIN: Record<string, string> = {
+      'server_storage': 'secure_computing',
+      'sys_doc': 'secure_computing',
+      'network_device': 'secure_computing',
+      'security_device': 'secure_computing',
+      'business_app': 'secure_computing',
+      'terminal': 'secure_computing',
+      'management_platform': 'secure_computing',
+      'machine_room': 'secure_physical',
+      'data_resource': 'secure_computing',
+      'network_boundary': 'secure_boundary',
+      'data_category': 'secure_computing',
+    };
+    const domainAssetCounts: Record<string, number> = {};
+    for (const asset of assets) {
+      const domainId = CATEGORY_TO_DOMAIN[asset.category] || 'secure_computing';
+      domainAssetCounts[domainId] = (domainAssetCounts[domainId] || 0) + 1;
+    }
+
+    const globalItems = await db.query.assessmentItems.findMany({
+      where: and(
+        eq(schema.assessmentItems.standardId, standardId),
+        extOr,
+        ...(project.level ? [lte(schema.assessmentItems.minLevel, project.level)] : [])
+      ),
+      columns: { domain: true },
+    });
+
+    const domainItemCounts: Record<string, number> = {};
+    for (const item of globalItems) {
+      domainItemCounts[item.domain] = (domainItemCounts[item.domain] || 0) + 1;
+    }
+
+    const GLOBAL_DOMAINS = [
+      'secure_communication',
+      'secure_management',
+      'security_management',
+      'security_organization',
+      'security_personnel',
+      'security_construction',
+      'security_maintenance',
+    ];
+
+    let total = 0;
+    for (const [domainId, assetCount] of Object.entries(domainAssetCounts)) {
+      const itemCount = domainItemCounts[domainId] || 0;
+      total += assetCount * itemCount;
+    }
+
+    for (const domainId of GLOBAL_DOMAINS) {
+      const itemCount = domainItemCounts[domainId] || 0;
+      total += itemCount;
+    }
+
+    // 构建适用范围条件（用于子查询过滤itemId）
+    const applicableConditions = [
+      eq(schema.assessmentItems.standardId, standardId),
+      extOr,
+    ];
+    if (project.level) {
+      applicableConditions.push(lte(schema.assessmentItems.minLevel, project.level));
+    }
+
+    const itemIdsSubquery = db
+      .select({ id: schema.assessmentItems.id })
+      .from(schema.assessmentItems)
+      .where(and(...applicableConditions));
+
+    // 已测评
+    const testedRecords = await db
+      .select({ value: count() })
+      .from(schema.assessmentRecords)
+      .where(and(
+        eq(schema.assessmentRecords.projectId, projectId),
+        inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
+        sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'notapplicable')`
+      ));
+
+    // 符合
+    const compliantRecords = await db
+      .select({ value: count() })
+      .from(schema.assessmentRecords)
+      .where(and(
+        eq(schema.assessmentRecords.projectId, projectId),
+        inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
+        sql`result IN ('compliant', 'conform')`
+      ));
+
+    // 部分符合
+    const partialRecords = await db
+      .select({ value: count() })
+      .from(schema.assessmentRecords)
+      .where(and(
+        eq(schema.assessmentRecords.projectId, projectId),
+        inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
+        sql`result = 'partial'`
+      ));
+
+    // 不符合
+    const nonCompliantRecords = await db
+      .select({ value: count() })
+      .from(schema.assessmentRecords)
+      .where(and(
+        eq(schema.assessmentRecords.projectId, projectId),
+        inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
+        sql`result IN ('non_compliant', 'nonconform')`
+      ));
+
+    // 不适用
+    const naRecords = await db
+      .select({ value: count() })
+      .from(schema.assessmentRecords)
+      .where(and(
+        eq(schema.assessmentRecords.projectId, projectId),
+        inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
+        sql`result = 'notapplicable'`
+      ));
+
+    const tested = testedRecords[0]?.value || 0;
+    const compliant = compliantRecords[0]?.value || 0;
+    const partial = partialRecords[0]?.value || 0;
+    const nonCompliant = nonCompliantRecords[0]?.value || 0;
+    const notApplicable = naRecords[0]?.value || 0;
+    const untested = Math.max(0, total - tested - notApplicable);
+
+    return {
+      total,
+      tested,
+      compliant,
+      partial,
+      nonCompliant,
+      notApplicable,
+      untested,
     };
   }
 
@@ -790,8 +964,16 @@ export class ReportService {
     const { summary, assessmentStats } = data;
     const paragraphs: string[] = [];
 
+    const totalItems = assessmentStats.total || 0;
+    const compliant = assessmentStats.compliant || 0;
+    const partial = assessmentStats.partial || 0;
+    const nonCompliant = assessmentStats.nonCompliant || 0;
+    const notApplicable = assessmentStats.notApplicable || 0;
+    const untested = assessmentStats.untested || 0;
+    const tested = assessmentStats.tested || 0;
+
     paragraphs.push(
-      `经过全面测评，该系统在${summary.total === 0 ? '各安全域均表现良好' : '部分安全域存在安全问题'}。本次测评共涉及${assessmentStats.total || '若干'}项测评指标，其中符合${assessmentStats.compliant || 0}项、部分符合${assessmentStats.partial || 0}项、不符合${assessmentStats.nonCompliant || 0}项。`
+      `经过全面测评，该系统在${summary.total === 0 ? '各安全域均表现良好' : '部分安全域存在安全问题'}。本次测评共涉及${totalItems || '若干'}项测评指标，其中已测评${tested}项（符合${compliant}项、部分符合${partial}项、不符合${nonCompliant}项、不适用${notApplicable}项），未测评${untested}项。`
     );
 
     if (summary.highRisk > 0) {
