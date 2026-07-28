@@ -324,7 +324,7 @@ export class ReportService {
         spacing: { after: 200 },
         children: [
           new TextRun({
-            text: `本次测评共发现安全问题${summary.total}个，其中高风险问题${summary.highRisk}个、中风险问题${summary.mediumRisk}个、低风险问题${summary.lowRisk}个。系统整体合规率为${summary.complianceRate}%。`,
+            text: `本次测评共发现安全问题${summary.total}个，其中高风险问题${summary.highRisk}个、中风险问题${summary.mediumRisk}个、低风险问题${summary.lowRisk}个。`,
             font: 'SimSun',
             size: 24,
           }),
@@ -813,7 +813,7 @@ export class ReportService {
     }
 
     paragraphs.push(
-      `综合来看，该系统安全防护水平${summary.complianceRate >= 80 ? '较高' : summary.complianceRate >= 60 ? '一般' : '有待提升'}，整体合规率为${summary.complianceRate}%。建议按照本报告提出的整改建议，有计划、有步骤地开展安全整改工作，持续提升系统安全防护能力。`
+      `综合来看，该系统安全防护水平有待进一步提升。建议按照本报告提出的整改建议，有计划、有步骤地开展安全整改工作，持续提升系统安全防护能力。`,
     );
 
     return paragraphs;
@@ -827,7 +827,6 @@ export class ReportService {
     const highRiskPct = summary.total > 0 ? ((summary.highRisk / summary.total) * 100).toFixed(1) : '0';
     const mediumRiskPct = summary.total > 0 ? ((summary.mediumRisk / summary.total) * 100).toFixed(1) : '0';
     const lowRiskPct = summary.total > 0 ? ((summary.lowRisk / summary.total) * 100).toFixed(1) : '0';
-    const complianceRate = summary.complianceRate || 0;
 
     // 统计各安全域问题分布
     const domainIssueMap: Record<string, number> = {};
@@ -1001,7 +1000,7 @@ export class ReportService {
 
     // 7.5 整改规划（基于问题数量动态调整编号）
     const planContent: string[] = [];
-    planContent.push(`根据本次测评结果，系统整体合规率为${complianceRate}%，共发现安全问题${summary.total}个。为有序开展整改工作，建议按照以下规划分阶段实施：`);
+    planContent.push(`根据本次测评结果，共发现安全问题${summary.total}个。为有序开展整改工作，建议按照以下规划分阶段实施：`);
     planContent.push('');
     planContent.push('第一阶段：立即整改（0-30个工作日）');
     if (summary.highRisk > 0) {
@@ -1257,7 +1256,7 @@ export class ReportService {
       html += `
     <h2>一、报告概述</h2>
     <p>本报告依据GB/T 22239-2019《信息安全技术 网络安全等级保护基本要求》对${project?.systemName || '该系统'}进行等级保护测评。测评工作于${project?.startDate || '近期'}至${project?.endDate || '近期'}进行，涵盖了安全物理环境、安全通信网络、安全区域边界、安全计算环境、安全管理中心、安全管理制度、安全管理机构、安全管理人员、安全建设管理、安全运维管理等十个安全域。</p>
-    <p>本次测评共发现安全问题${summary.total}个，其中高风险问题${summary.highRisk}个、中风险问题${summary.mediumRisk}个、低风险问题${summary.lowRisk}个。系统整体合规率为${summary.complianceRate}%。</p>
+    <p>本次测评共发现安全问题${summary.total}个，其中高风险问题${summary.highRisk}个、中风险问题${summary.mediumRisk}个、低风险问题${summary.lowRisk}个。</p>
     <div class="page-break"></div>`;
     }
 
