@@ -4,7 +4,7 @@ export const ASSET_CATEGORY_NAMES: Record<string, string> = {
   network_device: '网络设备',
   security_device: '安全设备',
   server_storage: '服务器/存储设备',
-  dbms: '数据库管理系统',
+  sys_doc: '系统管理文档',
   management_platform: '系统管理平台',
   business_app: '业务应用系统',
   terminal: '业务终端/运维终端',
@@ -72,14 +72,11 @@ export const ASSET_COLUMNS_MAP: Record<string, { header: string; key: string; wi
     { header: '重要程度', key: 'importance', width: 12 },
     { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
   ],
-  dbms: [
+  sys_doc: [
     { header: '序号', key: 'index', width: 8 },
-    { header: '数据库名称', key: 'name', width: 25 },
-    { header: '所在设备名称', key: 'os', width: 25 },
-    { header: '类型/版本', key: 'deviceUsage', width: 20 },
-    { header: '数量', key: 'quantity', width: 8 },
+    { header: '文档名称', key: 'name', width: 25 },
+    { header: '文档主要内容', key: 'os', width: 30 },
     { header: '备注', key: 'description', width: 40 },
-    { header: '重要程度', key: 'importance', width: 12 },
     { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
   ],
   management_platform: [
@@ -126,8 +123,8 @@ export const ASSET_COLUMNS_MAP: Record<string, { header: string; key: string; wi
 
 export const ASSET_CATEGORY_ORDER = [
   'machine_room', 'network_boundary', 'network_device', 'security_device',
-  'server_storage', 'dbms', 'management_platform', 'business_app',
-  'terminal', 'data_resource',
+  'server_storage', 'management_platform', 'business_app',
+  'terminal', 'data_resource', 'sys_doc',
 ] as const;
 
 export const ASSET_EXAMPLE_DATA: Record<string, Record<string, any>[]> = {
@@ -151,9 +148,9 @@ export const ASSET_EXAMPLE_DATA: Record<string, Record<string, any>[]> = {
     { name: '应用服务器', isVirtual: '是', os: 'CentOS 7.9', dbSystem: '', middleware: 'Tomcat 9.0', quantity: 4, ip: '172.16.1.10', description: 'Web应用服务器', importance: '关键', isAssessmentTarget: '是' },
     { name: '数据库服务器', isVirtual: '否', os: 'RedHat 8.4', dbSystem: 'Oracle 19c', middleware: '', quantity: 2, ip: '172.16.1.20', description: '核心数据库服务器', importance: '关键', isAssessmentTarget: '是' },
   ],
-  dbms: [
-    { name: 'Oracle数据库', os: '数据库服务器', deviceUsage: '关系型数据库/19c', quantity: 1, description: '核心业务数据库', importance: '关键', isAssessmentTarget: '是' },
-    { name: 'MySQL数据库', os: '应用服务器', deviceUsage: '关系型数据库/8.0', quantity: 1, description: '业务支撑数据库', importance: '重要', isAssessmentTarget: '否' },
+  sys_doc: [
+    { name: '系统管理员手册', os: '系统日常运维管理', description: '包含系统维护、故障处理等流程', isAssessmentTarget: '是' },
+    { name: '安全策略文档', os: '安全策略配置与管理', description: '安全策略、访问控制等', isAssessmentTarget: '是' },
   ],
   management_platform: [
     { name: '统一安全管理平台', os: '安全管理服务器', version: 'V3.0', ip: '172.16.1.100', deviceUsage: '安全策略管理、日志审计、安全事件处置', importance: '关键', isAssessmentTarget: '是' },

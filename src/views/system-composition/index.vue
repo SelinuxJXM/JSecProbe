@@ -83,7 +83,7 @@
         header-cell-class-name="design-header-cell"
       >
         <el-table-column type="index" label="序号" width="50" align="center" />
-        <!-- 机房名称 / 边界名称 / 数据库名称 / 设备名称 -->
+        <!-- 机房名称 / 边界名称 / 文档名称 / 设备名称 -->
         <el-table-column v-if="currentCategory === 'machine_room'" label="机房名称" min-width="140">
           <template #default="{ row }">
             <el-input v-model="row.name" placeholder="机房名称" size="small" class="cell-input" @input="markModified(row)" />
@@ -94,9 +94,9 @@
             <el-input v-model="row.name" placeholder="边界名称" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory === 'dbms'" label="数据库名称" min-width="160">
+        <el-table-column v-if="currentCategory === 'sys_doc'" label="文档名称" min-width="160">
           <template #default="{ row }">
-            <el-input v-model="row.name" placeholder="数据库名称" size="small" class="cell-input" @input="markModified(row)" />
+            <el-input v-model="row.name" placeholder="文档名称" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
         <el-table-column v-if="currentCategory === 'management_platform'" label="系统名称" min-width="160">
@@ -114,13 +114,13 @@
             <el-input v-model="row.name" placeholder="数据类别" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'dbms' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="设备名称" min-width="140">
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="设备名称" min-width="140">
           <template #default="{ row }">
             <el-input v-model="row.name" placeholder="设备名称" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
         <!-- 虚拟设备 -->
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'dbms' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="虚拟设备" width="80" align="center">
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="虚拟设备" width="80" align="center">
           <template #default="{ row }">
             <el-checkbox v-model="row.isVirtual" @change="markModified(row)" />
           </template>
@@ -142,7 +142,12 @@
             <el-input v-model="row.os" placeholder="操作系统及版本" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory === 'dbms' || currentCategory === 'management_platform'" label="所在设备名称" min-width="160">
+        <el-table-column v-if="currentCategory === 'sys_doc'" label="文档主要内容" min-width="160">
+          <template #default="{ row }">
+            <el-input v-model="row.os" placeholder="文档主要内容" size="small" class="cell-input" @input="markModified(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentCategory === 'management_platform'" label="所在设备名称" min-width="160">
           <template #default="{ row }">
             <el-input v-model="row.os" placeholder="所在设备名称" size="small" class="cell-input" @input="markModified(row)" />
           </template>
@@ -162,12 +167,12 @@
             <el-input v-model="row.os" placeholder="操作系统及版本" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'network_device' && currentCategory !== 'security_device' && currentCategory !== 'server_storage' && currentCategory !== 'dbms' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'terminal'" label="操作系统" min-width="130">
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'network_device' && currentCategory !== 'security_device' && currentCategory !== 'server_storage' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'terminal'" label="操作系统" min-width="130">
           <template #default="{ row }">
             <el-input v-model="row.os" placeholder="操作系统" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <!-- 品牌及型号+设备用途（网络设备/安全设备）/ 数据库系统及版本+中间件及版本（服务器）/ 类型/版本（数据库） -->
+        <!-- 品牌及型号+设备用途（网络设备/安全设备）/ 数据库系统及版本+中间件及版本（服务器）/ 文档主要内容（系统管理文档） -->
         <el-table-column v-if="currentCategory === 'network_device' || currentCategory === 'security_device'" label="品牌及型号" min-width="140">
           <template #default="{ row }">
             <el-input v-model="row.version" placeholder="品牌及型号" size="small" class="cell-input" @input="markModified(row)" />
@@ -188,11 +193,7 @@
             <el-input v-model="row.middleware" placeholder="如 Tomcat 9.0" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory === 'dbms'" label="类型/版本" min-width="140">
-          <template #default="{ row }">
-            <el-input v-model="row.deviceUsage" placeholder="如 Oracle 19c" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
+
         <el-table-column v-if="currentCategory === 'management_platform'" label="版本" min-width="140">
           <template #default="{ row }">
             <el-input v-model="row.version" placeholder="版本" size="small" class="cell-input" @input="markModified(row)" />
@@ -208,7 +209,7 @@
             <el-input v-model="row.deviceUsage" placeholder="如 保密性、完整性" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'network_device' && currentCategory !== 'security_device' && currentCategory !== 'server_storage' && currentCategory !== 'dbms' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="设备类别/用途" min-width="140">
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'network_device' && currentCategory !== 'security_device' && currentCategory !== 'server_storage' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="设备类别/用途" min-width="140">
           <template #default="{ row }">
             <el-input v-model="row.deviceUsage" placeholder="设备用途" size="small" class="cell-input" @input="markModified(row)" />
           </template>
@@ -220,18 +221,18 @@
           </template>
         </el-table-column>
         <!-- 数量 -->
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'management_platform'" label="数量" width="70" align="center">
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'management_platform' && currentCategory !== 'sys_doc'" label="数量" width="70" align="center">
           <template #default="{ row }">
             <el-input-number v-model="row.quantity" :min="1" :max="999" size="small" controls-position="right" style="width: 68px" @change="markModified(row)" />
           </template>
         </el-table-column>
         <!-- IP地址 -->
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'dbms' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="IP地址" min-width="130">
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'sys_doc' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="IP地址" min-width="130">
           <template #default="{ row }">
             <el-input v-model="row.ip" placeholder="IP地址" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column label="重要程度" width="100" align="center">
+        <el-table-column v-if="currentCategory !== 'sys_doc'" label="重要程度" width="100" align="center">
           <template #default="{ row }">
             <el-select v-model="row.importance" size="small" style="width: 100%" @change="markModified(row)">
               <el-option label="关键" value="high" />
@@ -441,7 +442,7 @@ const CATEGORY_NAMES: Record<string, string> = {
   network_device: '网络设备',
   security_device: '安全设备',
   server_storage: '服务器/存储设备',
-  dbms: '数据库管理系统',
+  sys_doc: '系统管理文档',
   management_platform: '系统管理平台',
   business_app: '业务应用系统',
   terminal: '业务终端/运维终端',
@@ -455,7 +456,7 @@ const CATEGORY_ICONS: Record<string, string> = {
   network_device: '<rect x="2" y="14" width="20" height="6" rx="1"/><circle cx="6" cy="17" r="1"/><circle cx="12" cy="17" r="1"/><rect x="8" y="4" width="8" height="6" rx="1"/><line x1="12" y1="10" x2="12" y2="14"/>',
   security_device: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
   server_storage: '<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>',
-  dbms: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>',
+  sys_doc: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>',
   management_platform: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1.08 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1.08z"/>',
   business_app: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
   terminal: '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>',
@@ -470,7 +471,7 @@ const EDITABLE_COLUMNS: Record<string, string[]> = {
   network_device: ['name', 'isVirtual', 'os', 'version', 'deviceUsage', 'description', 'quantity', 'ip', 'importance', 'isAssessmentTarget'],
   security_device: ['name', 'isVirtual', 'os', 'version', 'deviceUsage', 'description', 'quantity', 'ip', 'importance', 'isAssessmentTarget'],
   server_storage: ['name', 'isVirtual', 'os', 'dbSystem', 'middleware', 'description', 'quantity', 'ip', 'importance', 'isAssessmentTarget'],
-  dbms: ['name', 'os', 'deviceUsage', 'description', 'quantity', 'importance', 'isAssessmentTarget'],
+  sys_doc: ['name', 'os', 'description', 'isAssessmentTarget'],
   management_platform: ['name', 'os', 'version', 'ip', 'deviceUsage', 'importance', 'isAssessmentTarget'],
   business_app: ['name', 'os', 'deviceUsage', 'description', 'ip', 'importance', 'isAssessmentTarget'],
   terminal: ['name', 'isVirtual', 'os', 'deviceUsage', 'description', 'quantity', 'ip', 'importance', 'isAssessmentTarget'],
@@ -522,7 +523,7 @@ function handlePaste(event: ClipboardEvent, row: Asset, field: string) {
         isVirtual: false,
         dbSystem: '',
         middleware: '',
-        isAssessmentTarget: true,
+        isAssessmentTarget: currentCategory.value !== 'sys_doc',
         sortOrder: 0,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -731,6 +732,7 @@ async function handleSave() {
         ...formData,
         projectId,
         category: currentCategory.value,
+        isAssessmentTarget: currentCategory.value !== 'sys_doc',
       });
       if (res.success) {
         ElMessage.success('添加成功');
@@ -763,7 +765,7 @@ function addEmptyRow() {
     isVirtual: false,
     dbSystem: '',
     middleware: '',
-    isAssessmentTarget: true,
+    isAssessmentTarget: currentCategory.value !== 'sys_doc',
   };
   modifiedRows.add(String(newRow.id));
   assetList.value.unshift(newRow);

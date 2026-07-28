@@ -379,7 +379,7 @@ const CATEGORY_TO_DOMAIN: Record<string, string> = {
   network_device: 'secure_computing',
   security_device: 'secure_computing',
   server_storage: 'secure_computing',
-  dbms: 'secure_computing',
+  sys_doc: 'secure_computing',
   business_app: 'secure_computing',
   terminal: 'secure_computing',
   data_resource: 'secure_computing',
@@ -392,7 +392,7 @@ const CATEGORY_ORDER: Record<string, number> = {
   security_device: 2,
   server_storage: 3,
   management_platform: 4,
-  dbms: 5,
+  sys_doc: 5,
   terminal: 6,
   business_app: 7,
   data_resource: 8,
@@ -461,7 +461,7 @@ const ASSET_NA_MAPPING: Record<string, { controlPoint: string; requirement: stri
     { controlPoint: '个人信息保护', requirement: 'a）应仅采集和保存业务必需的用户个人信息；' },
     { controlPoint: '个人信息保护', requirement: 'b）应禁止未授权访问和非法使用用户个人信息。' },
   ],
-  dbms: [
+  sys_doc: [
     { controlPoint: '入侵防范', requirement: 'a）应遵循最小安装的原则，仅安装需要的组件和应用程序；' },
     { controlPoint: '入侵防范', requirement: 'b）应关闭不需要的系统服务、默认共享和高危端口；' },
     { controlPoint: '入侵防范', requirement: 'c）应通过设定终端接入方式或网络地址范围对通过网络进行管理的管理终端进行限制；' },

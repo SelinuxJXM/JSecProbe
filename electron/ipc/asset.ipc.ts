@@ -20,7 +20,7 @@ function detectCategoryFromFileName(filePath: string): string {
   if (lowerPath.includes('网络设备') || lowerPath.includes('network') || lowerPath.includes('交换机') || lowerPath.includes('路由器')) return 'network_device';
   if (lowerPath.includes('安全设备') || lowerPath.includes('security') || lowerPath.includes('防火墙')) return 'security_device';
   if (lowerPath.includes('服务器') || lowerPath.includes('server') || lowerPath.includes('存储')) return 'server_storage';
-  if (lowerPath.includes('数据库') || lowerPath.includes('dbms') || lowerPath.includes('database')) return 'dbms';
+  if (lowerPath.includes('数据库') || lowerPath.includes('sys_doc') || lowerPath.includes('document')) return 'sys_doc';
   if (lowerPath.includes('管理平台') || lowerPath.includes('management') || lowerPath.includes('平台')) return 'management_platform';
   if (lowerPath.includes('应用') || lowerPath.includes('app') || lowerPath.includes('业务系统')) return 'business_app';
   if (lowerPath.includes('终端') || lowerPath.includes('terminal') || lowerPath.includes('运维')) return 'terminal';
@@ -32,7 +32,7 @@ const ASSET_CATEGORY_SHEET_MAP: Record<string, string[]> = {
   network_device: ['安全计算环境-XX网络设备', '安全计算环境-网络设备'],
   security_device: ['安全计算环境-XX安全设备', '安全计算环境-安全设备'],
   server_storage: ['安全计算环境-XX服务器', '安全计算环境-服务器'],
-  dbms: ['安全计算环境-XX数据库', '安全计算环境-数据库'],
+  sys_doc: ['安全计算环境-XX系统管理文档', '安全计算环境-系统管理文档'],
   management_platform: ['安全计算环境-XX管理平台', '安全计算环境-管理平台'],
   business_app: ['安全计算环境-XX应用系统', '安全计算环境-应用系统'],
   terminal: ['安全计算环境-XX终端', '安全计算环境-终端'],
@@ -292,11 +292,11 @@ export function registerAssetHandlers(): void {
         { id: 'network_device', name: '网络设备', icon: 'Router' },
         { id: 'security_device', name: '安全设备', icon: 'Shield' },
         { id: 'server_storage', name: '服务器/存储设备', icon: 'Database' },
-        { id: 'dbms', name: '数据库管理系统', icon: 'HardDrive' },
         { id: 'management_platform', name: '系统管理平台', icon: 'Settings' },
         { id: 'business_app', name: '业务应用系统', icon: 'Layers' },
         { id: 'terminal', name: '业务终端/运维终端', icon: 'Monitor' },
         { id: 'data_resource', name: '数据资源', icon: 'FileData' },
+        { id: 'sys_doc', name: '系统管理文档', icon: 'HardDrive' },
       ];
 
       const categoryWithStats = ASSET_CATEGORIES.map((cat) => {
@@ -449,8 +449,8 @@ export function registerAssetHandlers(): void {
         '服务器/存储设备': 'server_storage',
         '服务器存储设备': 'server_storage',
         '服务器-存储设备': 'server_storage',
-        '数据库管理系统': 'dbms',
-        '数据库管理': 'dbms',
+        '系统管理文档': 'sys_doc',
+        '数据库管理': 'sys_doc',
         '系统管理平台': 'management_platform',
         '业务应用系统': 'business_app',
         '业务应用': 'business_app',
@@ -513,13 +513,10 @@ export function registerAssetHandlers(): void {
           { header: '重要程度', key: 'importance', width: 12 },
           { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
         ],
-        dbms: [
-          { header: '数据库名称', key: 'name', width: 25 },
-          { header: '所在设备名称', key: 'os', width: 25 },
-          { header: '类型/版本', key: 'deviceUsage', width: 20 },
-          { header: '数量', key: 'quantity', width: 8 },
+        sys_doc: [
+          { header: '文档名称', key: 'name', width: 25 },
+          { header: '文档主要内容', key: 'os', width: 30 },
           { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
           { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
         ],
         management_platform: [
@@ -721,8 +718,8 @@ export function registerAssetHandlers(): void {
             category = 'security_device';
           } else if (lowerSheetName.includes('服务器') || lowerSheetName.includes('存储')) {
             category = 'server_storage';
-          } else if (lowerSheetName.includes('数据库')) {
-            category = 'dbms';
+          } else if (lowerSheetName.includes('文档') || lowerSheetName.includes('系统管理')) {
+            category = 'sys_doc';
           } else if (lowerSheetName.includes('平台') || lowerSheetName.includes('管理')) {
             category = 'management_platform';
           } else if (lowerSheetName.includes('应用') || lowerSheetName.includes('业务')) {

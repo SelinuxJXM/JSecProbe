@@ -244,7 +244,7 @@ export function registerAssessmentHandlers(): void {
       // 按层面统计资产数量
       const CATEGORY_TO_DOMAIN: Record<string, string> = {
         'server_storage': 'secure_computing',
-        'dbms': 'secure_computing',
+        'sys_doc': 'secure_computing',
         'network_device': 'secure_computing',
         'security_device': 'secure_computing',
         'business_app': 'secure_computing',
@@ -387,7 +387,7 @@ export function registerAssessmentHandlers(): void {
       // 资产类别到安全域的映射
       const categoryDomainMap: Record<string, string[]> = {
         server_storage: ['secure_computing'],
-        dbms: ['secure_computing'],
+        sys_doc: ['secure_computing'],
         network_device: ['secure_computing'],
         security_device: ['secure_computing'],
         business_app: ['secure_computing'],
@@ -800,7 +800,7 @@ export function registerAssessmentHandlers(): void {
       
       const CATEGORY_TO_DOMAIN: Record<string, string> = {
         'server_storage': 'secure_computing',
-        'dbms': 'secure_computing',
+        'sys_doc': 'secure_computing',
         'network_device': 'secure_computing',
         'security_device': 'secure_computing',
         'business_app': 'secure_computing',
@@ -1057,7 +1057,7 @@ export function registerAssessmentHandlers(): void {
         'network_device',    // 网络设备
         'security_device',   // 安全设备
         'server_storage',    // 服务器
-        'dbms',              // 数据库
+        'sys_doc',              // 系统管理文档
         'management_platform', // 系统管理平台
         'business_app',      // 应用系统
         'terminal',           // 终端
@@ -1381,7 +1381,7 @@ export function registerAssessmentHandlers(): void {
         network_device: 'secure_computing',
         security_device: 'secure_computing',
         server_storage: 'secure_computing',
-        dbms: 'secure_computing',
+        sys_doc: 'secure_computing',
         business_app: 'secure_computing',
         terminal: 'secure_computing',
         data_resource: 'secure_computing',
