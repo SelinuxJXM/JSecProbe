@@ -88,7 +88,7 @@ export function useAutoSave(options: AutoSaveOptions) {
           commandOutput: row.evidence || '',
           evidence: row.evidence || '',
           findings: row.conclusion || '',
-          screenshotPaths: row.screenshots && row.screenshots.length > 0 ? JSON.stringify(row.screenshots) : undefined,
+          screenshotPaths: JSON.stringify(row.screenshots || []),
         };
         console.log(`[saveAllRows] 保存行: itemId=${row.itemId}, id=${row.id || 'new'}, compliance=${row.compliance}, evidence.length=${(row.evidence||'').length}, conclusion.length=${(row.conclusion||'').length}`);
 

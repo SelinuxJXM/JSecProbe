@@ -140,7 +140,7 @@ export function registerIssueHandlers(): void {
           'network_device',    // 网络设备
           'security_device',   // 安全设备
           'server_storage',    // 服务器
-          'dbms',              // 数据库
+          'sys_doc',              // 系统管理文档
           'management_platform', // 系统管理平台
           'business_app',      // 应用系统
           'terminal',           // 终端
@@ -297,7 +297,7 @@ export function registerIssueHandlers(): void {
         'network_device',    // 网络设备
         'security_device',   // 安全设备
         'server_storage',    // 服务器
-        'dbms',              // 数据库
+        'sys_doc',              // 系统管理文档
         'management_platform', // 系统管理平台
         'business_app',      // 应用系统
         'terminal',           // 终端
@@ -539,7 +539,7 @@ export function registerIssueHandlers(): void {
         'network_device',    // 网络设备
         'security_device',   // 安全设备
         'server_storage',    // 服务器
-        'dbms',              // 数据库
+        'sys_doc',              // 系统管理文档
         'management_platform', // 系统管理平台
         'business_app',      // 应用系统
         'terminal',           // 终端

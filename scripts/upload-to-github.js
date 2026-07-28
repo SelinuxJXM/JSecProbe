@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.1.0';
+const TAG = 'v2.1.1';
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,18 +57,16 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.1.0 更新内容
+    body: `## v2.1.1 更新内容
 
-- 更新系统版本号至 2.1.0
-- 新增相对路径存储机制，修复生产环境重启后文件找不到的问题
-- 新增 path-resolver.ts 路径转换工具函数
-- 新增 path-migration.ts 数据迁移工具（启动时自动迁移旧数据）
-- 修改文件上传/读取逻辑，使用相对路径存储
-- 修改测评记录导出逻辑，兼容新旧路径格式
-- 修改知识库文档逻辑，使用相对路径存储
-- 更新应用图标
+- 更新系统版本号至 2.1.1
+- 修复现场核查页面关键证据点附件删除后重启恢复的问题
+- 修复 screenshotPaths 空数组时数据库不更新的问题
+- 系统构成页面"数据库管理系统"改为"系统管理文档"
+- 系统管理文档分类移动到数据资源后面
+- 系统管理文档默认不作为测评对象
+- 内部分类 ID 从 dbms 改为 sys_doc
 - 清理未使用的代码和依赖
-- 修复 TypeScript 类型错误
     `,
     draft: false,
     prerelease: false,
