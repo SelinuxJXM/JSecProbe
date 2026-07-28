@@ -643,7 +643,7 @@ async function handleExportCommand(command: string) {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 6px 10px 6px 32px;
+        padding: 6px 10px 6px 10px;
         cursor: pointer;
         border-radius: 4px;
         transition: background 0.15s;
