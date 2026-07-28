@@ -6,6 +6,8 @@ node_modules
 dist
 dist-electron
 dist-renderer
+dist_tmp
+dist_final
 release
 release_app
 
