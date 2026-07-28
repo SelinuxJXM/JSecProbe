@@ -318,14 +318,14 @@ export function registerAssessmentHandlers(): void {
         .from(schema.assessmentItems)
         .where(and(...applicableConditions));
 
-      // 已测评：有记录且结果为已判定（符合/部分符合/不符合）
+      // 已测评：有记录且结果为已判定（符合/部分符合/不符合/不适用）
       const testedRecords = await db
         .select({ value: count() })
         .from(schema.assessmentRecords)
         .where(and(
           eq(schema.assessmentRecords.projectId, projectId),
           inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-          sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform')`
+          sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'not_applicable')`
         ));
 
       // 符合：结果为符合（不包含部分符合）
