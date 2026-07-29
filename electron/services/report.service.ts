@@ -1,4 +1,4 @@
-import * as path from 'path';
+﻿import * as path from 'path';
 import * as fs from 'fs';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
@@ -25,6 +25,145 @@ import {
 } from 'docx';
 import { getMainWindow } from '../main';
 import { ASSET_CATEGORY_NAMES } from '../utils/excel-config';
+
+// 字体配置常量
+const FONT_CN = 'STFangsong';
+const FONT_EN = 'Times New Roman';
+
+// 字号常量（半磅值）
+const SIZE_BODY = 24;      // 12pt
+const SIZE_HEADING1 = 36;  // 18pt
+const SIZE_HEADING2 = 30;  // 15pt
+const SIZE_HEADING3 = 26;  // 13pt
+const SIZE_SMALL = 22;     // 11pt
+const SIZE_TABLE = 20;     // 10pt
+
+// 行距常量（twips）
+const LINE_SPACING = 360;  // 1.5倍行距
+const INDENT_FIRST_LINE = 480;  // 首行缩进2字符
+
+/**
+ * 创建中西文混合字体的 TextRun
+ * 中文使用华文仿宋，英文和数字使用 Times New Roman
+ */
+function createMixedFontRun(text: string, options: {
+  size?: number;
+  bold?: boolean;
+  color?: string;
+  italics?: boolean;
+}): TextRun {
+  return new TextRun({
+    text,
+    size: options.size ?? SIZE_BODY,
+    bold: options.bold,
+    color: options.color,
+    italics: options.italics,
+    font: {
+      ascii: FONT_EN,
+      hAnsi: FONT_EN,
+      eastAsia: FONT_CN,
+      cs: FONT_EN,
+      hint: 'default',
+    },
+  });
+}
+
+/**
+ * 创建正文段落（带首行缩进）
+ */
+function createBodyParagraph(options: {
+  text: string;
+  size?: number;
+  bold?: boolean;
+  spacingBefore?: number;
+  spacingAfter?: number;
+  alignment?: (typeof AlignmentType)[keyof typeof AlignmentType];
+}): Paragraph {
+  return new Paragraph({
+    alignment: options.alignment,
+    spacing: {
+      line: LINE_SPACING,
+      before: options.spacingBefore,
+      after: options.spacingAfter,
+    },
+    indent: {
+      firstLine: INDENT_FIRST_LINE,
+    },
+    children: [
+      createMixedFontRun(options.text, {
+        size: options.size,
+        bold: options.bold,
+      }),
+    ],
+  });
+}
+
+/**
+ * * 创建标题段落（无首行缩进，段前段后间距1.5倍行距）
+ */
+function createHeadingParagraph(options: {
+  text: string;
+  level: 'heading1' | 'heading2' | 'heading3';
+  spacingBefore?: number;
+}): Paragraph {
+  const sizeMap = {
+    heading1: SIZE_HEADING1,
+    heading2: SIZE_HEADING2,
+    heading3: SIZE_HEADING3,
+  };
+
+  const headingMap = {
+    heading1: HeadingLevel.HEADING_1,
+    heading2: HeadingLevel.HEADING_2,
+    heading3: HeadingLevel.HEADING_3,
+  };
+
+  return new Paragraph({
+    heading: headingMap[options.level],
+    spacing: {
+      line: LINE_SPACING,
+      before: options.spacingBefore ?? LINE_SPACING,
+      after: LINE_SPACING,
+    },
+    children: [
+      createMixedFontRun(options.text, {
+        size: sizeMap[options.level],
+        bold: true,
+      }),
+    ],
+  });
+}
+
+/**
+ * * 创建表格单元格内的 TextRun（无首行缩进）
+ */
+function createTableTextRun(text: string, options: {
+  size?: number;
+  bold?: boolean;
+  color?: string;
+} = {}): TextRun {
+  return createMixedFontRun(text, {
+    size: options.size ?? SIZE_TABLE,
+    bold: options.bold,
+    color: options.color,
+  });
+}
+
+/**
+ * * 创建表格单元格段落（无首行缩进，1.5倍行距）
+ */
+function createTableParagraph(text: string, options: {
+  size?: number;
+  bold?: boolean;
+  color?: string;
+  alignment?: (typeof AlignmentType)[keyof typeof AlignmentType];
+} = {}): Paragraph {
+  return new Paragraph({
+    alignment: options.alignment,
+    spacing: { line: LINE_SPACING },
+    children: [createTableTextRun(text, options)],
+  });
+}
 
 const DOMAIN_ID_TO_NAME: Record<string, string> = {
   'secure_physical': '安全物理环境',
@@ -100,7 +239,6 @@ export class ReportService {
     }
     const domainStats = Object.entries(domainCounts).map(([name, count]) => ({ name, count }));
 
-    // 获取测评指标统计数据（与现场核查页面保持一致）
     const assessmentStats = await this.getAssessmentStats(projectId, project?.standardId || 'gb-t-22239-2019-l3');
 
     return {
@@ -123,9 +261,6 @@ export class ReportService {
     };
   }
 
-  /**
-   * 获取测评指标统计数据（与现场核查页面 getProgress 保持一致）
-   */
   private async getAssessmentStats(projectId: string, standardId: string): Promise<any> {
     const db = getDb();
 
@@ -159,7 +294,6 @@ export class ReportService {
     }
     const extOr = or(...extOrConditions);
 
-    // 按资产统计总项数
     const assets = await db.query.assets.findMany({
       where: and(
         eq(schema.assets.projectId, projectId),
@@ -221,7 +355,6 @@ export class ReportService {
       total += itemCount;
     }
 
-    // 构建适用范围条件（用于子查询过滤itemId）
     const applicableConditions = [
       eq(schema.assessmentItems.standardId, standardId),
       extOr,
@@ -235,7 +368,6 @@ export class ReportService {
       .from(schema.assessmentItems)
       .where(and(...applicableConditions));
 
-    // 已测评
     const testedRecords = await db
       .select({ value: count() })
       .from(schema.assessmentRecords)
@@ -245,7 +377,6 @@ export class ReportService {
         sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'notapplicable')`
       ));
 
-    // 符合
     const compliantRecords = await db
       .select({ value: count() })
       .from(schema.assessmentRecords)
@@ -255,7 +386,6 @@ export class ReportService {
         sql`result IN ('compliant', 'conform')`
       ));
 
-    // 部分符合
     const partialRecords = await db
       .select({ value: count() })
       .from(schema.assessmentRecords)
@@ -265,7 +395,6 @@ export class ReportService {
         sql`result = 'partial'`
       ));
 
-    // 不符合
     const nonCompliantRecords = await db
       .select({ value: count() })
       .from(schema.assessmentRecords)
@@ -275,7 +404,6 @@ export class ReportService {
         sql`result IN ('non_compliant', 'nonconform')`
       ));
 
-    // 不适用
     const naRecords = await db
       .select({ value: count() })
       .from(schema.assessmentRecords)
@@ -314,20 +442,68 @@ export class ReportService {
       styles: {
         default: {
           document: {
-            run: { font: 'SimSun', size: 24 },
-            paragraph: { spacing: { line: 360 } },
+            run: {
+              font: {
+                ascii: FONT_EN,
+                hAnsi: FONT_EN,
+                eastAsia: FONT_CN,
+                cs: FONT_EN,
+                hint: 'default',
+              },
+              size: SIZE_BODY,
+            },
+            paragraph: {
+              spacing: { line: LINE_SPACING },
+              indent: { firstLine: INDENT_FIRST_LINE },
+            },
           },
           heading1: {
-            run: { font: 'SimHei', size: 36, bold: true },
-            paragraph: { spacing: { before: 400, after: 200 } },
+            run: {
+              font: {
+                ascii: FONT_EN,
+                hAnsi: FONT_EN,
+                eastAsia: FONT_CN,
+                cs: FONT_EN,
+                hint: 'default',
+              },
+              size: SIZE_HEADING1,
+              bold: true,
+            },
+            paragraph: {
+              spacing: { before: LINE_SPACING, after: LINE_SPACING, line: LINE_SPACING },
+            },
           },
           heading2: {
-            run: { font: 'SimHei', size: 30, bold: true },
-            paragraph: { spacing: { before: 300, after: 150 } },
+            run: {
+              font: {
+                ascii: FONT_EN,
+                hAnsi: FONT_EN,
+                eastAsia: FONT_CN,
+                cs: FONT_EN,
+                hint: 'default',
+              },
+              size: SIZE_HEADING2,
+              bold: true,
+            },
+            paragraph: {
+              spacing: { before: LINE_SPACING, after: LINE_SPACING, line: LINE_SPACING },
+            },
           },
           heading3: {
-            run: { font: 'SimHei', size: 26, bold: true },
-            paragraph: { spacing: { before: 200, after: 100 } },
+            run: {
+              font: {
+                ascii: FONT_EN,
+                hAnsi: FONT_EN,
+                eastAsia: FONT_CN,
+                cs: FONT_EN,
+                hint: 'default',
+              },
+              size: SIZE_HEADING3,
+              bold: true,
+            },
+            paragraph: {
+              spacing: { before: LINE_SPACING, after: LINE_SPACING, line: LINE_SPACING },
+            },
           },
         },
       },
@@ -343,8 +519,20 @@ export class ReportService {
               children: [
                 new Paragraph({
                   alignment: AlignmentType.CENTER,
+                  spacing: { line: LINE_SPACING },
                   children: [
-                    new TextRun({ text: '等级保护现场测评结果分析报告', font: 'SimSun', size: 18, color: '999999' }),
+                    new TextRun({
+                      text: '等级保护现场测评结果分析报告',
+                      font: {
+                        ascii: FONT_EN,
+                        hAnsi: FONT_EN,
+                        eastAsia: FONT_CN,
+                        cs: FONT_EN,
+                        hint: 'default',
+                      },
+                      size: 18,
+                      color: '999999',
+                    }),
                   ],
                 }),
               ],
@@ -355,12 +543,63 @@ export class ReportService {
               children: [
                 new Paragraph({
                   alignment: AlignmentType.CENTER,
+                  spacing: { line: LINE_SPACING },
                   children: [
-                    new TextRun({ text: '第 ', size: 18 }),
-                    new TextRun({ children: [PageNumber.CURRENT], size: 18 }),
-                    new TextRun({ text: ' 页 / 共 ', size: 18 }),
-                    new TextRun({ children: [PageNumber.TOTAL_PAGES], size: 18 }),
-                    new TextRun({ text: ' 页', size: 18 }),
+                    new TextRun({
+                      text: '第 ',
+                      font: {
+                        ascii: FONT_EN,
+                        hAnsi: FONT_EN,
+                        eastAsia: FONT_CN,
+                        cs: FONT_EN,
+                        hint: 'default',
+                      },
+                      size: 18,
+                    }),
+                    new TextRun({
+                      children: [PageNumber.CURRENT],
+                      font: {
+                        ascii: FONT_EN,
+                        hAnsi: FONT_EN,
+                        eastAsia: FONT_CN,
+                        cs: FONT_EN,
+                        hint: 'default',
+                      },
+                      size: 18,
+                    }),
+                    new TextRun({
+                      text: ' 页 / 共 ',
+                      font: {
+                        ascii: FONT_EN,
+                        hAnsi: FONT_EN,
+                        eastAsia: FONT_CN,
+                        cs: FONT_EN,
+                        hint: 'default',
+                      },
+                      size: 18,
+                    }),
+                    new TextRun({
+                      children: [PageNumber.TOTAL_PAGES],
+                      font: {
+                        ascii: FONT_EN,
+                        hAnsi: FONT_EN,
+                        eastAsia: FONT_CN,
+                        cs: FONT_EN,
+                        hint: 'default',
+                      },
+                      size: 18,
+                    }),
+                    new TextRun({
+                      text: ' 页',
+                      font: {
+                        ascii: FONT_EN,
+                        hAnsi: FONT_EN,
+                        eastAsia: FONT_CN,
+                        cs: FONT_EN,
+                        hint: 'default',
+                      },
+                      size: 18,
+                    }),
                   ],
                 }),
               ],
@@ -383,12 +622,24 @@ export class ReportService {
     const isSimple = template === 'simple';
     const isDetailed = template === 'detailed';
 
+    // 封面标题
     content.push(
       new Paragraph({
         alignment: AlignmentType.CENTER,
         spacing: { before: 2000, after: 400 },
         children: [
-          new TextRun({ text: '等级保护现场测评结果分析报告', font: 'SimHei', size: 56, bold: true }),
+          new TextRun({
+            text: '等级保护现场测评结果分析报告',
+            font: {
+              ascii: FONT_EN,
+              hAnsi: FONT_EN,
+              eastAsia: FONT_CN,
+              cs: FONT_EN,
+              hint: 'default',
+            },
+            size: 56,
+            bold: true,
+          }),
         ],
       })
     );
@@ -398,54 +649,63 @@ export class ReportService {
         new Paragraph({
           alignment: AlignmentType.CENTER,
           spacing: { after: 200 },
-          children: [new TextRun({ text: 'Level Protection On-site Assessment Report', font: 'Times New Roman', size: 28, italics: true })],
+          children: [
+            new TextRun({
+              text: 'Level Protection On-site Assessment Report',
+              font: {
+                ascii: FONT_EN,
+                hAnsi: FONT_EN,
+                eastAsia: FONT_CN,
+                cs: FONT_EN,
+                hint: 'default',
+              },
+              size: 28,
+              italics: true,
+            }),
+          ],
         })
       );
     }
 
-    content.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { before: isSimple ? 2000 : 1000, after: 200 },
-        children: [new TextRun({ text: `项目名称：${project?.name || '-'}`, font: 'SimHei', size: 28 })],
-      })
-    );
-    content.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 200 },
-        children: [new TextRun({ text: `被测单位：${project?.assessedUnit || '-'}`, font: 'SimHei', size: 28 })],
-      })
-    );
-    content.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 200 },
-        children: [new TextRun({ text: `系统名称：${project?.systemName || '-'}`, font: 'SimHei', size: 28 })],
-      })
-    );
-    content.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 200 },
-        children: [new TextRun({ text: `安全等级：第 ${project?.level || '-'} 级`, font: 'SimHei', size: 28 })],
-      })
-    );
-    content.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 200 },
-        children: [new TextRun({ text: `报告日期：${timestamp}`, font: 'SimHei', size: 28 })],
-      })
-    );
+    // 封面信息
+    const coverInfos = [
+      `项目名称：${project?.name || '-'}`,
+      `被测单位：${project?.assessedUnit || '-'}`,
+      `系统名称：${project?.systemName || '-'}`,
+      `安全等级：第 ${project?.level || '-'} 级`,
+      `报告日期：${timestamp}`,
+    ];
+
+    for (const info of coverInfos) {
+      content.push(
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          spacing: { after: 200 },
+          children: [
+            new TextRun({
+              text: info,
+              font: {
+                ascii: FONT_EN,
+                hAnsi: FONT_EN,
+                eastAsia: FONT_CN,
+                cs: FONT_EN,
+                hint: 'default',
+              },
+              size: 28,
+            }),
+          ],
+        })
+      );
+    }
 
     content.push(new Paragraph({ children: [new PageBreak()] }));
 
+    // 目录
     if (!isSimple) {
       content.push(
-        new Paragraph({
-          heading: HeadingLevel.HEADING_1,
-          children: [new TextRun({ text: '目  录', font: 'SimHei', size: 36, bold: true })],
+        createHeadingParagraph({
+          text: '目  录',
+          level: 'heading1',
         })
       );
 
@@ -462,11 +722,31 @@ export class ReportService {
       for (const item of tocItems) {
         content.push(
           new Paragraph({
-            spacing: { before: 100, after: 100 },
+            spacing: { before: 100, after: 100, line: LINE_SPACING },
             tabStops: [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX }],
             children: [
-              new TextRun({ text: item, font: 'SimSun', size: 24 }),
-              new TextRun({ children: ['\t', '............................'], font: 'SimSun', size: 24 }),
+              new TextRun({
+                text: item,
+                font: {
+                  ascii: FONT_EN,
+                  hAnsi: FONT_EN,
+                  eastAsia: FONT_CN,
+                  cs: FONT_EN,
+                  hint: 'default',
+                },
+                size: SIZE_BODY,
+              }),
+              new TextRun({
+                text: '\t............................',
+                font: {
+                  ascii: FONT_EN,
+                  hAnsi: FONT_EN,
+                  eastAsia: FONT_CN,
+                  cs: FONT_EN,
+                  hint: 'default',
+                },
+                size: SIZE_BODY,
+              }),
             ],
           })
         );
@@ -475,43 +755,35 @@ export class ReportService {
       content.push(new Paragraph({ children: [new PageBreak()] }));
     }
 
+    // 一、报告概述
     content.push(
-      new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        children: [new TextRun({ text: '一、报告概述', font: 'SimHei', size: 36, bold: true })],
-      })
-    );
-    content.push(
-      new Paragraph({
-        spacing: { after: 200 },
-        children: [
-          new TextRun({
-            text: `本报告依据GB/T 22239-2019《信息安全技术 网络安全等级保护基本要求》对${project?.systemName || '该系统'}进行等级保护测评。测评工作于${project?.startDate || '近期'}至${project?.endDate || '近期'}进行，涵盖了安全物理环境、安全通信网络、安全区域边界、安全计算环境、安全管理中心、安全管理制度、安全管理机构、安全管理人员、安全建设管理、安全运维管理等十个安全域。`,
-            font: 'SimSun',
-            size: 24,
-          }),
-        ],
-      })
-    );
-    content.push(
-      new Paragraph({
-        spacing: { after: 200 },
-        children: [
-          new TextRun({
-            text: `本次测评共发现安全问题${summary.total}个，其中高风险问题${summary.highRisk}个、中风险问题${summary.mediumRisk}个、低风险问题${summary.lowRisk}个。`,
-            font: 'SimSun',
-            size: 24,
-          }),
-        ],
+      createHeadingParagraph({
+        text: '一、报告概述',
+        level: 'heading1',
       })
     );
 
+    content.push(
+      createBodyParagraph({
+        text: `本报告依据GB/T 22239-2019《信息安全技术 网络安全等级保护基本要求》对${project?.systemName || '该系统'}进行等级保护测评。测评工作涵盖了安全物理环境、安全通信网络、安全区域边界、安全计算环境、安全管理中心、安全管理制度、安全管理机构、安全管理人员、安全建设管理、安全运维管理等十个安全域。`,
+        spacingAfter: 200,
+      })
+    );
+
+    content.push(
+      createBodyParagraph({
+        text: `本次测评共发现安全问题${summary.total}个，其中高风险问题${summary.highRisk}个、中风险问题${summary.mediumRisk}个、低风险问题${summary.lowRisk}个。`,
+        spacingAfter: 200,
+      })
+    );
+
+    // 简洁模板 - 直接到问题清单
     if (isSimple) {
       content.push(new Paragraph({ children: [new PageBreak()] }));
       content.push(
-        new Paragraph({
-          heading: HeadingLevel.HEADING_1,
-          children: [new TextRun({ text: '二、问题清单', font: 'SimHei', size: 36, bold: true })],
+        createHeadingParagraph({
+          text: '二、问题清单',
+          level: 'heading1',
         })
       );
 
@@ -525,10 +797,10 @@ export class ReportService {
               const domain = DOMAIN_ID_TO_NAME[issue.securityDomain] || issue.securityDomain;
               return new TableRow({
                 children: [
-                  new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `${idx + 1}`, size: 20 })] })] }),
-                  new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: riskLabel, size: 20 })] })] }),
-                  new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: domain, size: 20 })] })] }),
-                  new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: issue.issueTitle || '-', size: 20 })] })] }),
+                  new TableCell({ children: [createTableParagraph(`${idx + 1}`, { alignment: AlignmentType.CENTER })] }),
+                  new TableCell({ children: [createTableParagraph(riskLabel, { alignment: AlignmentType.CENTER })] }),
+                  new TableCell({ children: [createTableParagraph(domain)] }),
+                  new TableCell({ children: [createTableParagraph(issue.issueTitle || '-')] }),
                 ],
               });
             }),
@@ -537,42 +809,36 @@ export class ReportService {
         content.push(simpleIssueTable);
       } else {
         content.push(
-          new Paragraph({
-            spacing: { after: 200 },
-            children: [new TextRun({ text: '本次测评未发现安全问题。', font: 'SimSun', size: 24 })],
+          createBodyParagraph({
+            text: '本次测评未发现安全问题。',
+            spacingAfter: 200,
           })
         );
       }
 
       content.push(new Paragraph({ children: [new PageBreak()] }));
       content.push(
-        new Paragraph({
-          heading: HeadingLevel.HEADING_1,
-          children: [new TextRun({ text: '三、整改建议', font: 'SimHei', size: 36, bold: true })],
+        createHeadingParagraph({
+          text: '三、整改建议',
+          level: 'heading1',
         })
       );
       content.push(
-        new Paragraph({
-          spacing: { after: 200 },
-          children: [
-            new TextRun({
-              text: `建议优先整改高风险问题，中风险问题应在90日内完成整改，低风险问题在日常运维中逐步完善。具体整改建议请参考各问题的详细描述。`,
-              font: 'SimSun',
-              size: 24,
-            }),
-          ],
+        createBodyParagraph({
+          text: `建议优先整改高风险问题，中风险问题应在90日内完成整改，低风险问题在日常运维中逐步完善。具体整改建议请参考各问题的详细描述。`,
+          spacingAfter: 200,
         })
       );
 
       return content;
     }
 
+    // 二、项目概况
     content.push(new Paragraph({ children: [new PageBreak()] }));
-
     content.push(
-      new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        children: [new TextRun({ text: '二、项目概况', font: 'SimHei', size: 36, bold: true })],
+      createHeadingParagraph({
+        text: '二、项目概况',
+        level: 'heading1',
       })
     );
 
@@ -582,70 +848,49 @@ export class ReportService {
         this.createTableRow('项目名称', project?.name || '-', '项目编号', project?.projectNo || '-'),
         this.createTableRow('被测单位', project?.assessedUnit || '-', '系统名称', project?.systemName || '-'),
         this.createTableRow('安全等级', `第 ${project?.level || '-'} 级`, '测评标准', project?.standardSystem || 'GB/T 22239-2019'),
-        this.createTableRow('测评开始日期', project?.startDate || '-', '测评结束日期', project?.endDate || '-'),
         this.createTableRow('测评人员', project?.assessor || '-', '资产数量', `${assets.length} 台/套`),
       ],
     });
     content.push(overviewTable);
 
+    // 三、测评方法
     content.push(new Paragraph({ children: [new PageBreak()] }));
-
     content.push(
-      new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        children: [new TextRun({ text: '三、测评方法', font: 'SimHei', size: 36, bold: true })],
-      })
-    );
-    content.push(
-      new Paragraph({
-        spacing: { after: 200 },
-        children: [
-          new TextRun({
-            text: '本次测评采用访谈、检查和测试三种方法，对各安全域的控制点进行全面评估：',
-            font: 'SimSun',
-            size: 24,
-          }),
-        ],
-      })
-    );
-    content.push(
-      new Paragraph({
-        spacing: { after: 100 },
-        children: [
-          new TextRun({ text: '（1）访谈：通过与安全管理人员交流，了解安全管理制度和流程的执行情况。', font: 'SimSun', size: 24 }),
-        ],
-      })
-    );
-    content.push(
-      new Paragraph({
-        spacing: { after: 100 },
-        children: [
-          new TextRun({ text: '（2）检查：对安全策略、制度文档、配置记录等进行文档审查和现场核实。', font: 'SimSun', size: 24 }),
-        ],
-      })
-    );
-    content.push(
-      new Paragraph({
-        spacing: { after: 200 },
-        children: [
-          new TextRun({ text: '（3）测试：通过技术手段对安全功能进行验证，包括漏洞扫描、配置核查、渗透测试等。', font: 'SimSun', size: 24 }),
-        ],
+      createHeadingParagraph({
+        text: '三、测评方法',
+        level: 'heading1',
       })
     );
 
+    const methods = [
+      '本次测评采用访谈、检查和测试三种方法，对各安全域的控制点进行全面评估：',
+      '（1）访谈：通过与安全管理人员交流，了解安全管理制度和流程的执行情况。',
+      '（2）检查：对安全策略、制度文档、配置记录等进行文档审查和现场核实。',
+      '（3）测试：通过技术手段对安全功能进行验证，包括漏洞扫描、配置核查、渗透测试等。',
+    ];
+
+    for (let i = 0; i < methods.length; i++) {
+      content.push(
+        createBodyParagraph({
+          text: methods[i],
+          spacingAfter: i === 0 ? 200 : i === methods.length - 1 ? 200 : 100,
+        })
+      );
+    }
+
+    // 四、测评结果汇总
     content.push(new Paragraph({ children: [new PageBreak()] }));
-
     content.push(
-      new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        children: [new TextRun({ text: '四、测评结果汇总', font: 'SimHei', size: 36, bold: true })],
+      createHeadingParagraph({
+        text: '四、测评结果汇总',
+        level: 'heading1',
       })
     );
 
     content.push(
-      new Paragraph({
-        heading: HeadingLevel.HEADING_2,
-        children: [new TextRun({ text: '4.1 风险评估统计', font: 'SimHei', size: 30, bold: true })],
+      createHeadingParagraph({
+        text: '4.1 风险评估统计',
+        level: 'heading2',
       })
     );
 
@@ -662,10 +907,10 @@ export class ReportService {
     content.push(statsTable);
 
     content.push(
-      new Paragraph({
-        heading: HeadingLevel.HEADING_2,
-        spacing: { before: 300 },
-        children: [new TextRun({ text: '4.2 各安全域问题分布', font: 'SimHei', size: 30, bold: true })],
+      createHeadingParagraph({
+        text: '4.2 各安全域问题分布',
+        level: 'heading2',
+        spacingBefore: 300,
       })
     );
 
@@ -683,31 +928,31 @@ export class ReportService {
       content.push(domainTable);
     }
 
+    // 五、总体分析评价
     content.push(new Paragraph({ children: [new PageBreak()] }));
-
     content.push(
-      new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        children: [new TextRun({ text: '五、总体分析评价', font: 'SimHei', size: 36, bold: true })],
+      createHeadingParagraph({
+        text: '五、总体分析评价',
+        level: 'heading1',
       })
     );
 
     const overallAnalysis = this.generateOverallAnalysis(data);
     for (const para of overallAnalysis) {
       content.push(
-        new Paragraph({
-          spacing: { after: 200 },
-          children: [new TextRun({ text: para, font: 'SimSun', size: 24 })],
+        createBodyParagraph({
+          text: para,
+          spacingAfter: 200,
         })
       );
     }
 
+    // 六、问题清单及分析
     content.push(new Paragraph({ children: [new PageBreak()] }));
-
     content.push(
-      new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        children: [new TextRun({ text: '六、问题清单及分析', font: 'SimHei', size: 36, bold: true })],
+      createHeadingParagraph({
+        text: '六、问题清单及分析',
+        level: 'heading1',
       })
     );
 
@@ -721,11 +966,11 @@ export class ReportService {
             const domain = DOMAIN_ID_TO_NAME[issue.securityDomain] || issue.securityDomain;
             return new TableRow({
               children: [
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `${idx + 1}`, size: 20 })] })] }),
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: riskLabel, size: 20 })] })] }),
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: domain, size: 20 })] })] }),
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: issue.controlPoint || '-', size: 20 })] })] }),
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: issue.issueTitle || '-', size: 20 })] })] }),
+                new TableCell({ children: [createTableParagraph(`${idx + 1}`, { alignment: AlignmentType.CENTER })] }),
+                new TableCell({ children: [createTableParagraph(riskLabel, { alignment: AlignmentType.CENTER })] }),
+                new TableCell({ children: [createTableParagraph(domain)] }),
+                new TableCell({ children: [createTableParagraph(issue.controlPoint || '-')] }),
+                new TableCell({ children: [createTableParagraph(issue.issueTitle || '-')] }),
               ],
             });
           }),
@@ -733,11 +978,12 @@ export class ReportService {
       });
       content.push(issueTable);
 
+      // 高风险问题详细描述
       content.push(
-        new Paragraph({
-          heading: HeadingLevel.HEADING_2,
-          spacing: { before: 300 },
-          children: [new TextRun({ text: '6.1 高风险问题详细描述', font: 'SimHei', size: 30, bold: true })],
+        createHeadingParagraph({
+          text: '6.1 高风险问题详细描述',
+          level: 'heading2',
+          spacingBefore: 300,
         })
       );
 
@@ -746,41 +992,66 @@ export class ReportService {
         for (const issue of highRiskIssues) {
           content.push(
             new Paragraph({
-              spacing: { before: 200, after: 100 },
+              spacing: { before: 200, after: 100, line: LINE_SPACING },
+              indent: { firstLine: INDENT_FIRST_LINE },
               children: [
-                new TextRun({ text: `【${issue.controlPoint || '-'}-${issue.controlName || '-'}] `, font: 'SimHei', size: 22, bold: true }),
-                new TextRun({ text: issue.issueTitle || '-', font: 'SimSun', size: 22 }),
+                new TextRun({
+                  text: `【${issue.controlPoint || '-'}-${issue.controlName || '-'}] `,
+                  font: {
+                    ascii: FONT_EN,
+                    hAnsi: FONT_EN,
+                    eastAsia: FONT_CN,
+                    cs: FONT_EN,
+                    hint: 'default',
+                  },
+                  size: SIZE_SMALL,
+                  bold: true,
+                }),
+                new TextRun({
+                  text: issue.issueTitle || '-',
+                  font: {
+                    ascii: FONT_EN,
+                    hAnsi: FONT_EN,
+                    eastAsia: FONT_CN,
+                    cs: FONT_EN,
+                    hint: 'default',
+                  },
+                  size: SIZE_SMALL,
+                }),
               ],
             })
           );
           content.push(
-            new Paragraph({
-              spacing: { after: 100 },
-              children: [new TextRun({ text: `问题描述：${issue.issueDescription || '-'}`, font: 'SimSun', size: 22 })],
+            createBodyParagraph({
+              text: `问题描述：${issue.issueDescription || '-'}`,
+              size: SIZE_SMALL,
+              spacingAfter: 100,
             })
           );
           content.push(
-            new Paragraph({
-              spacing: { after: 100 },
-              children: [new TextRun({ text: `整改建议：${issue.rectificationSuggestion || '-'}`, font: 'SimSun', size: 22 })],
+            createBodyParagraph({
+              text: `整改建议：${issue.rectificationSuggestion || '-'}`,
+              size: SIZE_SMALL,
+              spacingAfter: 100,
             })
           );
         }
       } else {
         content.push(
-          new Paragraph({
-            spacing: { after: 200 },
-            children: [new TextRun({ text: '本次测评未发现高风险问题。', font: 'SimSun', size: 24 })],
+          createBodyParagraph({
+            text: '本次测评未发现高风险问题。',
+            spacingAfter: 200,
           })
         );
       }
 
+      // 详细模板 - 中低风险问题
       if (isDetailed) {
         content.push(
-          new Paragraph({
-            heading: HeadingLevel.HEADING_2,
-            spacing: { before: 300 },
-            children: [new TextRun({ text: '6.2 中风险问题详细描述', font: 'SimHei', size: 30, bold: true })],
+          createHeadingParagraph({
+            text: '6.2 中风险问题详细描述',
+            level: 'heading2',
+            spacingBefore: 300,
           })
         );
 
@@ -789,40 +1060,64 @@ export class ReportService {
           for (const issue of mediumRiskIssues) {
             content.push(
               new Paragraph({
-                spacing: { before: 200, after: 100 },
+                spacing: { before: 200, after: 100, line: LINE_SPACING },
+                indent: { firstLine: INDENT_FIRST_LINE },
                 children: [
-                  new TextRun({ text: `【${issue.controlPoint || '-'}-${issue.controlName || '-'}] `, font: 'SimHei', size: 22, bold: true }),
-                  new TextRun({ text: issue.issueTitle || '-', font: 'SimSun', size: 22 }),
+                  new TextRun({
+                    text: `【${issue.controlPoint || '-'}-${issue.controlName || '-'}] `,
+                    font: {
+                      ascii: FONT_EN,
+                      hAnsi: FONT_EN,
+                      eastAsia: FONT_CN,
+                      cs: FONT_EN,
+                      hint: 'default',
+                    },
+                    size: SIZE_SMALL,
+                    bold: true,
+                  }),
+                  new TextRun({
+                    text: issue.issueTitle || '-',
+                    font: {
+                      ascii: FONT_EN,
+                      hAnsi: FONT_EN,
+                      eastAsia: FONT_CN,
+                      cs: FONT_EN,
+                      hint: 'default',
+                    },
+                    size: SIZE_SMALL,
+                  }),
                 ],
               })
             );
             content.push(
-              new Paragraph({
-                spacing: { after: 100 },
-                children: [new TextRun({ text: `问题描述：${issue.issueDescription || '-'}`, font: 'SimSun', size: 22 })],
+              createBodyParagraph({
+                text: `问题描述：${issue.issueDescription || '-'}`,
+                size: SIZE_SMALL,
+                spacingAfter: 100,
               })
             );
             content.push(
-              new Paragraph({
-                spacing: { after: 100 },
-                children: [new TextRun({ text: `整改建议：${issue.rectificationSuggestion || '-'}`, font: 'SimSun', size: 22 })],
+              createBodyParagraph({
+                text: `整改建议：${issue.rectificationSuggestion || '-'}`,
+                size: SIZE_SMALL,
+                spacingAfter: 100,
               })
             );
           }
         } else {
           content.push(
-            new Paragraph({
-              spacing: { after: 200 },
-              children: [new TextRun({ text: '本次测评未发现中风险问题。', font: 'SimSun', size: 24 })],
+            createBodyParagraph({
+              text: '本次测评未发现中风险问题。',
+              spacingAfter: 200,
             })
           );
         }
 
         content.push(
-          new Paragraph({
-            heading: HeadingLevel.HEADING_2,
-            spacing: { before: 300 },
-            children: [new TextRun({ text: '6.3 低风险问题详细描述', font: 'SimHei', size: 30, bold: true })],
+          createHeadingParagraph({
+            text: '6.3 低风险问题详细描述',
+            level: 'heading2',
+            spacingBefore: 300,
           })
         );
 
@@ -831,76 +1126,100 @@ export class ReportService {
           for (const issue of lowRiskIssues) {
             content.push(
               new Paragraph({
-                spacing: { before: 200, after: 100 },
+                spacing: { before: 200, after: 100, line: LINE_SPACING },
+                indent: { firstLine: INDENT_FIRST_LINE },
                 children: [
-                  new TextRun({ text: `【${issue.controlPoint || '-'}-${issue.controlName || '-'}] `, font: 'SimHei', size: 22, bold: true }),
-                  new TextRun({ text: issue.issueTitle || '-', font: 'SimSun', size: 22 }),
+                  new TextRun({
+                    text: `【${issue.controlPoint || '-'}-${issue.controlName || '-'}] `,
+                    font: {
+                      ascii: FONT_EN,
+                      hAnsi: FONT_EN,
+                      eastAsia: FONT_CN,
+                      cs: FONT_EN,
+                      hint: 'default',
+                    },
+                    size: SIZE_SMALL,
+                    bold: true,
+                  }),
+                  new TextRun({
+                    text: issue.issueTitle || '-',
+                    font: {
+                      ascii: FONT_EN,
+                      hAnsi: FONT_EN,
+                      eastAsia: FONT_CN,
+                      cs: FONT_EN,
+                      hint: 'default',
+                    },
+                    size: SIZE_SMALL,
+                  }),
                 ],
               })
             );
             content.push(
-              new Paragraph({
-                spacing: { after: 100 },
-                children: [new TextRun({ text: `问题描述：${issue.issueDescription || '-'}`, font: 'SimSun', size: 22 })],
+              createBodyParagraph({
+                text: `问题描述：${issue.issueDescription || '-'}`,
+                size: SIZE_SMALL,
+                spacingAfter: 100,
               })
             );
             content.push(
-              new Paragraph({
-                spacing: { after: 100 },
-                children: [new TextRun({ text: `整改建议：${issue.rectificationSuggestion || '-'}`, font: 'SimSun', size: 22 })],
+              createBodyParagraph({
+                text: `整改建议：${issue.rectificationSuggestion || '-'}`,
+                size: SIZE_SMALL,
+                spacingAfter: 100,
               })
             );
           }
         } else {
           content.push(
-            new Paragraph({
-              spacing: { after: 200 },
-              children: [new TextRun({ text: '本次测评未发现低风险问题。', font: 'SimSun', size: 24 })],
+            createBodyParagraph({
+              text: '本次测评未发现低风险问题。',
+              spacingAfter: 200,
             })
           );
         }
       }
     }
 
+    // 七、整改建议及规划
     content.push(new Paragraph({ children: [new PageBreak()] }));
-
     content.push(
-      new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        children: [new TextRun({ text: '七、整改建议及规划', font: 'SimHei', size: 36, bold: true })],
+      createHeadingParagraph({
+        text: '七、整改建议及规划',
+        level: 'heading1',
       })
     );
 
     const rectificationPlan = this.generateRectificationPlan(data, isDetailed);
     for (const section of rectificationPlan) {
       content.push(
-        new Paragraph({
-          heading: HeadingLevel.HEADING_2,
-          children: [new TextRun({ text: section.title, font: 'SimHei', size: 30, bold: true })],
+        createHeadingParagraph({
+          text: section.title,
+          level: 'heading2',
         })
       );
       for (const para of section.content) {
         content.push(
-          new Paragraph({
-            spacing: { after: 150 },
-            children: [new TextRun({ text: para, font: 'SimSun', size: 24 })],
+          createBodyParagraph({
+            text: para,
+            spacingAfter: 150,
           })
         );
       }
     }
 
+    // 八、附录
     content.push(new Paragraph({ children: [new PageBreak()] }));
-
     content.push(
-      new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        children: [new TextRun({ text: '八、附录', font: 'SimHei', size: 36, bold: true })],
+      createHeadingParagraph({
+        text: '八、附录',
+        level: 'heading1',
       })
     );
     content.push(
-      new Paragraph({
-        heading: HeadingLevel.HEADING_2,
-        children: [new TextRun({ text: '附录A：测评资产清单', font: 'SimHei', size: 30, bold: true })],
+      createHeadingParagraph({
+        text: '附录A：测评资产清单',
+        level: 'heading2',
       })
     );
 
@@ -913,11 +1232,11 @@ export class ReportService {
             const categoryName = ASSET_CATEGORY_NAMES[asset.category] || asset.category || '-';
             return new TableRow({
               children: [
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `${idx + 1}`, size: 20 })] })] }),
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: asset.name || '-', size: 20 })] })] }),
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: categoryName, size: 20 })] })] }),
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: asset.os || '-', size: 20 })] })] }),
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: asset.ip || '-', size: 20 })] })] }),
+                new TableCell({ children: [createTableParagraph(`${idx + 1}`, { alignment: AlignmentType.CENTER })] }),
+                new TableCell({ children: [createTableParagraph(asset.name || '-')] }),
+                new TableCell({ children: [createTableParagraph(categoryName)] }),
+                new TableCell({ children: [createTableParagraph(asset.os || '-')] }),
+                new TableCell({ children: [createTableParagraph(asset.ip || '-')] }),
               ],
             });
           }),
@@ -940,7 +1259,22 @@ export class ReportService {
             children: [
               new Paragraph({
                 alignment: AlignmentType.CENTER,
-                children: [new TextRun({ text, font: 'SimHei', size: 22, bold: true, color: 'FFFFFF' })],
+                spacing: { line: LINE_SPACING },
+                children: [
+                  new TextRun({
+                    text,
+                    font: {
+                      ascii: FONT_EN,
+                      hAnsi: FONT_EN,
+                      eastAsia: FONT_CN,
+                      cs: FONT_EN,
+                      hint: 'default',
+                    },
+                    size: SIZE_SMALL,
+                    bold: true,
+                    color: 'FFFFFF',
+                  }),
+                ],
               }),
             ],
           })
@@ -954,7 +1288,7 @@ export class ReportService {
         (text) =>
           new TableCell({
             verticalAlign: VerticalAlign.CENTER,
-            children: [new Paragraph({ children: [new TextRun({ text, font: 'SimSun', size: 22 })] })],
+            children: [createTableParagraph(text)],
           })
       ),
     });
@@ -969,11 +1303,9 @@ export class ReportService {
     const partial = assessmentStats.partial || 0;
     const nonCompliant = assessmentStats.nonCompliant || 0;
     const notApplicable = assessmentStats.notApplicable || 0;
-    const untested = assessmentStats.untested || 0;
-    const tested = assessmentStats.tested || 0;
 
     paragraphs.push(
-      `经过全面测评，该系统在${summary.total === 0 ? '各安全域均表现良好' : '部分安全域存在安全问题'}。本次测评共涉及${totalItems || '若干'}项测评指标，其中已测评${tested}项（符合${compliant}项、部分符合${partial}项、不符合${nonCompliant}项、不适用${notApplicable}项），未测评${untested}项。`
+      `经过全面测评，该系统在${summary.total === 0 ? '各安全域均表现良好' : '部分安全域存在安全问题'}。本次测评共涉及${totalItems || '若干'}项测评指标，其中符合${compliant}项、部分符合${partial}项、不符合${nonCompliant}项、不适用${notApplicable}项。`
     );
 
     if (summary.highRisk > 0) {
@@ -995,7 +1327,7 @@ export class ReportService {
     }
 
     paragraphs.push(
-      `综合来看，该系统安全防护水平有待进一步提升。建议按照本报告提出的整改建议，有计划、有步骤地开展安全整改工作，持续提升系统安全防护能力。`,
+      `综合来看，该系统安全防护水平有待进一步提升。建议按照本报告提出的整改建议，有计划、有步骤地开展安全整改工作，持续提升系统安全防护能力。`
     );
 
     return paragraphs;
@@ -1005,12 +1337,10 @@ export class ReportService {
     const { summary, issues } = data;
     const sections: { title: string; content: string[] }[] = [];
 
-    // 计算各类问题占比
     const highRiskPct = summary.total > 0 ? ((summary.highRisk / summary.total) * 100).toFixed(1) : '0';
     const mediumRiskPct = summary.total > 0 ? ((summary.mediumRisk / summary.total) * 100).toFixed(1) : '0';
     const lowRiskPct = summary.total > 0 ? ((summary.lowRisk / summary.total) * 100).toFixed(1) : '0';
 
-    // 统计各安全域问题分布
     const domainIssueMap: Record<string, number> = {};
     for (const issue of issues) {
       const name = DOMAIN_ID_TO_NAME[issue.securityDomain] || issue.securityDomain;
@@ -1031,7 +1361,7 @@ export class ReportService {
       ],
     });
 
-    // 7.2 高风险问题整改建议
+    // 7.2 高风险问题整改建议（始终存在）
     if (summary.highRisk > 0) {
       const highContent: string[] = [];
       highContent.push(`本次测评共发现高风险问题${summary.highRisk}个，占问题总数的${highRiskPct}%，涉及${topDomainText || '多个安全域'}。高风险问题可能导致严重安全事件，影响系统正常运行和数据安全，建议在30个工作日内完成整改。`);
@@ -1079,9 +1409,23 @@ export class ReportService {
         title: '7.2 高风险问题整改建议',
         content: highContent,
       });
+    } else {
+      sections.push({
+        title: '7.2 高风险问题整改建议',
+        content: [
+          '本次测评未发现高风险问题。',
+          '',
+          '为持续提升安全防护水平，建议关注以下方面：',
+          '1. 完善安全策略体系：制定并发布安全管理总方针、策略和制度，明确安全目标和管理要求；',
+          '2. 强化身份认证：对重要系统和敏感数据访问采用多因素认证（MFA），禁用默认账号和弱口令；',
+          '3. 完善日志记录：开启系统操作日志、安全事件日志、数据库审计日志，日志保存期限不少于6个月；',
+          '4. 定期漏洞扫描：每月对网络设备、安全设备、服务器、数据库进行漏洞扫描，及时更新漏洞库；',
+          '5. 完善应急预案：制定网络安全事件应急预案，明确应急组织、处置流程和恢复步骤。',
+        ],
+      });
     }
 
-    // 7.3 中风险问题整改建议
+    // 7.3 中风险问题整改建议（始终存在）
     if (summary.mediumRisk > 0) {
       const mediumContent: string[] = [];
       mediumContent.push(`本次测评共发现中风险问题${summary.mediumRisk}个，占问题总数的${mediumRiskPct}%。中风险问题长期存在会增加系统被攻击的风险，建议在90个工作日内完成整改。`);
@@ -1124,9 +1468,22 @@ export class ReportService {
         title: '7.3 中风险问题整改建议',
         content: mediumContent,
       });
+    } else {
+      sections.push({
+        title: '7.3 中风险问题整改建议',
+        content: [
+          '本次测评未发现中风险问题。',
+          '',
+          '为持续提升安全防护水平，建议关注以下方面：',
+          '1. 安全域划分：按照业务功能和安全等级划分安全区域，区域间部署防火墙进行访问控制；',
+          '2. 数据安全保护：建立数据分类分级标准，对敏感数据采用加密存储和传输；',
+          '3. 物理安全：确保机房供电、空调、消防等设施正常运行，部署环境监控系统；',
+          '4. 安全运维管理：建立完整的信息化资产台账，定期更新，建立变更管理流程。',
+        ],
+      });
     }
 
-    // 7.4 低风险问题整改建议
+    // 7.4 低风险问题整改建议（始终存在）
     if (summary.lowRisk > 0) {
       const lowContent: string[] = [];
       lowContent.push(`本次测评共发现低风险问题${summary.lowRisk}个，占问题总数的${lowRiskPct}%。低风险问题多为配置细节和管理流程方面的不足，建议在180个工作日内完成整改，在日常运维中逐步完善。`);
@@ -1162,25 +1519,22 @@ export class ReportService {
         title: '7.4 低风险问题整改建议',
         content: lowContent,
       });
-    }
-
-    // 如果没有任何问题
-    if (summary.total === 0) {
+    } else {
       sections.push({
-        title: '7.2 安全建议',
+        title: '7.4 低风险问题整改建议',
         content: [
-          '本次测评未发现安全问题，系统安全防护体系较为完善。',
+          '本次测评未发现低风险问题。',
           '',
-          '为进一步提升安全防护水平，建议：',
-          '1. 继续保持良好的安全运维习惯，定期开展安全自查；',
-          '2. 关注最新安全威胁动态，及时更新安全防护策略；',
-          '3. 持续开展安全培训，提高全员安全意识；',
-          '4. 定期开展等级保护测评，确保系统持续符合标准要求。',
+          '为持续提升安全防护水平，建议关注以下方面：',
+          '1. 服务最小化：关闭不必要的服务、端口和功能，减少系统攻击面；',
+          '2. 默认配置修改：修改系统默认口令、默认SNMP团体字等默认配置；',
+          '3. 定期安全巡检：建立日常安全巡检制度，涵盖系统运行状态、安全设备状态等；',
+          '4. 安全意识教育：通过宣传海报、培训课程、考试等方式，提高全员安全意识。',
         ],
       });
     }
 
-    // 7.5 整改规划（基于问题数量动态调整编号）
+    // 7.5 整改规划
     const planContent: string[] = [];
     planContent.push(`根据本次测评结果，共发现安全问题${summary.total}个。为有序开展整改工作，建议按照以下规划分阶段实施：`);
     planContent.push('');
@@ -1235,7 +1589,7 @@ export class ReportService {
     planContent.push('  （4）进度管控：建立整改工作台账和周报制度，定期检查整改进度，确保按时完成。');
 
     sections.push({
-      title: `7.${summary.total === 0 ? 3 : 5} 整改规划`,
+      title: '7.5 整改规划',
       content: planContent,
     });
 
@@ -1294,7 +1648,7 @@ export class ReportService {
     }
 
     sections.push({
-      title: `7.${summary.total === 0 ? 4 : 6} 长期安全规划`,
+      title: '7.6 长期安全规划',
       content: longTermContent,
     });
 
@@ -1316,10 +1670,8 @@ export class ReportService {
     const isSimple = options.template === 'simple';
     const isDetailed = options.template === 'detailed';
 
-    // 生成HTML内容
     const htmlContent = this.generateHtmlContent(data, projectName, timestamp, options, isSimple, isDetailed);
 
-    // 创建隐藏的BrowserWindow来渲染HTML
     const { BrowserWindow } = require('electron');
     const hiddenWindow = new BrowserWindow({
       width: 800,
@@ -1331,13 +1683,10 @@ export class ReportService {
       },
     });
 
-    // 加载HTML
     await hiddenWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
 
-    // 等待渲染完成
     await new Promise(resolve => setTimeout(resolve, 1000));
 
-    // 打印为PDF
     const pdfBuffer = await hiddenWindow.webContents.printToPDF({
       marginsType: 1,
       pageSize: 'A4',
@@ -1346,10 +1695,8 @@ export class ReportService {
       landscape: false,
     });
 
-    // 关闭隐藏窗口
     hiddenWindow.destroy();
 
-    // 保存PDF
     fs.writeFileSync(savePath, pdfBuffer);
     return savePath;
   }
@@ -1375,29 +1722,30 @@ export class ReportService {
   <meta charset="UTF-8">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: "SimSun", "Microsoft YaHei", serif; font-size: 14px; line-height: 1.8; color: #333; padding: 40px; }
-    h1 { text-align: center; font-size: 24px; margin-bottom: 30px; }
-    h2 { font-size: 18px; margin: 20px 0 10px; border-bottom: 2px solid #1B5FD9; padding-bottom: 5px; }
-    h3 { font-size: 16px; margin: 15px 0 8px; }
+    body { font-family: "STFangsong", "Times New Roman", serif; font-size: 14px; line-height: 1.5; color: #333; padding: 40px; }
+    h1 { text-align: center; font-size: 24px; margin: 1.5em 0; font-family: "STFangsong", "Times New Roman", serif; line-height: 1.5; }
+    h2 { font-size: 18px; margin: 1.5em 0; border-bottom: 2px solid #1B5FD9; padding-bottom: 5px; font-family: "STFangsong", "Times New Roman", serif; line-height: 1.5; }
+    h3 { font-size: 16px; margin: 1.5em 0; font-family: "STFangsong", "Times New Roman", serif; line-height: 1.5; }
+    p { text-indent: 2em; line-height: 1.5; font-family: "STFangsong", "Times New Roman", serif; margin: 0.5em 0; }
     .cover { text-align: center; padding-top: 100px; }
-    .cover h1 { font-size: 28px; margin-bottom: 50px; }
-    .cover p { font-size: 16px; margin: 15px 0; }
+    .cover h1 { font-size: 28px; margin-bottom: 50px; font-family: "STFangsong", "Times New Roman", serif; text-indent: 0; }
+    .cover p { font-size: 16px; margin: 15px 0; font-family: "STFangsong", "Times New Roman", serif; text-indent: 0; }
     .toc { margin: 20px 0; }
-    .toc-item { padding: 5px 0; border-bottom: 1px dotted #ccc; }
-    table { width: 100%; border-collapse: collapse; margin: 15px 0; }
-    th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
-    th { background: #1B5FD9; color: #fff; font-weight: bold; }
+    .toc-item { padding: 5px 0; border-bottom: 1px dotted #ccc; font-family: "STFangsong", "Times New Roman", serif; text-indent: 0; }
+    table { width: 100%; border-collapse: collapse; margin: 15px 0; font-family: "STFangsong", "Times New Roman", serif; line-height: 1.5; }
+    th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; font-family: "STFangsong", "Times New Roman", serif; line-height: 1.5; text-indent: 0; }
+    th { background: #1B5FD9; color: #fff; font-weight: bold; font-family: "STFangsong", "Times New Roman", serif; }
     tr:nth-child(even) { background: #f9f9f9; }
     .text-center { text-align: center; }
     .text-right { text-align: right; }
     .risk-high { color: #f56c6c; font-weight: bold; }
     .risk-medium { color: #e6a23c; font-weight: bold; }
     .risk-low { color: #67c23a; font-weight: bold; }
-    .issue-item { margin: 15px 0; padding: 15px; background: #f5f7fa; border-left: 4px solid #1B5FD9; }
-    .issue-title { font-weight: bold; margin-bottom: 8px; }
-    .issue-desc { margin: 5px 0; }
+    .issue-item { margin: 15px 0; padding: 15px; background: #f5f7fa; border-left: 4px solid #1B5FD9; font-family: "STFangsong", "Times New Roman", serif; text-indent: 0; }
+    .issue-title { font-weight: bold; margin-bottom: 8px; font-family: "STFangsong", "Times New Roman", serif; text-indent: 0; }
+    .issue-desc { margin: 5px 0; font-family: "STFangsong", "Times New Roman", serif; text-indent: 0; }
     .page-break { page-break-after: always; }
-    .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #999; }
+    .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #999; font-family: "STFangsong", "Times New Roman", serif; text-indent: 0; }
   </style>
 </head>
 <body>`;
@@ -1437,7 +1785,7 @@ export class ReportService {
     if (options.includeSections.includes('overview')) {
       html += `
     <h2>一、报告概述</h2>
-    <p>本报告依据GB/T 22239-2019《信息安全技术 网络安全等级保护基本要求》对${project?.systemName || '该系统'}进行等级保护测评。测评工作于${project?.startDate || '近期'}至${project?.endDate || '近期'}进行，涵盖了安全物理环境、安全通信网络、安全区域边界、安全计算环境、安全管理中心、安全管理制度、安全管理机构、安全管理人员、安全建设管理、安全运维管理等十个安全域。</p>
+    <p>本报告依据GB/T 22239-2019《信息安全技术 网络安全等级保护基本要求》对${project?.systemName || '该系统'}进行等级保护测评。测评工作涵盖了安全物理环境、安全通信网络、安全区域边界、安全计算环境、安全管理中心、安全管理制度、安全管理机构、安全管理人员、安全建设管理、安全运维管理等十个安全域。</p>
     <p>本次测评共发现安全问题${summary.total}个，其中高风险问题${summary.highRisk}个、中风险问题${summary.mediumRisk}个、低风险问题${summary.lowRisk}个。</p>
     <div class="page-break"></div>`;
     }
@@ -1451,7 +1799,6 @@ export class ReportService {
       <tr><td>项目名称</td><td>${project?.name || '-'}</td><td>项目编号</td><td>${project?.projectNo || '-'}</td></tr>
       <tr><td>被测单位</td><td>${project?.assessedUnit || '-'}</td><td>系统名称</td><td>${project?.systemName || '-'}</td></tr>
       <tr><td>安全等级</td><td>第 ${project?.level || '-'} 级</td><td>测评标准</td><td>${project?.standardSystem || 'GB/T 22239-2019'}</td></tr>
-      <tr><td>测评开始日期</td><td>${project?.startDate || '-'}</td><td>测评结束日期</td><td>${project?.endDate || '-'}</td></tr>
       <tr><td>资产数量</td><td>${assets.length} 台/套</td><td>-</td><td>-</td></tr>
     </table>
     <div class="page-break"></div>`;
@@ -1499,7 +1846,7 @@ export class ReportService {
     <h2>五、总体分析评价</h2>`;
       const overallAnalysis = this.generateOverallAnalysis(data);
       for (const para of overallAnalysis) {
-        html += `<p style="text-indent: 2em; margin: 10px 0;">${para}</p>`;
+        html += `<p style="margin: 0.5em 0;">${para}</p>`;
       }
       html += `<div class="page-break"></div>`;
     }
@@ -1521,7 +1868,6 @@ export class ReportService {
         }
         html += `</table>`;
 
-        // 高风险问题详细描述
         if (options.includeSections.includes('issues')) {
           const highRiskIssues = issues.filter((i: any) => i.riskLevel === 'high');
           if (highRiskIssues.length > 0) {

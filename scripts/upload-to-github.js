@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.1.1';
+const TAG = 'v2.1.2';
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,19 +57,14 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.1.1 更新内容
+    body: `## v2.1.2 更新内容
 
-- 更新系统版本号至 2.1.1
-- 修复现场核查页面关键证据点附件删除后重启恢复的问题
-- 修复 screenshotPaths 空数组时数据库不更新的问题
-- 系统构成页面"数据库管理系统"改为"系统管理文档"
-- 系统管理文档分类移动到数据资源后面
-- 系统管理文档默认不作为测评对象
-- 内部分类 ID 从 dbms 改为 sys_doc
-- 修复现场核查页面总项数统计不包含全局层面（安全管理中心、安全管理制度等）测评项的问题
-- 修复现场核查页面"已完成"统计不包含"不适用"项的问题（修复数据库中 notapplicable 值匹配问题）
-- 符合率计算时刨去不适用的项数（分母改为 已测评 - 不适用）
-- 清理未使用的代码和依赖
+- 更新系统版本号至 2.1.2
+- 修复 Word 报告字体配置问题（中文使用华文仿宋，字母数字使用 Times New Roman）
+- 修复 Word 报告段落缩进和行距问题（全文1.5倍行距，正文首行缩进2字符）
+- 修复表格单元格缩进问题（表格内容不缩进，保持1.5倍行距）
+- 修复整改建议章节编号逻辑问题（7.2/7.3/7.4章节始终存在）
+- 优化报告生成辅助函数，确保格式一致
     `,
     draft: false,
     prerelease: false,
