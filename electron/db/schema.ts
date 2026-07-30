@@ -208,6 +208,11 @@ export const aiConfigs = sqliteTable('ai_configs', {
   enableAi: integer('enable_ai').notNull().default(0),
   privacyMode: integer('privacy_mode').notNull().default(0),
   sensitiveWords: text('sensitive_words'),
+  mode: text('mode').default('cloud'),
+  ollamaModel: text('ollama_model'),
+  ollamaUrl: text('ollama_url').default('http://localhost:11434'),
+  // OCR预处理：云端模式默认关闭(0)，本地模式默认开启(1)
+  ocrPreprocess: integer('ocr_preprocess').notNull().default(0),
   updatedAt: text('updated_at').notNull(),
   createdAt: text('created_at').notNull(),
 });

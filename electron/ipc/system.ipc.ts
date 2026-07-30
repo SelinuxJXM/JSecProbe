@@ -122,9 +122,13 @@ export function registerSystemHandlers(): void {
     }
   }, 'system'));
 
-  ipcMain.handle('shell:openExternal', wrap(async (_event, filePath: string) => {
-    const safePath = await validatePath(filePath);
-    shell.openPath(safePath);
+  ipcMain.handle('shell:openExternal', wrap(async (_event, url: string) => {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      await shell.openExternal(url);
+    } else {
+      const safePath = await validatePath(url);
+      await shell.openPath(safePath);
+    }
   }, 'system'));
 
   ipcMain.handle('system:selectFile', wrap(async (_event, filters?: FileFilter[]) => {

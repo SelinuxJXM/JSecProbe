@@ -181,6 +181,26 @@ const api = {
     list: ipc<{ list: any[]; total: number }>('log:list'),
   },
   ai: aiService,
+  ollama: {
+    getStatus: ipc<{ state: string; models?: any[]; error?: string }>('ollama:getStatus'),
+    listModels: ipc<any[]>('ollama:listModels'),
+    pullModel: ipc<any>('ollama:pullModel'),
+    deleteModel: ipc<void>('ollama:deleteModel'),
+    start: ipc<any>('ollama:start'),
+    getInstallGuide: ipc<{ windows: string[]; mac: string[]; linux: string[]; downloadUrl: string }>('ollama:getInstallGuide'),
+    testConnection: ipc<{ success: boolean; message: string }>('ollama:testConnection'),
+    getRecommendedModels: ipc<Array<{ name: string; label: string; description: string; size: string; minMemory: number; supportsVision: boolean }>>('ollama:getRecommendedModels'),
+    onPullProgress: (callback: (data: { modelName: string; status: string; completed?: number; total?: number }) => void) => {
+      const handler = (_e: IpcRendererEvent, data: any) => callback(data);
+      ipcRenderer.on('ollama:pullProgress', handler);
+      return () => ipcRenderer.removeListener('ollama:pullProgress', handler);
+    },
+  },
+  ocr: {
+    extractText: ipc<{ text: string; confidence: number; words: any[] }>('ocr:extractText'),
+    extractTextFromMultiple: ipc<Array<{ path: string; result: { text: string; confidence: number; words: any[] } }>>('ocr:extractTextFromMultiple'),
+    isEnabled: ipc<boolean>('ocr:isEnabled'),
+  },
   document: {
     extractText: ipc<{ name: string; content: string }[]>('document:extractText'),
   },

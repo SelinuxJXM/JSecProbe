@@ -209,6 +209,11 @@ CREATE TABLE IF NOT EXISTS ai_configs (
   enable_ai INTEGER NOT NULL DEFAULT 0,
   privacy_mode INTEGER NOT NULL DEFAULT 0,
   sensitive_words TEXT,
+  mode TEXT DEFAULT 'cloud',
+  ollama_model TEXT,
+  ollama_url TEXT DEFAULT 'http://localhost:11434',
+  -- OCR预处理：云端模式默认关闭(0)，本地模式默认开启(1)
+  ocr_preprocess INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   created_at TEXT NOT NULL
 );

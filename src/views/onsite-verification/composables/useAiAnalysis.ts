@@ -20,6 +20,9 @@ interface UseAiAnalysisOptions {
 export function useAiAnalysis(options: UseAiAnalysisOptions) {
   const { tableRows, saveAllRows } = options;
 
+  // AI配置（用于获取OCR预处理设置）
+  const aiConfig = ref<any>(null);
+
   // ==================== 单条 AI 分析状态 ====================
   const aiDialogVisible = ref(false);
   const aiLoading = ref(false);
@@ -112,6 +115,18 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
       return;
     }
 
+    // 加载AI配置（获取OCR预处理设置）
+    if (!aiConfig.value) {
+      try {
+        const configRes = await window.api.ai.getConfig();
+        if (configRes.success && configRes.data) {
+          aiConfig.value = configRes.data;
+        }
+      } catch (e) {
+        console.warn('[aiAnalyze] 加载AI配置失败:', e);
+      }
+    }
+
     const hasScreenshots = row.screenshots && row.screenshots.length > 0;
     const hasEvidence = row.evidence && row.evidence.trim().length > 0;
     if (!hasEvidence && !hasScreenshots) {
@@ -177,11 +192,13 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
         command: '',
         result: row.evidence + docTextContent || '',
         screenshots: imageFiles,
+        ocrPreprocess: aiConfig.value?.ocrPreprocess === 1,
       };
       console.log('[aiAnalyze] 准备调用, params:', JSON.stringify({
         ...params,
         screenshots: params.screenshots.length + ' items',
         docFiles: docFiles.length + ' items',
+        ocrPreprocess: params.ocrPreprocess,
       }));
 
       let res;
@@ -434,6 +451,17 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
 
     (async () => {
       try {
+        // 加载AI配置（获取OCR预处理设置）
+        if (!aiConfig.value) {
+          try {
+            const configRes = await window.api.ai.getConfig();
+            if (configRes.success && configRes.data) {
+              aiConfig.value = configRes.data;
+            }
+          } catch (e) {
+            console.warn('[batchAiAnalyze] 加载AI配置失败:', e);
+          }
+        }
         const items = tableRows.value
           .filter(row => row.compliance !== 'na')
           .map(row => ({
@@ -468,6 +496,7 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
           items,
           screenshots: imagePaths,
           documents: docContents,
+          ocrPreprocess: aiConfig.value?.ocrPreprocess === 1,
         });
 
         if (res.success && res.data) {
@@ -547,16 +576,21 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
             } catch (err: any) {
               console.error('[batchAiAnalyze] saveAllRows threw:', err);
             }
+            // 更新进度状态为完成
+            batchAiProgress.value = { ...batchAiProgress.value, stage: 'done', percent: 100, message: '分析完成' };
           } else {
             console.error('[batchAiAnalyze] JSON解析失败，所有方法都失败:', parseError);
             console.error('[batchAiAnalyze] AI返回内容:', content);
             ElMessage.warning('AI返回结果解析失败，请查看控制台或重试');
+            batchAiProgress.value = { ...batchAiProgress.value, stage: 'error', message: '解析失败' };
           }
         } else {
           ElMessage.error(res.error?.message || 'AI分析失败');
+          batchAiProgress.value = { ...batchAiProgress.value, stage: 'error', message: res.error?.message || '分析失败' };
         }
       } catch (error: any) {
         ElMessage.error('AI分析失败：' + (error.message || error));
+        batchAiProgress.value = { ...batchAiProgress.value, stage: 'error', message: error.message || '分析失败' };
       } finally {
         batchAiLoading.value = false;
       }

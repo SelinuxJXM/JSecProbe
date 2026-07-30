@@ -94,7 +94,12 @@
               <span>{{ isConfigured ? 'AI已配置' : 'AI未配置' }}</span>
             </div>
             <div class="status-desc">
-              {{ isConfigured ? `使用模型：${aiSettings.model}` : '请先在设置中配置API密钥' }}
+              <template v-if="aiSettings.mode === 'cloud'">
+                {{ isConfigured ? `云端服务 · ${aiSettings.model}` : '请先在设置中配置API密钥' }}
+              </template>
+              <template v-else>
+                {{ isConfigured ? `本地Ollama · ${aiSettings.ollamaModel}` : '请先在设置中选择本地模型' }}
+              </template>
             </div>
           </div>
         </div>
@@ -186,7 +191,7 @@
       </div>
     </div>
 
-    <el-dialog v-model="showSettings" title="AI设置" width="640px" destroy-on-close>
+    <el-dialog v-model="showSettings" title="AI设置" width="640px" destroy-on-close @opened="handleDialogOpened">
       <div class="ai-settings">
         <!-- 合规声明 -->
         <div class="compliance-notice">
@@ -202,53 +207,245 @@
           </div>
         </div>
 
-        <!-- API格式 -->
+        <!-- 接入模式选择 -->
         <div class="setting-item">
-          <label class="setting-label"><span class="required">*</span>API格式</label>
-          <el-select v-model="aiSettings.apiFormat" style="width: 100%">
-            <el-option label="OpenAI Chat Completions 格式" value="openai" />
-            <el-option label="Claude Messages 格式" value="claude" />
-            <el-option label="Gemini GenerateContent 格式" value="gemini" />
-          </el-select>
-        </div>
-
-        <!-- 自定义请求地址 -->
-        <div class="setting-item">
-          <div class="setting-label-row">
-            <label class="setting-label"><span class="required">*</span>自定义请求地址</label>
-            <el-switch v-model="aiSettings.fullUrl" size="small" />
+          <label class="setting-label"><span class="required">*</span>接入模式</label>
+          <el-radio-group v-model="aiSettings.mode" size="default">
+            <el-radio-button value="cloud">云端服务</el-radio-button>
+            <el-radio-button value="local">本地 Ollama</el-radio-button>
+          </el-radio-group>
+          <div class="setting-hint" style="margin-top: 8px;">
+            <span v-if="aiSettings.mode === 'cloud'">使用云端AI服务（如OpenAI、Claude等），需要API Key和网络连接</span>
+            <span v-else>使用本地部署的Ollama运行大模型，数据不出本地，保护隐私安全</span>
           </div>
-          <el-input
-            v-model="aiSettings.baseUrl"
-            :placeholder="aiSettings.fullUrl ? 'e.g. https://api.openai.com/v1' : 'e.g. https://api.openai.com'"
-            :disabled="false"
-          />
         </div>
 
-        <!-- 提示信息 -->
-        <div class="setting-hint">
-          系统会自动补充 /v1/chat/completions 路径。如需自定义完整路径，请开启「完整URL」开关。
-        </div>
+        <!-- 云端模式配置 -->
+        <template v-if="aiSettings.mode === 'cloud'">
+          <!-- API格式 -->
+          <div class="setting-item">
+            <label class="setting-label"><span class="required">*</span>API格式</label>
+            <el-select v-model="aiSettings.apiFormat" style="width: 100%">
+              <el-option label="OpenAI Chat Completions 格式" value="openai" />
+              <el-option label="Claude Messages 格式" value="claude" />
+              <el-option label="Gemini GenerateContent 格式" value="gemini" />
+            </el-select>
+          </div>
 
-        <!-- 模型ID -->
-        <div class="setting-item">
-          <label class="setting-label"><span class="required">*</span>模型ID</label>
-          <el-input
-            v-model="aiSettings.model"
-            placeholder="输入模型ID，例如：gpt-4o"
-          />
-        </div>
+          <!-- 自定义请求地址 -->
+          <div class="setting-item">
+            <div class="setting-label-row">
+              <label class="setting-label"><span class="required">*</span>自定义请求地址</label>
+              <el-switch v-model="aiSettings.fullUrl" size="small" />
+            </div>
+            <el-input
+              v-model="aiSettings.baseUrl"
+              :placeholder="aiSettings.fullUrl ? 'e.g. https://api.openai.com/v1' : 'e.g. https://api.openai.com'"
+              :disabled="false"
+            />
+          </div>
 
-        <!-- API密钥 -->
-        <div class="setting-item">
-          <label class="setting-label"><span class="required">*</span>API密钥</label>
-          <el-input
-            v-model="aiSettings.apiKey"
-            type="password"
-            show-password
-            placeholder="输入 API 密钥"
-          />
-        </div>
+          <!-- 提示信息 -->
+          <div class="setting-hint">
+            系统会自动补充 /v1/chat/completions 路径。如需自定义完整路径，请开启「完整URL」开关。
+          </div>
+
+          <!-- 模型ID -->
+          <div class="setting-item">
+            <label class="setting-label"><span class="required">*</span>模型ID</label>
+            <el-input
+              v-model="aiSettings.model"
+              placeholder="输入模型ID，例如：gpt-4o"
+            />
+          </div>
+
+          <!-- API密钥 -->
+          <div class="setting-item">
+            <label class="setting-label"><span class="required">*</span>API密钥</label>
+            <el-input
+              v-model="aiSettings.apiKey"
+              type="password"
+              show-password
+              placeholder="输入 API 密钥"
+            />
+          </div>
+        </template>
+
+        <!-- 本地Ollama模式配置 -->
+        <template v-else>
+          <!-- Ollama服务地址 -->
+          <div class="setting-item">
+            <label class="setting-label"><span class="required">*</span>Ollama 服务地址</label>
+            <el-input
+              v-model="aiSettings.ollamaUrl"
+              placeholder="http://localhost:11434"
+            />
+            <div class="setting-hint" style="margin-top: 4px;">
+              Ollama 默认运行在 http://localhost:11434，如已修改请填写实际地址
+            </div>
+          </div>
+
+          <!-- Ollama状态面板 -->
+          <div class="ollama-status-panel">
+            <div class="ollama-status-header">
+              <span class="ollama-status-title">Ollama 服务状态</span>
+              <el-button 
+                type="primary" 
+                plain 
+                size="small" 
+                :loading="ollamaLoading"
+                @click="checkOllamaStatus"
+              >
+                刷新状态
+              </el-button>
+            </div>
+
+            <!-- 未安装 -->
+            <div v-if="ollamaStatus?.state === 'not_installed'" class="ollama-status-content">
+              <div class="ollama-status-icon not-installed">📦</div>
+              <div class="ollama-status-text">
+                <div class="ollama-status-label">Ollama 未安装</div>
+                <div class="ollama-status-desc">请下载并安装 Ollama 以使用本地大模型功能</div>
+              </div>
+              <el-button type="primary" size="small" @click="showInstallGuide = true">
+                查看安装指南
+              </el-button>
+            </div>
+
+            <!-- 已安装未运行 -->
+            <div v-else-if="ollamaStatus?.state === 'not_running'" class="ollama-status-content">
+              <div class="ollama-status-icon not-running">⏸️</div>
+              <div class="ollama-status-text">
+                <div class="ollama-status-label">Ollama 未运行</div>
+                <div class="ollama-status-desc">Ollama 已安装但未启动，请点击下方按钮启动</div>
+              </div>
+              <el-button 
+                type="success" 
+                size="small" 
+                :loading="ollamaLoading"
+                @click="handleStartOllama"
+              >
+                启动 Ollama
+              </el-button>
+            </div>
+
+            <!-- 运行中 -->
+            <div v-else-if="ollamaStatus?.state === 'running'" class="ollama-status-content">
+              <div class="ollama-status-icon running">✅</div>
+              <div class="ollama-status-text">
+                <div class="ollama-status-label">Ollama 运行中</div>
+                <div class="ollama-status-desc">
+                  已加载 {{ ollamaStatus?.models?.length || 0 }} 个模型
+                </div>
+              </div>
+            </div>
+
+            <!-- 加载中 -->
+            <div v-else class="ollama-status-content">
+              <div class="ollama-status-icon">⏳</div>
+              <div class="ollama-status-text">
+                <div class="ollama-status-label">正在检测状态...</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 已安装模型列表 -->
+          <div v-if="ollamaStatus?.state === 'running' && ollamaStatus?.models?.length" class="setting-item">
+            <label class="setting-label">已安装的模型</label>
+            <div class="model-list">
+              <div 
+                v-for="model in ollamaStatus?.models" 
+                :key="model.name"
+                class="model-item"
+                :class="{ selected: aiSettings.ollamaModel === model.name }"
+                @click="aiSettings.ollamaModel = model.name"
+              >
+                <div class="model-info">
+                  <div class="model-name">{{ model.name }}</div>
+                  <div class="model-size">{{ formatModelSize(model.size) }}</div>
+                </div>
+                <el-button 
+                  type="danger" 
+                  plain 
+                  size="small"
+                  @click.stop="handleDeleteModel(model.name)"
+                >
+                  删除
+                </el-button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 使用建议 -->
+          <div class="setting-item">
+            <label class="setting-label">使用建议</label>
+            <div class="setting-hint" style="margin-bottom: 12px;">
+              请根据本地电脑配置选用模型或前往ollama模型仓库自行挑选合适模型
+            </div>
+            <div class="model-list">
+              <div 
+                v-for="model in recommendedModels" 
+                :key="model.name"
+                class="model-item recommended"
+              >
+                <div class="model-info">
+                  <div class="model-name">{{ model.label }}</div>
+                  <div class="model-desc">{{ model.description }}</div>
+                  <div class="model-meta">
+                    <el-tag size="small" type="info">{{ model.size }}</el-tag>
+                    <el-tag v-if="model.supportsVision" size="small" type="success">支持图片</el-tag>
+                    <el-tag size="small">需 {{ model.minMemory }}GB 内存</el-tag>
+                  </div>
+                  <!-- 下载进度条 -->
+                  <div v-if="downloadProgress?.modelName === model.name" class="download-progress">
+                    <div class="progress-header">
+                      <span class="progress-status">{{ formatDownloadStatus(downloadProgress.status) }}</span>
+                      <span class="progress-percent">{{ downloadPercent }}%</span>
+                    </div>
+                    <el-progress 
+                      :percentage="downloadPercent" 
+                      :stroke-width="8" 
+                      :show-text="false"
+                      status="primary"
+                    />
+                    <div v-if="downloadProgress.completed && downloadProgress.total" class="progress-size">
+                      {{ formatBytes(downloadProgress.completed) }} / {{ formatBytes(downloadProgress.total) }}
+                    </div>
+                  </div>
+                </div>
+                <el-button 
+                  type="primary" 
+                  plain 
+                  size="small"
+                  :loading="pullingModel === model.name"
+                  :disabled="pullingModel !== '' && pullingModel !== model.name || isModelInstalled(model.name)"
+                  @click="handlePullModel(model.name)"
+                >
+                  {{ pullingModel === model.name ? '下载中...' : (isModelInstalled(model.name) ? '已安装' : '下载') }}
+                </el-button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 测试连接 -->
+          <div class="setting-item">
+            <el-button 
+              type="success" 
+              plain 
+              :loading="localTestLoading" 
+              @click="handleTestOllamaConnection"
+              style="width: 100%"
+            >
+              {{ localTestLoading ? '测试中...' : '🔌 测试 Ollama 连接' }}
+            </el-button>
+            <div v-if="localTestResult" class="test-result" :class="localTestResult.success ? 'test-success' : 'test-error'">
+              <div v-if="localTestResult.success">✅ 连接正常！Ollama 服务运行良好</div>
+              <div v-else>
+                ❌ 失败 [{{ localTestResult.error?.code || 'ERROR' }}]：{{ localTestResult.error?.message || '未知错误' }}
+              </div>
+            </div>
+          </div>
+        </template>
 
         <!-- 隐私模式 -->
         <div class="setting-item">
@@ -333,22 +530,33 @@
           </div>
         </div>
 
-        <!-- 测试连接 -->
+        <!-- OCR预处理 -->
         <div class="setting-item">
+          <div class="setting-label-row">
+            <label class="setting-label">OCR预处理</label>
+            <el-switch v-model="aiSettings.ocrPreprocess" size="small" />
+          </div>
+          <div class="setting-hint" style="margin-top: 4px;">
+            开启后，截图分析时会先用OCR提取截图中的文字，再发送给AI分析。对本地小模型效果提升明显。
+          </div>
+        </div>
+
+        <!-- 测试连接 -->
+        <div class="setting-item" v-if="aiSettings.mode === 'cloud'">
           <el-button 
             type="success" 
             plain 
-            :loading="testLoading" 
+            :loading="cloudTestLoading" 
             @click="handleTestConnection"
             style="width: 100%"
           >
-            {{ testLoading ? '测试中...' : '🔌 测试连接' }}
+            {{ cloudTestLoading ? '测试中...' : '🔌 测试连接' }}
           </el-button>
-          <div v-if="testResult" class="test-result" :class="testResult.success ? 'test-success' : 'test-error'">
-            <div v-if="testResult.success">✅ 连接成功！回复：{{ testResult.data.reply }}</div>
+          <div v-if="cloudTestResult" class="test-result" :class="cloudTestResult.success ? 'test-success' : 'test-error'">
+            <div v-if="cloudTestResult.success">✅ 连接成功！回复：{{ cloudTestResult.data?.reply || cloudTestResult.data?.message || 'OK' }}</div>
             <div v-else>
-              ❌ 失败 [{{ testResult.error.code }}]：{{ testResult.error.message }}
-              <div v-if="testResult.error.details" class="test-details">{{ testResult.error.details }}</div>
+              ❌ 失败 [{{ cloudTestResult.error?.code || 'ERROR' }}]：{{ cloudTestResult.error?.message || '未知错误' }}
+              <div v-if="cloudTestResult.error?.details" class="test-details">{{ cloudTestResult.error.details }}</div>
             </div>
           </div>
         </div>
@@ -359,12 +567,113 @@
         <el-button type="primary" @click="saveSettings">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="showInstallGuide" title="Ollama 安装指南" width="700px" destroy-on-close @opened="installStep = 0">
+      <div class="install-guide">
+        <!-- 步骤条 -->
+        <el-steps :active="installStep" finish-status="success" align-center class="install-steps">
+          <el-step title="选择平台" description="选择您的操作系统" />
+          <el-step title="下载安装" description="下载并安装 Ollama" />
+          <el-step title="验证安装" description="检测安装结果" />
+        </el-steps>
+
+        <!-- 步骤1: 选择平台 -->
+        <div v-show="installStep === 0" class="install-step-content">
+          <div class="install-guide-intro">
+            <el-icon :size="48" class="guide-icon"><Monitor /></el-icon>
+            <h3>欢迎使用本地 AI 助手</h3>
+            <p>Ollama 是一个本地大模型运行工具，支持在您的电脑上运行 Qwen、Llama 等大模型。</p>
+            <p>安装后，所有 AI 分析将在本地完成，数据不会离开您的电脑，确保数据安全。</p>
+          </div>
+
+          <div class="platform-selection">
+            <div class="platform-selection-title">请选择您的操作系统：</div>
+            <div class="platform-cards">
+              <div 
+                class="platform-card" 
+                :class="{ active: selectedPlatform === 'windows' }"
+                @click="selectedPlatform = 'windows'"
+              >
+                <el-icon :size="32"><Monitor /></el-icon>
+                <span>Windows</span>
+              </div>
+              <div 
+                class="platform-card" 
+                :class="{ active: selectedPlatform === 'mac' }"
+                @click="selectedPlatform = 'mac'"
+              >
+                <el-icon :size="32"><Iphone /></el-icon>
+                <span>macOS</span>
+              </div>
+              <div 
+                class="platform-card" 
+                :class="{ active: selectedPlatform === 'linux' }"
+                @click="selectedPlatform = 'linux'"
+              >
+                <el-icon :size="32"><Monitor /></el-icon>
+                <span>Linux</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 步骤2: 下载安装 -->
+        <div v-show="installStep === 1" class="install-step-content">
+          <div class="download-section">
+            <el-button type="primary" size="large" @click="openDownloadPage">
+              <el-icon><Download /></el-icon>
+              前往 Ollama 官网下载
+            </el-button>
+            <p class="download-hint">点击上方按钮将在浏览器中打开 Ollama 官方下载页面</p>
+          </div>
+
+          <div class="install-instructions">
+            <div class="instructions-title">
+              {{ selectedPlatform === 'windows' ? 'Windows' : selectedPlatform === 'mac' ? 'macOS' : 'Linux' }} 安装步骤：
+            </div>
+            <ol class="step-list">
+              <li v-for="(step, idx) in currentPlatformSteps" :key="idx" class="step-item-detail">
+                <span class="step-number">{{ idx + 1 }}</span>
+                <span class="step-text">{{ step }}</span>
+              </li>
+            </ol>
+          </div>
+        </div>
+
+        <!-- 步骤3: 验证安装 -->
+        <div v-show="installStep === 2" class="install-step-content">
+          <div class="verify-section">
+            <el-icon :size="48" class="guide-icon"><CircleCheck /></el-icon>
+            <h3>安装完成？</h3>
+            <p>安装完成后，点击下方按钮检测 Ollama 是否正常运行</p>
+            <el-button type="success" size="large" :loading="ollamaLoading" @click="verifyInstallation">
+              <el-icon><Refresh /></el-icon>
+              检测 Ollama 状态
+            </el-button>
+          </div>
+
+          <div v-if="ollamaStatus?.state === 'running'" class="verify-success">
+            <el-alert type="success" :closable="false" show-icon>
+              <template #title>
+                ✅ Ollama 安装成功！已检测到 {{ ollamaStatus?.models?.length || 0 }} 个模型
+              </template>
+            </el-alert>
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button v-if="installStep > 0" @click="installStep--">上一步</el-button>
+        <el-button v-if="installStep < 2" type="primary" @click="installStep++">下一步</el-button>
+        <el-button v-else @click="showInstallGuide = false">完成</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, nextTick, onMounted } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ref, reactive, computed, nextTick, onMounted, onUnmounted, onDeactivated, onActivated, watch } from 'vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 
@@ -390,6 +699,11 @@ import {
   User,
   MagicStick,
   Promotion,
+  Monitor,
+  Download,
+  Refresh,
+  CircleCheck,
+  Iphone,
 } from '@element-plus/icons-vue';
 
 const showSettings = ref(false);
@@ -414,18 +728,95 @@ const aiSettings = reactive({
   provider: 'openai',
   privacyMode: false,
   sensitiveWords: '',
+  mode: 'cloud' as 'cloud' | 'local',
+  ollamaModel: '',
+  ollamaUrl: 'http://localhost:11434',
+  // OCR预处理默认：云端模式关闭，本地模式开启
+  ocrPreprocess: false,
 });
 
-const isConfigured = computed(() => aiSettings.apiKey.length > 0);
+const isConfigured = computed(() => {
+  if (aiSettings.mode === 'cloud') {
+    return aiSettings.apiKey.length > 0;
+  }
+  return aiSettings.ollamaModel.length > 0;
+});
 
-const testLoading = ref(false);
-const testResult = ref<any>(null);
+const cloudTestLoading = ref(false);
+const cloudTestResult = ref<any>(null);
+const localTestLoading = ref(false);
+const localTestResult = ref<any>(null);
 const settingsLoaded = ref(false);
+
+const ollamaStatus = ref<{ state: string; models?: any[]; error?: string } | null>(null);
+const ollamaLoading = ref(false);
+const recommendedModels = ref<Array<{ name: string; label: string; description: string; size: string; minMemory: number; supportsVision: boolean }>>([]);
+const installGuide = ref<{ windows: string[]; mac: string[]; linux: string[]; downloadUrl: string } | null>(null);
+const showInstallGuide = ref(false);
+const installStep = ref(0);
+const selectedPlatform = ref<'windows' | 'mac' | 'linux'>('windows');
+const pullingModel = ref('');
+const downloadProgress = ref<{ modelName: string; status: string; completed?: number; total?: number } | null>(null);
+let pullProgressCleanup: (() => void) | null = null;
+let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+const HEALTH_CHECK_INTERVAL = 30000; // 30秒轮询一次
+
+const downloadPercent = computed(() => {
+  if (!downloadProgress.value) return 0;
+  const { completed, total } = downloadProgress.value;
+  if (!completed || !total) return 0;
+  return Math.min(Math.round((completed / total) * 100), 100);
+});
+
+// 已安装模型名称集合
+const installedModelNames = computed(() => {
+  if (!ollamaStatus.value?.models) return new Set<string>();
+  return new Set(ollamaStatus.value.models.map(m => m.name));
+});
+
+// 检查模型是否已安装
+const isModelInstalled = (modelName: string) => installedModelNames.value.has(modelName);
+
+const currentPlatformSteps = computed(() => {
+  if (!installGuide.value) return [];
+  const platformMap = {
+    windows: installGuide.value.windows,
+    mac: installGuide.value.mac,
+    linux: installGuide.value.linux,
+  };
+  return platformMap[selectedPlatform.value] || [];
+});
+
+async function verifyInstallation() {
+  installStep.value = 2;
+  await checkOllamaStatus();
+}
+
+function formatDownloadStatus(status: string): string {
+  const statusMap: Record<string, string> = {
+    starting: '正在准备...',
+    pulling: '正在下载...',
+    downloading: '正在下载...',
+    extracting: '正在解压...',
+    verifying: '正在校验...',
+    'writing manifest': '正在写入...',
+    'removing any unused layers': '正在清理...',
+    success: '下载完成',
+  };
+  return statusMap[status] || status;
+}
+
+function formatBytes(bytes?: number): string {
+  if (!bytes) return '0 B';
+  if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB';
+  if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+  return (bytes / 1024).toFixed(0) + ' KB';
+}
 
 async function handleTestConnection() {
   if (!window.api) return;
-  testLoading.value = true;
-  testResult.value = null;
+  cloudTestLoading.value = true;
+  cloudTestResult.value = null;
   try {
     let baseUrl = aiSettings.baseUrl.trim().replace(/\/+$/, '');
     const res = await window.api.ai.testConnection({
@@ -433,12 +824,244 @@ async function handleTestConnection() {
       apiKey: aiSettings.apiKey,
       model: aiSettings.model,
     });
-    testResult.value = res;
+    cloudTestResult.value = res;
   } catch (err: any) {
-    testResult.value = { success: false, error: { code: 'CLIENT_ERROR', message: err.message } };
+    cloudTestResult.value = { success: false, error: { code: 'CLIENT_ERROR', message: err.message } };
   } finally {
-    testLoading.value = false;
+    cloudTestLoading.value = false;
   }
+}
+
+async function checkOllamaStatus() {
+  if (!window.api) return;
+  ollamaLoading.value = true;
+  try {
+    const res = await window.api.ollama.getStatus(aiSettings.ollamaUrl);
+    if (res.success && res.data) {
+      ollamaStatus.value = res.data;
+    } else {
+      ollamaStatus.value = { state: 'not_installed', error: res.error?.message };
+    }
+  } catch (err: any) {
+    ollamaStatus.value = { state: 'not_installed', error: err.message };
+  } finally {
+    ollamaLoading.value = false;
+  }
+}
+
+async function loadRecommendedModels() {
+  if (!window.api) return;
+  try {
+    const res = await window.api.ollama.getRecommendedModels();
+    if (res.success && res.data) {
+      recommendedModels.value = res.data;
+    }
+  } catch (err) {
+    console.error('加载推荐模型失败:', err);
+  }
+}
+
+async function loadInstallGuide() {
+  if (!window.api) return;
+  try {
+    const res = await window.api.ollama.getInstallGuide();
+    if (res.success && res.data) {
+      installGuide.value = res.data;
+    }
+  } catch (err) {
+    console.error('加载安装指南失败:', err);
+  }
+}
+
+async function handleStartOllama() {
+  if (!window.api) return;
+  ollamaLoading.value = true;
+  try {
+    const res = await window.api.ollama.start(aiSettings.ollamaUrl);
+    if (res.success) {
+      ElMessage.success('Ollama 启动成功');
+      await checkOllamaStatus();
+    } else {
+      ElMessage.error('启动失败：' + (res.error?.message || '未知错误'));
+    }
+  } catch (err: any) {
+    ElMessage.error('启动失败：' + err.message);
+  } finally {
+    ollamaLoading.value = false;
+  }
+}
+
+async function handlePullModel(modelName: string) {
+  if (!window.api) return;
+  pullingModel.value = modelName;
+  downloadProgress.value = { modelName, status: 'starting' };
+
+  // 注册进度事件监听器
+  if (window.api.ollama.onPullProgress) {
+    pullProgressCleanup = window.api.ollama.onPullProgress((data) => {
+      if (data.modelName === modelName) {
+        downloadProgress.value = data;
+      }
+    });
+  }
+
+  try {
+    ElMessage.info(`正在下载模型 ${modelName}，请稍候...`);
+    const res = await window.api.ollama.pullModel(modelName, aiSettings.ollamaUrl);
+    if (res.success) {
+      ElMessage.success('模型下载成功');
+      downloadProgress.value = null;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      await checkOllamaStatus();
+    } else {
+      const errorMsg = res.error?.message || '未知错误';
+      // 提供更友好的错误提示
+      if (errorMsg.includes('磁盘空间不足')) {
+        ElMessage.error(`磁盘空间不足，请清理磁盘后重试。${errorMsg}`);
+      } else if (errorMsg.includes('HTTP 404') || errorMsg.includes('not found')) {
+        ElMessage.error(`模型 ${modelName} 不存在，请检查模型名称是否正确`);
+      } else if (errorMsg.includes('HTTP 500') || errorMsg.includes('internal server error')) {
+        ElMessage.error('Ollama服务内部错误，请重启Ollama后重试');
+      } else if (errorMsg.includes('超时') || errorMsg.includes('timeout')) {
+        ElMessage.error('下载超时，请检查网络连接后重试');
+      } else if (errorMsg.includes('connection refused') || errorMsg.includes('ECONNREFUSED')) {
+        ElMessage.error('无法连接到Ollama服务，请确认Ollama已启动');
+      } else {
+        ElMessage.error('下载失败：' + errorMsg);
+      }
+      downloadProgress.value = null;
+    }
+  } catch (err: any) {
+    ElMessage.error('下载失败：' + err.message);
+    downloadProgress.value = null;
+  } finally {
+    pullingModel.value = '';
+    // 清理事件监听器
+    if (pullProgressCleanup) {
+      pullProgressCleanup();
+      pullProgressCleanup = null;
+    }
+  }
+}
+
+async function handleDeleteModel(modelName: string) {
+  if (!window.api) return;
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除模型 ${modelName} 吗？删除后不可恢复。`,
+      '确认删除',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+    );
+    const res = await window.api.ollama.deleteModel(modelName, aiSettings.ollamaUrl);
+    if (res.success) {
+      ElMessage.success('模型已删除');
+      // 如果删除的是当前选中的模型，清空选择
+      if (aiSettings.ollamaModel === modelName) {
+        aiSettings.ollamaModel = '';
+      }
+      await new Promise(resolve => setTimeout(resolve, 500));
+      await checkOllamaStatus();
+    } else {
+      // 检查模型是否实际存在
+      await checkOllamaStatus();
+      const stillExists = ollamaStatus.value?.models?.some(m => m.name === modelName);
+      if (!stillExists) {
+        ElMessage.success('模型已删除');
+        if (aiSettings.ollamaModel === modelName) {
+          aiSettings.ollamaModel = '';
+        }
+      } else {
+        ElMessage.error('删除失败：' + (res.error?.message || '未知错误'));
+      }
+    }
+  } catch (err: any) {
+    if (err !== 'cancel') {
+      ElMessage.error('删除失败：' + err.message);
+    }
+  }
+}
+
+async function handleTestOllamaConnection() {
+  if (!window.api) return;
+  localTestLoading.value = true;
+  localTestResult.value = null;
+  try {
+    const res = await window.api.ollama.testConnection(aiSettings.ollamaUrl);
+    localTestResult.value = res;
+  } catch (err: any) {
+    localTestResult.value = { success: false, error: { code: 'CLIENT_ERROR', message: err.message } };
+  } finally {
+    localTestLoading.value = false;
+  }
+}
+
+function openDownloadPage() {
+  if (installGuide.value?.downloadUrl && window.api) {
+    window.api.shell.openExternal(installGuide.value.downloadUrl);
+  }
+}
+
+async function handleDialogOpened() {
+  await loadRecommendedModels();
+  await loadInstallGuide();
+  if (aiSettings.mode === 'local') {
+    await checkOllamaStatus();
+    startHealthCheck();
+  }
+}
+
+watch(showSettings, (visible) => {
+  if (visible && aiSettings.mode === 'local') {
+    startHealthCheck();
+  } else {
+    stopHealthCheck();
+  }
+});
+
+watch(() => aiSettings.mode, (mode) => {
+  if (mode === 'local' && showSettings.value) {
+    startHealthCheck();
+  } else {
+    stopHealthCheck();
+  }
+  // 切换模式时清空对应的测试结果
+  if (mode === 'cloud') {
+    localTestResult.value = null;
+  } else {
+    cloudTestResult.value = null;
+  }
+  // 恢复对应模式的配置
+  restoreModeSettings(mode);
+});
+
+// 首次使用提示：检测到Ollama未安装时自动弹出引导
+const hasShownInstallPrompt = ref(false);
+watch(
+  () => ollamaStatus.value?.state,
+  (state) => {
+    if (
+      state === 'not_installed' &&
+      aiSettings.mode === 'local' &&
+      showSettings.value &&
+      !hasShownInstallPrompt.value
+    ) {
+      hasShownInstallPrompt.value = true;
+      setTimeout(() => {
+        showInstallGuide.value = true;
+      }, 500);
+    }
+  }
+);
+
+function formatModelSize(bytes: number): string {
+  if (!bytes || bytes <= 0) return '未知';
+  if (bytes >= 1073741824) {
+    return (bytes / 1073741824).toFixed(1) + ' GB';
+  }
+  if (bytes >= 1048576) {
+    return (bytes / 1048576).toFixed(0) + ' MB';
+  }
+  return (bytes / 1024).toFixed(0) + ' KB';
 }
 
 // 加载项目列表
@@ -526,19 +1149,39 @@ async function loadSettings() {
   try {
     const res = await window.api.ai.getConfig();
     if (res.success && res.data && Object.keys(res.data).length > 0) {
-      aiSettings.apiKey = res.data.apiKey || '';
-      aiSettings.baseUrl = res.data.apiBase || 'https://api.openai.com/v1';
-      aiSettings.model = res.data.model || 'gpt-4o';
-      aiSettings.temperature = res.data.temperature ?? 0.3;
+      const data = res.data;
+      // 保存通用配置
+      aiSettings.mode = data.mode || 'cloud';
+      aiSettings.privacyMode = (data.privacyMode ?? 0) === 1;
+      aiSettings.sensitiveWords = data.sensitiveWords || '';
+      aiSettings.temperature = data.temperature ?? 0.3;
+      // 本地配置
+      aiSettings.ollamaModel = data.ollamaModel || '';
+      aiSettings.ollamaUrl = data.ollamaUrl || 'http://localhost:11434';
+      // 云端配置
+      aiSettings.apiKey = data.apiKey || '';
+      aiSettings.baseUrl = data.apiBase || 'https://api.openai.com/v1';
+      aiSettings.model = data.model || 'gpt-4o';
       aiSettings.fullUrl = aiSettings.baseUrl.includes('/v1');
       aiSettings.apiFormat = 'openai';
-      aiSettings.privacyMode = (res.data.privacyMode ?? 0) === 1;
-      aiSettings.sensitiveWords = res.data.sensitiveWords || '';
+      // OCR预处理配置：云端模式默认关闭，本地模式默认开启
+      aiSettings.ocrPreprocess = data.ocrPreprocess !== undefined ? data.ocrPreprocess : (data.mode === 'local');
     }
   } catch (e) {
     console.error('Failed to load AI settings', e);
   } finally {
     settingsLoaded.value = true;
+  }
+}
+
+// 切换模式时恢复对应配置
+function restoreModeSettings(mode: 'cloud' | 'local') {
+  if (mode === 'cloud') {
+    // 切换到云端模式时，恢复云端配置
+    // 配置已经从数据库加载，无需额外操作
+  } else {
+    // 切换到本地模式时，恢复本地配置
+    // 配置已经从数据库加载，无需额外操作
   }
 }
 
@@ -557,11 +1200,14 @@ async function saveSettings() {
       temperature: aiSettings.temperature,
       privacyMode: aiSettings.privacyMode ? 1 : 0,
       sensitiveWords: aiSettings.sensitiveWords,
+      mode: aiSettings.mode,
+      ollamaModel: aiSettings.ollamaModel,
+      ollamaUrl: aiSettings.ollamaUrl,
+      ocrPreprocess: aiSettings.ocrPreprocess,
     });
     if (res.success) {
       ElMessage.success('设置已保存');
       showSettings.value = false;
-      await loadSettings();
     } else {
       ElMessage.error('保存失败：' + (res.error?.message || '未知错误'));
     }
@@ -734,6 +1380,7 @@ async function analyzeScreenshot() {
           command: '',
           result: '请根据截图内容进行分析',
           screenshots: [saveResult.data.path],
+          ocrPreprocess: aiSettings.ocrPreprocess,
         });
         
         if (res.success && res.data) {
@@ -769,9 +1416,42 @@ async function analyzeScreenshot() {
   }
 }
 
+function startHealthCheck() {
+  if (healthCheckTimer) return;
+  healthCheckTimer = setInterval(() => {
+    if (aiSettings.mode === 'local' && showSettings.value) {
+      checkOllamaStatus();
+    }
+  }, HEALTH_CHECK_INTERVAL);
+}
+
+function stopHealthCheck() {
+  if (healthCheckTimer) {
+    clearInterval(healthCheckTimer);
+    healthCheckTimer = null;
+  }
+}
+
 onMounted(async () => {
   await loadSettings();
   loadProjects();
+});
+
+onUnmounted(() => {
+  stopHealthCheck();
+  if (pullProgressCleanup) {
+    pullProgressCleanup();
+  }
+});
+
+onDeactivated(() => {
+  stopHealthCheck();
+});
+
+onActivated(() => {
+  if (aiSettings.mode === 'local' && showSettings.value) {
+    startHealthCheck();
+  }
 });
 </script>
 
@@ -1438,6 +2118,359 @@ onMounted(async () => {
   border: none;
   border-top: 1px solid #eee;
   margin: 1em 0;
+}
+
+.ollama-status-panel {
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.ollama-status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.ollama-status-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ollama-status-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ollama-status-icon {
+  font-size: 28px;
+  flex-shrink: 0;
+}
+
+.ollama-status-icon.not-installed {
+  opacity: 0.7;
+}
+
+.ollama-status-icon.not-running {
+  opacity: 0.8;
+}
+
+.ollama-status-text {
+  flex: 1;
+}
+
+.ollama-status-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.ollama-status-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.model-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+
+  &:hover {
+    border-color: var(--primary-color);
+  }
+
+  &.selected {
+    border-color: var(--primary-color);
+    background: rgba(64, 158, 255, 0.08);
+  }
+
+  &.recommended {
+    cursor: default;
+
+    &:hover {
+      border-color: var(--border-color);
+    }
+  }
+}
+
+.model-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+
+.model-size {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.model-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+
+.model-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.download-progress {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: rgba(64, 158, 255, 0.06);
+  border-radius: 6px;
+  border: 1px solid rgba(64, 158, 255, 0.15);
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.progress-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.progress-percent {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary-color, #409eff);
+}
+
+.progress-size {
+  font-size: 11px;
+  color: var(--text-placeholder, #909399);
+  margin-top: 4px;
+  text-align: right;
+}
+
+.install-steps {
+  margin-bottom: 30px;
+  padding: 0 20px;
+}
+
+.install-step-content {
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.guide-icon {
+  color: var(--primary-color, #409eff);
+  margin-bottom: 16px;
+}
+
+.platform-selection {
+  margin-top: 24px;
+}
+
+.platform-selection-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 16px;
+}
+
+.platform-cards {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+}
+
+.platform-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 20px 32px;
+  background: var(--bg-hover);
+  border: 2px solid var(--border-color);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 14px;
+  color: var(--text-secondary);
+
+  &:hover {
+    border-color: var(--primary-color);
+    background: rgba(64, 158, 255, 0.08);
+  }
+
+  &.active {
+    border-color: var(--primary-color);
+    background: rgba(64, 158, 255, 0.12);
+    color: var(--primary-color);
+  }
+}
+
+.download-section {
+  text-align: center;
+  padding: 30px 0;
+}
+
+.download-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 12px;
+}
+
+.install-instructions {
+  margin-top: 24px;
+  padding: 16px;
+  background: var(--bg-hover);
+  border-radius: 8px;
+}
+
+.instructions-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+
+.step-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  counter-reset: step;
+}
+
+.step-item-detail {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--primary-color, #409eff);
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.step-text {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.verify-section {
+  text-align: center;
+  padding: 30px 0;
+}
+
+.verify-section h3 {
+  font-size: 18px;
+  color: var(--text-primary);
+  margin: 16px 0 8px;
+}
+
+.verify-section p {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+}
+
+.verify-success {
+  margin-top: 20px;
+}
+
+.install-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.install-guide-intro {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.install-guide-intro p {
+  margin: 0 0 6px 0;
+}
+
+.install-guide-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.install-guide-platform {
+  background: var(--bg-hover);
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.platform-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.install-guide-platform ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.install-guide-platform li {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.8;
+}
+
+.install-guide-note {
+  margin-top: 8px;
 }
 
 // 深色主题覆盖

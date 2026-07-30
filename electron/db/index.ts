@@ -72,6 +72,7 @@ export async function initDatabase(): Promise<void> {
       await autoCreateTables(sqlite);
     }
 
+    migrateAiConfigsTable(sqlite);
     createIndexes(sqlite);
     await initDefaultData();
     await initStandardLibrary();
@@ -320,6 +321,9 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
       enable_ai INTEGER NOT NULL DEFAULT 0,
       privacy_mode INTEGER NOT NULL DEFAULT 0,
       sensitive_words TEXT,
+      mode TEXT DEFAULT 'cloud',
+      ollama_model TEXT,
+      ollama_url TEXT DEFAULT 'http://localhost:11434',
       updated_at TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
@@ -352,6 +356,32 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
   `);
 
   log.info('自动建表完成');
+}
+
+function migrateAiConfigsTable(sqlite: Database.Database): void {
+  try {
+    const columns = sqlite.prepare("PRAGMA table_info(ai_configs)").all() as Array<{ name: string }>;
+    const columnNames = columns.map(c => c.name);
+
+    if (!columnNames.includes('mode')) {
+      sqlite.exec("ALTER TABLE ai_configs ADD COLUMN mode TEXT DEFAULT 'cloud'");
+      log.info('已添加 mode 列到 ai_configs 表');
+    }
+    if (!columnNames.includes('ollama_model')) {
+      sqlite.exec("ALTER TABLE ai_configs ADD COLUMN ollama_model TEXT");
+      log.info('已添加 ollama_model 列到 ai_configs 表');
+    }
+    if (!columnNames.includes('ollama_url')) {
+      sqlite.exec("ALTER TABLE ai_configs ADD COLUMN ollama_url TEXT DEFAULT 'http://localhost:11434'");
+      log.info('已添加 ollama_url 列到 ai_configs 表');
+    }
+    if (!columnNames.includes('ocr_preprocess')) {
+      sqlite.exec("ALTER TABLE ai_configs ADD COLUMN ocr_preprocess INTEGER NOT NULL DEFAULT 1");
+      log.info('已添加 ocr_preprocess 列到 ai_configs 表');
+    }
+  } catch (err) {
+    log.warn('迁移 ai_configs 表失败:', err);
+  }
 }
 
 function createIndexes(sqlite: Database.Database): void {

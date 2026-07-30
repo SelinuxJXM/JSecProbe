@@ -2,11 +2,29 @@ import { ipcMain } from 'electron';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
-import { readFile } from 'fs/promises';
+import { readFile, stat } from 'fs/promises';
 import log from 'electron-log';
 import sharp from 'sharp';
-import { createWorker } from 'tesseract.js';
 import { writeOperationLog } from '../utils/operation-log';
+import {
+  getOllamaStatus,
+  listModels,
+  pullModel,
+  deleteModel,
+  startOllama,
+  getInstallGuide,
+  testOllamaConnection,
+  RECOMMENDED_MODELS,
+} from '../services/ollama.service';
+import {
+  extractTextFromImage,
+  extractTextFromMultipleImages,
+  isOCREnabled,
+  getSharedWorker,
+} from '../services/ocr.service';
+
+const MAX_IMAGE_SIZE_MB = 20;
+const MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024;
 
 // 进度存储（用于轮询 fallback）
 let currentProgress: { stage: string; message: string; percent: number; timestamp: number } | null = null;
@@ -42,9 +60,16 @@ async function encodeImageToBase64(imagePath: string, maxSizeKB: number = 120): 
       return '';
     }
 
+    const fileStats = await stat(imagePath);
+    const originalSizeMB = fileStats.size / (1024 * 1024);
+    if (fileStats.size > MAX_IMAGE_SIZE_BYTES) {
+      log.warn(`[图片编码] 图片过大，跳过: ${imagePath}, 大小: ${originalSizeMB.toFixed(1)} MB (最大限制: ${MAX_IMAGE_SIZE_MB} MB)`);
+      return '';
+    }
+    log.info(`[图片编码] 路径: ${imagePath}, 原始大小: ${originalSizeMB.toFixed(1)} MB`);
+
     const imageBuffer = await readFile(imagePath);
     const originalSizeKB = imageBuffer.length / 1024;
-    log.info(`[图片编码] 路径: ${imagePath}, 原始大小: ${originalSizeKB.toFixed(1)} KB`);
 
     if (originalSizeKB <= maxSizeKB) {
       return imageBuffer.toString('base64');
@@ -64,20 +89,24 @@ async function encodeImageToBase64(imagePath: string, maxSizeKB: number = 120): 
 }
 
 async function desensitizeImage(imagePath: string): Promise<string> {
-  let worker: Awaited<ReturnType<typeof createWorker>> | null = null;
   try {
     if (!isImageFile(imagePath)) {
       return '';
     }
+    const fileStats = await stat(imagePath);
+    const originalSizeMB = fileStats.size / (1024 * 1024);
+    if (fileStats.size > MAX_IMAGE_SIZE_BYTES) {
+      log.warn(`[图片脱敏] 图片过大，跳过脱敏: ${imagePath}, 大小: ${originalSizeMB.toFixed(1)} MB (最大限制: ${MAX_IMAGE_SIZE_MB} MB)`);
+      return '';
+    }
     const imageBuffer = await readFile(imagePath);
-    const originalSizeKB = imageBuffer.length / 1024;
-    log.info(`[图片脱敏] 路径: ${imagePath}, 原始大小: ${originalSizeKB.toFixed(1)} KB`);
+    log.info(`[图片脱敏] 路径: ${imagePath}, 原始大小: ${originalSizeMB.toFixed(1)} MB`);
 
     const meta = await sharp(imageBuffer).metadata();
     const width = meta.width || 0;
     const height = meta.height || 0;
 
-    worker = await getSharedOcrWorker();
+    const worker = await getSharedWorker('eng');
     if (!worker) {
       log.warn(`[图片脱敏] OCR worker 不可用，发送原图`);
       return imageBuffer.toString('base64');
@@ -124,8 +153,8 @@ async function desensitizeImage(imagePath: string): Promise<string> {
       .jpeg({ quality: 85 })
       .toBuffer();
 
-    const processedSizeKB = processed.length / 1024;
-    log.info(`[图片脱敏] ${imagePath}: 共遮盖 ${maskRects.length} 处敏感文本, ${originalSizeKB.toFixed(1)} KB → ${processedSizeKB.toFixed(1)} KB`);
+    const processedSizeMB = processed.length / (1024 * 1024);
+    log.info(`[图片脱敏] ${imagePath}: 共遮盖 ${maskRects.length} 处敏感文本, ${originalSizeMB.toFixed(1)} MB → ${processedSizeMB.toFixed(1)} MB`);
     return processed.toString('base64');
   } catch (err: any) {
     log.error(`[图片脱敏失败] ${imagePath}: ${err.message}，将发送原图`);
@@ -133,10 +162,6 @@ async function desensitizeImage(imagePath: string): Promise<string> {
       return (await readFile(imagePath)).toString('base64');
     } catch {
       return '';
-    }
-  } finally {
-    if (worker !== sharedOcrWorker && worker) {
-      try { await worker.terminate(); } catch {}
     }
   }
 }
@@ -155,6 +180,25 @@ function ensureApiUrl(baseUrl: string | null | undefined): string {
     return `${base}/chat/completions`;
   }
   return `${base}/v1/chat/completions`;
+}
+
+function getApiKeyForMode(config: any): string {
+  if (config.mode === 'local') {
+    // 本地Ollama模式固定使用 'ollama' 作为API key，不使用云端保存的key
+    return 'ollama';
+  }
+  return config.apiKey || '';
+}
+
+function shouldValidateApiKey(config: any): boolean {
+  return config.mode !== 'local';
+}
+
+function getEffectiveModel(params: any, config: any): string {
+  if (config.mode === 'local') {
+    return params.model || config.ollamaModel || config.model || '';
+  }
+  return params.model || config.model || '';
 }
 
 function desensitizeText(text: string, extraWords?: string[]): string {
@@ -217,27 +261,7 @@ function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
     });
 }
 
-let sharedOcrWorker: Awaited<ReturnType<typeof createWorker>> | null = null;
-let sharedOcrInitializing: Promise<Awaited<ReturnType<typeof createWorker>> | null> | null = null;
 
-async function getSharedOcrWorker(): Promise<Awaited<ReturnType<typeof createWorker>> | null> {
-  if (sharedOcrWorker) return sharedOcrWorker;
-  if (sharedOcrInitializing) return sharedOcrInitializing;
-  
-  sharedOcrInitializing = (async () => {
-    try {
-      const worker = await createWorker('eng');
-      sharedOcrWorker = worker;
-      return worker;
-    } catch (error) {
-      sharedOcrInitializing = null;
-      log.error('[OCR] 初始化 worker 失败:', error);
-      return null;
-    }
-  })();
-  
-  return sharedOcrInitializing;
-}
 
 export function registerAIHandlers(): void {
   ipcMain.handle('ai:getConfig', async () =>
@@ -252,6 +276,12 @@ export function registerAIHandlers(): void {
     wrap(async () => {
       const db = getDb();
       const now = new Date().toISOString();
+      const mode = config.mode || 'cloud';
+
+      // 先读取现有配置，保留另一模式的设置
+      const existingConfigs = await db.select().from(schema.aiConfigs).limit(1);
+      const existing = existingConfigs.length > 0 ? existingConfigs[0] : null;
+
       let apiBase = (config.apiBase || '').trim().replace(/\/+$/, '');
       if (apiBase.endsWith('/v1/chat/completions')) {
         apiBase = apiBase.replace(/\/v1\/chat\/completions\/?$/, '');
@@ -261,32 +291,142 @@ export function registerAIHandlers(): void {
       if (apiBase.endsWith('/v1')) {
         apiBase = apiBase.replace(/\/v1\/?$/, '');
       }
+
+      const ollamaUrl = config.ollamaUrl || 'http://localhost:11434';
+      const ollamaModel = config.ollamaModel || null;
+
+      let saveData: any = {
+        mode,
+        privacyMode: config.privacyMode ?? 0,
+        sensitiveWords: config.sensitiveWords || '',
+        temperature: config.temperature ?? 0.3,
+        // OCR预处理默认：云端模式关闭，本地模式开启
+        ocrPreprocess: config.ocrPreprocess !== undefined ? (config.ocrPreprocess ? 1 : 0) : (mode === 'local' ? 1 : 0),
+        updatedAt: now,
+      };
+
+      if (mode === 'local') {
+        // 本地模式：保留云端配置，更新本地配置
+        saveData.ollamaUrl = ollamaUrl;
+        saveData.ollamaModel = ollamaModel;
+        saveData.apiBase = `${ollamaUrl.replace(/\/+$/, '')}/v1`;
+        saveData.apiKey = 'ollama';
+        saveData.model = ollamaModel;
+        saveData.provider = 'ollama';
+        // 保留云端配置
+        if (existing) {
+          saveData.apiKey = existing.apiKey || '';
+          saveData.baseUrl = existing.apiBase || '';
+          saveData.cloudModel = existing.model || '';
+        }
+      } else {
+        // 云端模式：保留本地配置，更新云端配置
+        saveData.apiBase = apiBase;
+        saveData.apiKey = config.apiKey;
+        saveData.model = config.model;
+        saveData.provider = config.provider || 'openai';
+        // 保留本地配置
+        if (existing) {
+          saveData.ollamaUrl = existing.ollamaUrl || ollamaUrl;
+          saveData.ollamaModel = existing.ollamaModel || null;
+        } else {
+          saveData.ollamaUrl = ollamaUrl;
+          saveData.ollamaModel = null;
+        }
+      }
+
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length > 0) {
         await db.update(schema.aiConfigs)
-          .set({
-            apiBase,
-            apiKey: config.apiKey,
-            model: config.model,
-            temperature: config.temperature ?? 0.3,
-            privacyMode: config.privacyMode ?? 0,
-            sensitiveWords: config.sensitiveWords || '',
-            updatedAt: now,
-          })
+          .set(saveData)
           .where(eq(schema.aiConfigs.id, configs[0].id));
       } else {
         await db.insert(schema.aiConfigs).values({
           id: 'default',
-          apiBase,
-          apiKey: config.apiKey,
-          model: config.model,
-          temperature: config.temperature ?? 0.3,
-          privacyMode: config.privacyMode ?? 0,
-          sensitiveWords: config.sensitiveWords || '',
-          updatedAt: now,
+          ...saveData,
           createdAt: now,
         });
       }
+    })
+  );
+
+  ipcMain.handle('ollama:getStatus', async (_event, url?: string) =>
+    wrap(async () => {
+      return await getOllamaStatus(url);
+    })
+  );
+
+  ipcMain.handle('ollama:listModels', async (_event, url?: string) =>
+    wrap(async () => {
+      return await listModels(url);
+    })
+  );
+
+  ipcMain.handle('ollama:pullModel', async (_event, modelName: string, url?: string) => {
+    try {
+      const result = await pullModel(
+        modelName,
+        (progress) => {
+          try {
+            _event.sender.send('ollama:pullProgress', { modelName, ...progress });
+          } catch {
+            // ignore send errors
+          }
+        },
+        url,
+      );
+      if (!result) {
+        return sanitize({ success: false, error: { code: 'PULL_MODEL_ERROR', message: '模型下载失败，请检查Ollama服务状态和网络连接' } });
+      }
+      return sanitize({ success: true, data: { result } });
+    } catch (err: any) {
+      return sanitize({ success: false, error: { code: 'PULL_MODEL_ERROR', message: err.message } });
+    }
+  });
+
+  ipcMain.handle('ollama:deleteModel', async (_event, modelName: string, url?: string) => {
+    try {
+      const result = await deleteModel(modelName, url);
+      if (!result.success) {
+        return sanitize({ success: false, error: { code: 'DELETE_MODEL_ERROR', message: result.message } });
+      }
+      return sanitize({ success: true, data: true });
+    } catch (err: any) {
+      return sanitize({ success: false, error: { code: 'DELETE_MODEL_ERROR', message: err.message } });
+    }
+  });
+
+  ipcMain.handle('ollama:start', async (_event, url?: string) => {
+    try {
+      const result = await startOllama(url);
+      return sanitize({ success: result.success, data: result });
+    } catch (err: any) {
+      return sanitize({ success: false, error: { code: 'START_OLLAMA_ERROR', message: err.message } });
+    }
+  });
+
+  ipcMain.handle('ollama:getInstallGuide', async () =>
+    wrap(async () => {
+      return getInstallGuide();
+    })
+  );
+
+  ipcMain.handle('ollama:testConnection', async (_event, url?: string) => {
+    try {
+      const result = await testOllamaConnection(url);
+      if (result.success) {
+        return sanitize({ success: true, data: result });
+      } else {
+        return sanitize({ success: false, error: { code: 'TEST_CONNECTION_ERROR', message: result.message } });
+      }
+    } catch (err: any) {
+      return sanitize({ success: false, error: { code: 'TEST_CONNECTION_ERROR', message: err.message } });
+    }
+  });
+
+  ipcMain.handle('ollama:getRecommendedModels', async () =>
+    wrap(async () => {
+      return RECOMMENDED_MODELS;
     })
   );
 
@@ -302,15 +442,18 @@ export function registerAIHandlers(): void {
       if (configs.length === 0) return sanitize({ success: false, error: { code: 'NOT_CONFIGURED', message: 'AI未配置' } });
 
       const config = sanitize(configs[0]);
+      const mode = config.mode || 'cloud';
       const apiBase = params?.apiBase || config.apiBase || '';
-      const apiKey = params?.apiKey || config.apiKey || '';
-      const model = params?.model || config.model || '';
+      const apiKey = getApiKeyForMode({ ...config, apiKey: params?.apiKey || config.apiKey });
+      const model = getEffectiveModel(params, config);
 
-      if (!apiKey) return sanitize({ success: false, error: { code: 'NO_API_KEY', message: 'API Key未配置' } });
+      if (shouldValidateApiKey(config) && !apiKey) {
+        return sanitize({ success: false, error: { code: 'NO_API_KEY', message: 'API Key未配置' } });
+      }
       if (!apiBase) return sanitize({ success: false, error: { code: 'NO_API_BASE', message: 'API地址未配置' } });
 
       const apiUrl = ensureApiUrl(apiBase);
-      log.info(`[测试连接] URL: ${apiUrl}, 模型: ${model}, Key前4位: ${apiKey.substring(0, 4)}***`);
+      log.info(`[测试连接] 模式: ${mode}, URL: ${apiUrl}, 模型: ${model}`);
 
       const requestBody = {
         model,
@@ -349,7 +492,8 @@ export function registerAIHandlers(): void {
         data: {
           url: apiUrl,
           model,
-          reply: data.choices?.[0]?.message?.content || '无回复'
+          reply: data.choices?.[0]?.message?.content || '无回复',
+          mode,
         }
       });
     } catch (error: any) {
@@ -369,11 +513,16 @@ export function registerAIHandlers(): void {
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) throw new Error('AI未配置');
       const config = sanitize(configs[0]);
-      if (!config.apiKey) throw new Error('API Key未配置');
+      const mode = config.mode || 'cloud';
 
-      const model = params.model || config.model || '';
+      if (shouldValidateApiKey(config) && !config.apiKey) {
+        throw new Error('API Key未配置');
+      }
+
+      const model = getEffectiveModel(params, config);
       const temperature = params.temperature ?? config.temperature ?? 0.3;
       const apiUrl = ensureApiUrl(config.apiBase);
+      const apiKey = getApiKeyForMode(config);
 
       if (!apiUrl) throw new Error('API地址未配置');
 
@@ -389,7 +538,7 @@ export function registerAIHandlers(): void {
         temperature,
       });
       const bodySizeKB = Buffer.byteLength(requestBody, 'utf8') / 1024;
-      log.info(`[AI对话] 请求URL: ${apiUrl}, 模型: ${model}, 消息数: ${messages.length}, 请求体: ${bodySizeKB.toFixed(1)}KB`);
+      log.info(`[AI对话] 模式: ${mode}, URL: ${apiUrl}, 模型: ${model}, 消息数: ${messages.length}, 请求体: ${bodySizeKB.toFixed(1)}KB`);
 
       // 添加超时机制
       const dynamicTimeout = calculateTimeout(1, 0, bodySizeKB, false);
@@ -406,7 +555,7 @@ export function registerAIHandlers(): void {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${config.apiKey}`,
+            'Authorization': `Bearer ${apiKey}`,
           },
           body: requestBody,
           signal: abortController.signal,
@@ -435,7 +584,7 @@ export function registerAIHandlers(): void {
         writeOperationLog({
           action: 'ai_chat',
           module: 'ai',
-          description: `AI对话: 模型=${model}, 消息数=${params.messages.length}, 上下文=${params.context ? '是' : '否'}`,
+          description: `AI对话: 模式=${mode}, 模型=${model}, 消息数=${params.messages.length}, 上下文=${params.context ? '是' : '否'}`,
         });
       } catch (logErr: any) {
         log.error('[操作日志] 写入AI对话日志失败:', logErr.message);
@@ -471,27 +620,48 @@ export function registerAIHandlers(): void {
       command: string;
       result: string;
       screenshots?: string[];
+      ocrPreprocess?: boolean;
     };
     try {
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) throw new Error('AI未配置');
       const config = sanitize(configs[0]);
-      if (!config.apiKey) throw new Error('API Key未配置');
+      const mode = config.mode || 'cloud';
 
-      const model = config.model || '';
+      if (shouldValidateApiKey(config) && !config.apiKey) {
+        throw new Error('API Key未配置');
+      }
+
+      const model = mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
       const apiUrl = ensureApiUrl(config.apiBase);
+      const apiKey = getApiKeyForMode(config);
 
       if (!apiUrl) throw new Error('API地址未配置');
 
       const privacyMode = config.privacyMode === 1;
+      const ocrPreprocess = params.ocrPreprocess === true;
       const extraWords = config.sensitiveWords
         ? config.sensitiveWords.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
         : [];
       let hasScreenshots = params.screenshots && params.screenshots.length > 0;
 
       const userContent: any[] = [];
+
+      // OCR 预处理：提取截图中的文字
+      let ocrText = '';
+      if (hasScreenshots && ocrPreprocess) {
+        log.info(`[OCR预处理] 开始提取截图文字，数量: ${params.screenshots!.length}`);
+        const ocrResults = await extractTextFromMultipleImages(params.screenshots!, { preprocess: true });
+        for (const { path: imgPath, result: ocrResult } of ocrResults) {
+          const fileName = imgPath.split('\\').pop()?.split('/').pop() || 'unknown';
+          if (ocrResult.text && ocrResult.text.trim().length > 0) {
+            ocrText += `\n=== 截图 ${fileName} (OCR识别) ===\n${ocrResult.text}\n`;
+          }
+        }
+        log.info(`[OCR预处理] 提取完成，总文字长度: ${ocrText.length}`);
+      }
 
       if (hasScreenshots && privacyMode) {
         for (const screenshotPath of params.screenshots!) {
@@ -506,7 +676,7 @@ export function registerAIHandlers(): void {
           }
         }
         log.info(`[隐私模式] 截图已脱敏发送（OCR遮盖IP），数量: ${params.screenshots!.length}`);
-      } else if (hasScreenshots) {
+      } else if (hasScreenshots && !ocrPreprocess) {
         for (const screenshotPath of params.screenshots!) {
           const base64 = await encodeImageToBase64(screenshotPath);
           if (base64) {
@@ -526,9 +696,18 @@ export function registerAIHandlers(): void {
         ? desensitizeText(params.result || '无文本内容', extraWords)
         : params.result || '无文本内容，请分析图片中的证据信息';
 
+      // 构建用户内容，包含OCR提取的文字
+      let contentText = `关键证据点内容：${evidenceText}`;
+      if (ocrText && ocrText.trim().length > 0) {
+        contentText += `\n\n[OCR预处理提取的截图文字]${ocrText}`;
+      }
+      if (!hasScreenshots && !ocrText) {
+        contentText += '\n\n无截图，请根据文本内容进行分析';
+      }
+
       userContent.push({
         type: 'text',
-        text: `关键证据点内容：${evidenceText}`,
+        text: contentText,
       });
 
       const controlPoint = privacyMode ? desensitizeText(params.controlPoint, extraWords) : params.controlPoint;
@@ -604,7 +783,7 @@ export function registerAIHandlers(): void {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${config.apiKey}`,
+          'Authorization': `Bearer ${apiKey}`,
         },
         body: requestBody,
         signal: abortController.signal,
@@ -652,11 +831,15 @@ export function registerAIHandlers(): void {
     }
   });
 
-  ipcMain.handle('ai:batchAnalyzeScreenshots', async (_event, params: {
-    items: { id: string; controlPoint: string; requirement: string }[];
-    screenshots: string[];
-    documents?: { name: string; content: string }[];
-  }) => {
+  ipcMain.handle('ai:batchAnalyzeScreenshots', async (_event, rawParams: any) => {
+    const params = sanitize(rawParams) as {
+      items: { id: string; controlPoint: string; requirement: string }[];
+      screenshots: string[];
+      documents?: { name: string; content: string }[];
+      ocrPreprocess?: boolean;
+    };
+    const ocrPreprocess = params.ocrPreprocess === true;
+
     const sendProgress = (data: { stage: string; message: string; percent: number }) => {
       currentProgress = { ...data, timestamp: Date.now() };
       try { _event.sender.send('ai:analysisProgress', data); } catch (innerErr: any) {
@@ -687,11 +870,16 @@ export function registerAIHandlers(): void {
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) throw new Error('AI未配置');
       const config = sanitize(configs[0]);
-      if (!config.apiKey) throw new Error('API Key未配置');
+      const mode = config.mode || 'cloud';
 
-      const model = config.model || '';
+      if (shouldValidateApiKey(config) && !config.apiKey) {
+        throw new Error('API Key未配置');
+      }
+
+      const model = mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
       const apiUrl = ensureApiUrl(config.apiBase);
+      const apiKey = getApiKeyForMode(config);
 
       if (!apiUrl) throw new Error('API地址未配置');
 
@@ -728,7 +916,22 @@ export function registerAIHandlers(): void {
       const docFileNames: string[] = [];
       let encoded = 0;
 
-      if (hasImages) {
+      // OCR 预处理：提取截图中的文字
+      let ocrText = '';
+      if (hasImages && ocrPreprocess) {
+        sendProgress({ stage: 'ocr', message: `正在OCR识别截图文字...`, percent: 10 });
+        log.info(`[OCR预处理] 开始提取截图文字，数量: ${params.screenshots.length}`);
+        const ocrResults = await extractTextFromMultipleImages(params.screenshots, { preprocess: true });
+        for (const { path: imgPath, result: ocrResult } of ocrResults) {
+          const fileName = imgPath.split('\\').pop()?.split('/').pop() || 'unknown';
+          if (ocrResult.text && ocrResult.text.trim().length > 0) {
+            ocrText += `\n=== 截图 ${fileName} (OCR识别) ===\n${ocrResult.text}\n`;
+          }
+        }
+        log.info(`[OCR预处理] 提取完成，总文字长度: ${ocrText.length}`);
+      }
+
+      if (hasImages && !ocrPreprocess) {
         const concurrency = 3;
         const imagePaths = params.screenshots;
         const batches: string[][] = [];
@@ -787,19 +990,25 @@ export function registerAIHandlers(): void {
 
       let evidenceDesc = '';
       const allFileNames: string[] = [];
-      if (hasImages) {
+      if (hasImages && !ocrPreprocess) {
         allFileNames.push(...imageFileNames.map(f => `截图：${f}`));
+      } else if (hasImages && ocrPreprocess) {
+        allFileNames.push(...params.screenshots.map(f => `截图：${f.split('\\').pop()?.split('/').pop() || 'unknown'}`));
       }
       if (docFileNames.length > 0) {
         allFileNames.push(...docFileNames.map(f => `文档：${f}`));
       }
       if (allFileNames.length > 0) {
         const modeText = privacyMode ? '（已脱敏处理：OCR遮盖IP地址）' : '';
-        evidenceDesc = `已提供 ${params.screenshots.length} 张截图${modeText}，已附加在消息中（先文本后图片）。`;
+        const ocrTextNote = ocrPreprocess ? '（已通过OCR提取文字）' : '';
+        evidenceDesc = `已提供 ${params.screenshots.length} 张截图${modeText}${ocrTextNote}。`;
         evidenceDesc += `\n\n文件列表（请根据分析结果，将相关的文件填入每个测评项的attachedFiles数组中）：\n${allFileNames.join('\n')}`;
       }
       if (docContent) {
         evidenceDesc += `\n\n文档文本内容：\n${docContent}`;
+      }
+      if (ocrText && ocrText.trim().length > 0) {
+        evidenceDesc += `\n\n[OCR预处理提取的截图文字]\n${ocrText}`;
       }
 
       let promptText = `你是一名专业的等级保护测评师。请根据以下截图、文档内容，智能匹配到对应的测评项，并为每个匹配到的测评项撰写现场测评记录。
@@ -857,7 +1066,8 @@ ${itemsJson}
         });
 
       const bodySizeKB = Buffer.byteLength(batchRequestBody, 'utf8') / 1024;
-      log.info(`[批量AI分析] 请求体大小: ${bodySizeKB.toFixed(1)} KB, 用户内容项数: ${userContent.length}, 动态超时: ${dynamicTimeout}ms, API Key: ${config.apiKey.substring(0, 8)}***`);
+      const logApiKey = getApiKeyForMode(config);
+      log.info(`[批量AI分析] 请求体大小: ${bodySizeKB.toFixed(1)} KB, 用户内容项数: ${userContent.length}, 动态超时: ${dynamicTimeout}ms, API Key: ${logApiKey ? logApiKey.substring(0, 8) + '***' : 'none'}`);
 
       sendProgress({ stage: 'sending', message: '正在提交给AI分析...', percent: 60 });
 
@@ -878,7 +1088,7 @@ ${itemsJson}
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${config.apiKey}`,
+            'Authorization': `Bearer ${apiKey}`,
           },
           body: batchRequestBody,
           signal: abortController.signal,
@@ -965,19 +1175,24 @@ ${itemsJson}
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) throw new Error('AI未配置');
       const config = sanitize(configs[0]);
-      if (!config.apiKey) throw new Error('API Key未配置');
+      const mode = config.mode || 'cloud';
 
-      const model = config.model || '';
+      if (shouldValidateApiKey(config) && !config.apiKey) {
+        throw new Error('API Key未配置');
+      }
+
+      const model = config.mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
       const apiUrl = ensureApiUrl(config.apiBase);
+      const apiKey = getApiKeyForMode(config);
       if (!apiUrl) throw new Error('API地址未配置');
 
       console.log('[ai:analyzeIssue] AI配置:', JSON.stringify({
         model,
         temperature,
         apiUrl,
+        mode,
         privacyMode: config.privacyMode === 1,
-        apiKeyPrefix: config.apiKey ? config.apiKey.substring(0, 4) + '***' : 'null',
       }));
 
       const privacyMode = config.privacyMode === 1;
@@ -1033,7 +1248,7 @@ ${itemsJson}
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${config.apiKey}`,
+            'Authorization': `Bearer ${apiKey}`,
           },
           body: requestBody,
           signal: abortController.signal,
@@ -1104,19 +1319,24 @@ ${itemsJson}
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) throw new Error('AI未配置');
       const config = sanitize(configs[0]);
-      if (!config.apiKey) throw new Error('API Key未配置');
+      const mode = config.mode || 'cloud';
 
-      const model = config.model || '';
+      if (shouldValidateApiKey(config) && !config.apiKey) {
+        throw new Error('API Key未配置');
+      }
+
+      const model = config.mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
       const apiUrl = ensureApiUrl(config.apiBase);
+      const apiKey = getApiKeyForMode(config);
       if (!apiUrl) throw new Error('API地址未配置');
 
       console.log('[ai:analyzeIssueDescription] AI配置:', JSON.stringify({
         model,
         temperature,
         apiUrl,
+        mode,
         privacyMode: config.privacyMode === 1,
-        apiKeyPrefix: config.apiKey ? config.apiKey.substring(0, 4) + '***' : 'null',
       }));
 
       const privacyMode = config.privacyMode === 1;
@@ -1175,7 +1395,7 @@ ${itemsJson}
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${config.apiKey}`,
+            'Authorization': `Bearer ${apiKey}`,
           },
           body: requestBody,
           signal: abortController.signal,
@@ -1258,19 +1478,24 @@ ${itemsJson}
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) throw new Error('AI未配置');
       const config = sanitize(configs[0]);
-      if (!config.apiKey) throw new Error('API Key未配置');
+      const mode = config.mode || 'cloud';
 
-      const model = config.model || '';
+      if (shouldValidateApiKey(config) && !config.apiKey) {
+        throw new Error('API Key未配置');
+      }
+
+      const model = config.mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
       const apiUrl = ensureApiUrl(config.apiBase);
+      const apiKey = getApiKeyForMode(config);
       if (!apiUrl) throw new Error('API地址未配置');
 
       console.log('[ai:batchAnalyzeIssues] AI配置:', JSON.stringify({
         model,
         temperature,
         apiUrl,
+        mode,
         privacyMode: config.privacyMode === 1,
-        apiKeyPrefix: config.apiKey ? config.apiKey.substring(0, 4) + '***' : 'null',
       }));
 
       const privacyMode = config.privacyMode === 1;
@@ -1337,7 +1562,7 @@ ${itemsJson}
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${config.apiKey}`,
+                'Authorization': `Bearer ${apiKey}`,
               },
               body: requestBody,
               signal: abortController.signal,
@@ -1392,19 +1617,29 @@ ${itemsJson}
       });
     }
   });
-}
 
-export { getSharedOcrWorker };
-
-export async function terminateSharedOcrWorker(): Promise<void> {
-  if (sharedOcrWorker) {
+  // OCR 相关 IPC 处理器
+  ipcMain.handle('ocr:extractText', async (_event, imagePath: string, options?: any) => {
     try {
-      await sharedOcrWorker.terminate();
-      sharedOcrWorker = null;
-      sharedOcrInitializing = null;
-      log.info('OCR Worker 已终止');
-    } catch (err) {
-      log.warn('终止 OCR Worker 失败:', err);
+      const result = await extractTextFromImage(imagePath, options);
+      return sanitize({ success: true, data: result });
+    } catch (err: any) {
+      log.error('[OCR] 提取文本失败:', err.message);
+      return sanitize({ success: false, error: { code: 'OCR_ERROR', message: err.message } });
     }
-  }
+  });
+
+  ipcMain.handle('ocr:extractTextFromMultiple', async (_event, imagePaths: string[], options?: any) => {
+    try {
+      const results = await extractTextFromMultipleImages(imagePaths, options);
+      return sanitize({ success: true, data: results });
+    } catch (err: any) {
+      log.error('[OCR] 批量提取文本失败:', err.message);
+      return sanitize({ success: false, error: { code: 'OCR_ERROR', message: err.message } });
+    }
+  });
+
+  ipcMain.handle('ocr:isEnabled', async () => {
+    return sanitize({ success: true, data: isOCREnabled() });
+  });
 }

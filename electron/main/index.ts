@@ -4,13 +4,14 @@ import * as fs from 'fs';
 import log from 'electron-log';
 import { logger } from '../utils/logger';
 import { registerIpcHandlers } from './ipc';
-import { getSharedOcrWorker, terminateSharedOcrWorker } from '../ipc/ai.ipc';
+import { getSharedWorker, terminateOCRWorker } from '../services/ocr.service';
 import { initDatabase, closeDb, walCheckpoint } from '../db';
 import { getDefaultBasePath } from './paths';
 import { checkAndPerformAutoBackup } from '../services/backup.service';
 import { createTray, destroyTray } from './tray';
 import { initAutoUpdater } from '../services/update.service';
 import { migrateAllPaths } from '../utils/path-migration';
+import { stopOllama } from '../services/ollama.service';
 
 logger.setProductionMode(app.isPackaged);
 log.transports.file.level = 'info';
@@ -143,7 +144,7 @@ app.whenReady().then(async () => {
   setupAutoBackup();
   setupWalCheckpoint();
 
-  getSharedOcrWorker().catch((err) => {
+  getSharedWorker('eng').catch((err) => {
     log.warn('OCR Worker 预加载失败:', err);
   });
 
@@ -167,20 +168,23 @@ app.on('before-quit', async () => {
   cleanupAutoBackup();
   cleanupWalCheckpoint();
   cleanupLockFile();
-  await terminateSharedOcrWorker();
+  stopOllama();
+  await terminateOCRWorker();
   closeDb();
 });
 
 process.on('SIGINT', async () => {
   cleanupLockFile();
-  await terminateSharedOcrWorker();
+  stopOllama();
+  await terminateOCRWorker();
   closeDb();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   cleanupLockFile();
-  await terminateSharedOcrWorker();
+  stopOllama();
+  await terminateOCRWorker();
   closeDb();
   process.exit(0);
 });

@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.1.2';
+const TAG = 'v2.1.3';
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,14 +57,16 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.1.2 更新内容
+    body: `## v2.1.3 更新内容
 
-- 更新系统版本号至 2.1.2
-- 修复 Word 报告字体配置问题（中文使用华文仿宋，字母数字使用 Times New Roman）
-- 修复 Word 报告段落缩进和行距问题（全文1.5倍行距，正文首行缩进2字符）
-- 修复表格单元格缩进问题（表格内容不缩进，保持1.5倍行距）
-- 修复整改建议章节编号逻辑问题（7.2/7.3/7.4章节始终存在）
-- 优化报告生成辅助函数，确保格式一致
+- 更新系统版本号至 2.1.3
+- 集成本地大模型支持（Ollama + Qwen2.5-VL-7B）
+- 新增 AI 智能辅助功能（支持文本、Word、PDF、图片分析）
+- 新增 OCR 预处理功能（提升图片分析准确率）
+- 优化 AI 设置界面（云端/本地模型分离）
+- 修复模型下载进度显示问题
+- 修复已安装模型状态识别问题
+- 更新推荐模型列表（Qwen3-VL、Gemma4等）
     `,
     draft: false,
     prerelease: false,
