@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.1.5';
+const TAG = 'v2.1.6';
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,11 +57,9 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.1.5 更新内容
+    body: `## v2.1.6 更新内容
 
-- 修复本地模式下 AI 对话仍使用云端模型名称的问题
-- 优化 getEffectiveModel 函数，本地模式优先使用 ollamaModel
-- 前端 AI 对话调用根据当前模式传递正确的模型名称
+- 更新推荐本地大模型列表，首个推荐模型更改为 haervwe/qwen3-vl-8b-heretic
     `,
     draft: false,
     prerelease: false,
