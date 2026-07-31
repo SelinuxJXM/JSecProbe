@@ -1276,7 +1276,7 @@ async function sendMessage(customMessage?: string, context?: string) {
     try {
       const res = await window.api.ai.chat({
         messages: messages.value.map(m => ({ role: m.role, content: m.content })),
-        model: aiSettings.model,
+        model: aiSettings.mode === 'local' ? aiSettings.ollamaModel : aiSettings.model,
         temperature: aiSettings.temperature,
         context: context || undefined,
       });

@@ -276,7 +276,7 @@ function shouldValidateApiKey(config: any): boolean {
 
 function getEffectiveModel(params: any, config: any): string {
   if (config.mode === 'local') {
-    return params.model || config.ollamaModel || config.model || '';
+    return config.ollamaModel || params.model || config.model || '';
   }
   return params.model || config.model || '';
 }
