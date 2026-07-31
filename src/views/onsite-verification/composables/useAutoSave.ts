@@ -39,7 +39,6 @@ export function useAutoSave(options: AutoSaveOptions) {
     tableRows,
     route,
     updateAssetProgress,
-    loadProgress,
     debounceDelay = 1500,
     periodicInterval = 30000,
   } = options;
@@ -59,15 +58,20 @@ export function useAutoSave(options: AutoSaveOptions) {
     if (tableRows.value.length === 0) return false;
 
     saveStatus.value = 'saving';
+    let failedCount = 0;
+    let hasError = false;
+    const totalCount = tableRows.value.length;
     try {
       const projectId = route.params.id as string;
       const assetId = currentAsset.value?.id || '';
 
-      const complianceMap: Record<string, string> = {
-        'conform': 'conform',
+      // UI 内部值 → 数据库 AssessmentRecord.result 类型值
+      // 必须与 shared/types.ts 中 result 字段定义保持一致
+      const complianceMap: Record<string, AssessmentRecord['result']> = {
+        'conform': 'compliant',
         'partial': 'partial',
-        'nonconform': 'nonconform',
-        'na': 'notapplicable',
+        'nonconform': 'non_compliant',
+        'na': 'not_applicable',
         '': 'untested',
       };
 
@@ -83,7 +87,7 @@ export function useAutoSave(options: AutoSaveOptions) {
           projectId,
           assetId: assetId || undefined,
           itemId: row.itemId,
-          result: (complianceMap[row.compliance] || 'untested') as AssessmentRecord['result'],
+          result: complianceMap[row.compliance] || 'untested',
           method: (methodMap[row.method] || 'check') as AssessmentRecord['method'],
           commandOutput: row.evidence || '',
           evidence: row.evidence || '',
@@ -97,6 +101,7 @@ export function useAutoSave(options: AutoSaveOptions) {
           row.id = res.data.id;
           console.log(`[saveAllRows] 保存成功: itemId=${row.itemId}, newId=${res.data.id}`);
         } else {
+          failedCount++;
           console.error(`[saveAllRows] 保存失败: itemId=${row.itemId}, res=`, JSON.stringify(res));
         }
       }
@@ -104,16 +109,23 @@ export function useAutoSave(options: AutoSaveOptions) {
       if (assetId) {
         updateAssetProgress(assetId, tableRows.value);
       }
-      await loadProgress();
 
-      saveStatus.value = 'saved';
-      hasUnsavedChanges.value = false;
-      lastSavedTime.value = new Date();
-      return true;
+      return failedCount === 0;
     } catch (error) {
       console.error('保存失败:', error);
-      saveStatus.value = 'error';
+      hasError = true;
       return false;
+    } finally {
+      if (hasError || failedCount > 0) {
+        saveStatus.value = 'error';
+        if (failedCount > 0) {
+          console.error(`[saveAllRows] ${failedCount}/${totalCount} 行保存失败`);
+        }
+      } else {
+        saveStatus.value = 'saved';
+        hasUnsavedChanges.value = false;
+        lastSavedTime.value = new Date();
+      }
     }
   }
 

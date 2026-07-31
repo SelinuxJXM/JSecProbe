@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.1.3';
+const TAG = 'v2.1.4';
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,16 +57,19 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.1.3 更新内容
+    body: `## v2.1.4 更新内容
 
-- 更新系统版本号至 2.1.3
-- 集成本地大模型支持（Ollama + Qwen2.5-VL-7B）
-- 新增 AI 智能辅助功能（支持文本、Word、PDF、图片分析）
-- 新增 OCR 预处理功能（提升图片分析准确率）
-- 优化 AI 设置界面（云端/本地模型分离）
-- 修复模型下载进度显示问题
-- 修复已安装模型状态识别问题
-- 更新推荐模型列表（Qwen3-VL、Gemma4等）
+- 更新系统版本号至 2.1.4
+- 修复升级后云端模式 API 地址和模型 ID 被覆盖的问题
+- 修复生产模式下控制台日志泄露敏感信息的问题
+- 修复路径校验过严导致文件预览和 AI 分析失败的问题
+- 修复截图文件路径不匹配导致缩略图无法显示的问题
+- 修复保存测评记录时合规状态校验失败的问题
+- 修复 el-progress 组件 status 属性校验警告
+- 优化主进程日志转发到 DevTools Console（开发模式）
+- 修复 AI 分析合规判断值不一致的问题
+- 修复批量分析并发控制和超时处理
+- 增强 SSRF 防护和路径遍历防护
     `,
     draft: false,
     prerelease: false,

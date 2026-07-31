@@ -7,6 +7,7 @@ import { wrap } from '../utils/ipc-wrapper';
 import { getAppDataPath } from '../main/paths';
 import { toRelativePath, resolvePath } from '../utils/path-resolver';
 
+
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const MAX_TEXT_SIZE = 1 * 1024 * 1024;
 
@@ -27,6 +28,46 @@ function isValidImage(buffer: Buffer, ext: string): boolean {
   const magic = IMAGE_MAGIC_NUMBERS[ext];
   if (!magic) return false;
   return buffer.subarray(0, magic.length).equals(magic);
+}
+
+/**
+ * 模糊匹配文件：如果精确路径不存在，在同目录下查找同名（去时间戳后缀）的文件
+ * 例：Snipaste_xxx_1785481868917.jpg -> 在同目录查找 Snipaste_xxx_*.jpg
+ */
+function findFuzzyMatch(filePath: string): string | null {
+  try {
+    const dir = path.dirname(filePath);
+    const baseName = path.basename(filePath);
+    const ext = path.extname(baseName);
+    const nameWithoutExt = path.basename(baseName, ext);
+
+    // 提取时间戳后缀：匹配文件名末尾的 _\d{13} 或 _\d{10}
+    // 例：Snipaste_2026-06-17_12-24-22_1785481868917 -> 时间戳 1785481868917
+    const match = nameWithoutExt.match(/^(.+?)_(\d{10,13})$/);
+    if (!match) return null;
+
+    const basePrefix = match[1]; // 不含时间戳的文件名主体
+
+    if (!fs.existsSync(dir)) return null;
+
+    const files = fs.readdirSync(dir);
+    // 优先匹配最近的（按文件修改时间倒序）
+    const candidates = files
+      .filter(f => f.startsWith(basePrefix + '_') && f.endsWith(ext))
+      .map(f => ({
+        name: f,
+        fullPath: path.join(dir, f),
+        mtime: fs.statSync(path.join(dir, f)).mtime.getTime(),
+      }))
+      .sort((a, b) => b.mtime - a.mtime);
+
+    if (candidates.length > 0) {
+      return candidates[0].fullPath;
+    }
+  } catch (err) {
+    log.warn('[findFuzzyMatch] 模糊匹配失败:', err);
+  }
+  return null;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -52,6 +93,29 @@ function getMimeType(ext: string): string {
   return MIME_TYPES[ext.toLowerCase()] || 'application/octet-stream';
 }
 
+async function validatePath(inputPath: string): Promise<string> {
+  if (!inputPath || typeof inputPath !== 'string') {
+    throw new Error('路径无效');
+  }
+  // 归一化路径后检查是否包含路径遍历
+  const resolved = await resolvePath(inputPath);
+  const normalized = path.resolve(resolved);
+  // 检查规范化路径中是否还包含 ".." （路径遍历攻击）
+  if (normalized.includes('..')) {
+    throw new Error(`路径访问被拒绝: 非法的路径格式`);
+  }
+  return normalized;
+}
+
+function validateId(id: string, name: string): void {
+  if (!id || typeof id !== 'string') {
+    throw new Error(`${name}无效`);
+  }
+  if (id.includes('..') || id.includes('/') || id.includes('\\') || id.includes('\0')) {
+    throw new Error(`${name}包含非法字符`);
+  }
+}
+
 export function registerScreenshotHandlers(): void {
   ipcMain.handle('screenshot:upload', wrap(async (_event, { projectId, itemId, filePath }: { projectId: string; itemId: string; filePath: string }) => {
     if (!filePath || typeof filePath !== 'string') {
@@ -63,6 +127,9 @@ export function registerScreenshotHandlers(): void {
     if (fs.statSync(filePath).size > MAX_FILE_SIZE) {
       throw new Error(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
     }
+
+    validateId(projectId, '项目ID');
+    validateId(itemId, '测评项ID');
 
     const appDataPath = await getAppDataPath();
     const screenshotsDir = path.join(appDataPath, 'screenshots', projectId, itemId);
@@ -104,6 +171,9 @@ export function registerScreenshotHandlers(): void {
   ipcMain.handle('screenshot:saveFromBase64', wrap(async (_event, { projectId, itemId, base64Data }: { projectId: string; itemId: string; base64Data: string }) => {
     log.info('screenshot:saveFromBase64 called', { projectId, itemId, base64Length: base64Data?.length });
 
+    validateId(projectId, '项目ID');
+    validateId(itemId, '测评项ID');
+
     const appDataPath = await getAppDataPath();
     const screenshotsDir = path.join(appDataPath, 'screenshots', projectId, itemId);
     fs.mkdirSync(screenshotsDir, { recursive: true });
@@ -144,6 +214,9 @@ export function registerScreenshotHandlers(): void {
       throw new Error(`不支持的文件类型: ${ext} (仅支持: ${DOCUMENT_EXTENSIONS.join(', ')})`);
     }
 
+    validateId(projectId, '项目ID');
+    validateId(itemId, '测评项ID');
+
     const appDataPath = await getAppDataPath();
     const evidenceDir = path.join(appDataPath, 'evidence', projectId, itemId);
     fs.mkdirSync(evidenceDir, { recursive: true });
@@ -174,12 +247,20 @@ export function registerScreenshotHandlers(): void {
 
   ipcMain.handle('screenshot:getBase64', wrap(async (_event, { filePath }: { filePath: string }) => {
     if (!filePath || typeof filePath !== 'string') {
-      throw new Error('文件路径无效');
+      throw new Error('文件无效');
     }
 
-    const resolvedPath = await resolvePath(filePath);
+    let resolvedPath = await validatePath(filePath);
+
+    // 容错：如果精确路径不存在，尝试在同目录下按原始文件名（去时间戳）模糊匹配
     if (!fs.existsSync(resolvedPath)) {
-      throw new Error('文件不存在: ' + filePath);
+      const fuzzyPath = findFuzzyMatch(resolvedPath);
+      if (fuzzyPath) {
+        log.info(`[screenshot:getBase64] 精确路径不存在，使用模糊匹配: ${resolvedPath} -> ${fuzzyPath}`);
+        resolvedPath = fuzzyPath;
+      } else {
+        throw new Error('文件不存在: ' + filePath);
+      }
     }
 
     const stat = fs.statSync(resolvedPath);
@@ -200,9 +281,15 @@ export function registerScreenshotHandlers(): void {
       throw new Error('文件路径无效');
     }
 
-    const resolvedPath = await resolvePath(filePath);
+    let resolvedPath = await validatePath(filePath);
     if (!fs.existsSync(resolvedPath)) {
-      throw new Error('文件不存在: ' + filePath);
+      const fuzzyPath = findFuzzyMatch(resolvedPath);
+      if (fuzzyPath) {
+        log.info(`[screenshot:readText] 使用模糊匹配: ${resolvedPath} -> ${fuzzyPath}`);
+        resolvedPath = fuzzyPath;
+      } else {
+        throw new Error('文件不存在: ' + filePath);
+      }
     }
 
     const ext = path.extname(resolvedPath).toLowerCase();
@@ -224,9 +311,15 @@ export function registerScreenshotHandlers(): void {
       throw new Error('文件路径无效');
     }
 
-    const resolvedPath = await resolvePath(filePath);
+    let resolvedPath = await validatePath(filePath);
     if (!fs.existsSync(resolvedPath)) {
-      throw new Error('文件不存在: ' + filePath);
+      const fuzzyPath = findFuzzyMatch(resolvedPath);
+      if (fuzzyPath) {
+        log.info(`[screenshot:readWord] 使用模糊匹配: ${resolvedPath} -> ${fuzzyPath}`);
+        resolvedPath = fuzzyPath;
+      } else {
+        throw new Error('文件不存在: ' + filePath);
+      }
     }
 
     const ext = path.extname(resolvedPath).toLowerCase();
@@ -244,7 +337,7 @@ export function registerScreenshotHandlers(): void {
   }, { moduleName: 'screenshot' }));
 
   ipcMain.handle('screenshot:deleteFile', wrap(async (_event, { filePath }: { filePath: string }) => {
-    const resolvedPath = await resolvePath(filePath);
+    const resolvedPath = await validatePath(filePath);
     if (fs.existsSync(resolvedPath)) {
       fs.unlinkSync(resolvedPath);
     }
@@ -256,7 +349,8 @@ export function registerScreenshotHandlers(): void {
     const tempDir = path.join(appDataPath, 'screenshots', 'temp');
     fs.mkdirSync(tempDir, { recursive: true });
 
-    const targetPath = path.join(tempDir, fileName);
+    const safeFileName = path.basename(fileName);
+    const targetPath = path.join(tempDir, safeFileName);
     const buffer = Buffer.from(base64Data, 'base64');
 
     if (buffer.length > MAX_FILE_SIZE) {
@@ -270,6 +364,6 @@ export function registerScreenshotHandlers(): void {
     fs.writeFileSync(targetPath, buffer);
 
     const relativePath = await toRelativePath(targetPath);
-    return { filePath: relativePath, fileName };
+    return { filePath: relativePath, fileName: safeFileName };
   }, { moduleName: 'screenshot' }));
 }

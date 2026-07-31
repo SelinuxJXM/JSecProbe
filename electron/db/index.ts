@@ -21,10 +21,16 @@ export function getDb(): BetterSQLite3Database<typeof schema> {
 
 export function closeDb(): void {
   if (sqliteInstance) {
-    sqliteInstance.close();
-    sqliteInstance = null;
-    db = null;
-    log.info('数据库已关闭');
+    try {
+      walCheckpoint();
+      sqliteInstance.close();
+      log.info('数据库已关闭');
+    } catch (e) {
+      log.error('关闭数据库失败:', e);
+    } finally {
+      sqliteInstance = null;
+      db = null;
+    }
   }
 }
 
@@ -315,7 +321,7 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
       api_key TEXT,
       api_base TEXT,
       model TEXT DEFAULT 'gpt-4o-mini',
-      temperature REAL NOT NULL DEFAULT 0.7,
+      temperature REAL NOT NULL DEFAULT 0.3,
       ocr_provider TEXT DEFAULT 'tesseract',
       ocr_api_key TEXT,
       enable_ai INTEGER NOT NULL DEFAULT 0,
@@ -324,6 +330,7 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
       mode TEXT DEFAULT 'cloud',
       ollama_model TEXT,
       ollama_url TEXT DEFAULT 'http://localhost:11434',
+      ocr_preprocess INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
@@ -376,7 +383,7 @@ function migrateAiConfigsTable(sqlite: Database.Database): void {
       log.info('已添加 ollama_url 列到 ai_configs 表');
     }
     if (!columnNames.includes('ocr_preprocess')) {
-      sqlite.exec("ALTER TABLE ai_configs ADD COLUMN ocr_preprocess INTEGER NOT NULL DEFAULT 1");
+      sqlite.exec("ALTER TABLE ai_configs ADD COLUMN ocr_preprocess INTEGER NOT NULL DEFAULT 0");
       log.info('已添加 ocr_preprocess 列到 ai_configs 表');
     }
   } catch (err) {
@@ -435,7 +442,7 @@ async function initDefaultData(): Promise<void> {
   const userCount = await dbInstance.select().from(schema.users).limit(1);
   if (userCount.length === 0) {
     const now = new Date().toISOString();
-    const passwordHash = bcrypt.hashSync('admin123', 12);
+    const passwordHash = await bcrypt.hash('admin123', 12);
 
     await dbInstance.insert(schema.users).values({
       id: 'default_admin',
@@ -471,6 +478,15 @@ async function initDefaultData(): Promise<void> {
 async function initStandardLibrary(): Promise<void> {
   const dbInstance = getDb();
   if (!sqliteInstance) throw new Error('数据库未初始化');
+
+  const dbPath = sqliteInstance.name;
+  const backupPath = `${dbPath}.bak-${Date.now()}`;
+  try {
+    sqliteInstance.exec(`VACUUM INTO '${backupPath}'`);
+    log.info(`数据库已备份到: ${backupPath}`);
+  } catch (e) {
+    log.warn('数据库备份失败，继续执行:', e);
+  }
 
   const STANDARD_DATA_VERSION = 7;
 
@@ -799,25 +815,39 @@ async function initCommandLibrary(): Promise<void> {
 
     log.info(`初始化核查命令库: ${seeds.length}条命令`);
 
-    await dbInstance.delete(schema.knowledgeCommands);
-
     for (const cmd of seeds) {
-      await dbInstance.insert(schema.knowledgeCommands).values({
-        id: cmd.id,
-        name: cmd.name,
-        target: cmd.target,
-        command: cmd.command,
-        description: cmd.description,
-        os: cmd.os,
-        brand: cmd.brand,
-        deviceType: cmd.deviceType,
-        category: cmd.category,
-        subCategory: cmd.subCategory,
-        isFavorite: 0,
-        referenceCount: 0,
-        createdAt: cmd.createdAt || new Date().toISOString(),
-        updatedAt: cmd.updatedAt || new Date().toISOString(),
-      });
+      await dbInstance.insert(schema.knowledgeCommands)
+        .values({
+          id: cmd.id,
+          name: cmd.name,
+          target: cmd.target,
+          command: cmd.command,
+          description: cmd.description,
+          os: cmd.os,
+          brand: cmd.brand,
+          deviceType: cmd.deviceType,
+          category: cmd.category,
+          subCategory: cmd.subCategory,
+          isFavorite: 0,
+          referenceCount: 0,
+          createdAt: cmd.createdAt || new Date().toISOString(),
+          updatedAt: cmd.updatedAt || new Date().toISOString(),
+        })
+        .onConflictDoUpdate({
+          target: schema.knowledgeCommands.id,
+          set: {
+            name: cmd.name,
+            target: cmd.target,
+            command: cmd.command,
+            description: cmd.description,
+            os: cmd.os,
+            brand: cmd.brand,
+            deviceType: cmd.deviceType,
+            category: cmd.category,
+            subCategory: cmd.subCategory,
+            updatedAt: cmd.updatedAt || new Date().toISOString(),
+          },
+        });
     }
 
     log.info('核查命令库初始化完成');

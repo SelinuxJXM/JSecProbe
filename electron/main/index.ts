@@ -14,8 +14,6 @@ import { migrateAllPaths } from '../utils/path-migration';
 import { stopOllama } from '../services/ollama.service';
 
 logger.setProductionMode(app.isPackaged);
-log.transports.file.level = 'info';
-log.transports.console.level = 'debug';
 
 let mainWindow: BrowserWindow | null = null;
 let backupIntervalId: NodeJS.Timeout | null = null;
@@ -70,6 +68,9 @@ function createWindow() {
 
   mainWindow = new BrowserWindow(mainWindowOptions);
 
+  // 设置日志转发目标，将主进程日志推送到 DevTools Console
+  logger.setTargetWindow(mainWindow.webContents);
+
   if (process.env.NODE_ENV === 'development') {
     mainWindow.loadURL('http://localhost:5173');
   } else {
@@ -81,6 +82,7 @@ function createWindow() {
   });
 
   mainWindow.on('closed', () => {
+    logger.setTargetWindow(null);
     mainWindow = null;
     destroyTray();
   });
@@ -168,14 +170,14 @@ app.on('before-quit', async () => {
   cleanupAutoBackup();
   cleanupWalCheckpoint();
   cleanupLockFile();
-  stopOllama();
+  await stopOllama();
   await terminateOCRWorker();
   closeDb();
 });
 
 process.on('SIGINT', async () => {
   cleanupLockFile();
-  stopOllama();
+  await stopOllama();
   await terminateOCRWorker();
   closeDb();
   process.exit(0);
@@ -183,7 +185,7 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
   cleanupLockFile();
-  stopOllama();
+  await stopOllama();
   await terminateOCRWorker();
   closeDb();
   process.exit(0);

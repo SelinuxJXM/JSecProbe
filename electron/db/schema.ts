@@ -202,7 +202,7 @@ export const aiConfigs = sqliteTable('ai_configs', {
   apiKey: text('api_key'),
   apiBase: text('api_base'),
   model: text('model').default('gpt-4o-mini'),
-  temperature: real('temperature').notNull().default(0.7),
+  temperature: real('temperature').notNull().default(0.3),
   ocrProvider: text('ocr_provider').default('tesseract'),
   ocrApiKey: text('ocr_api_key'),
   enableAi: integer('enable_ai').notNull().default(0),

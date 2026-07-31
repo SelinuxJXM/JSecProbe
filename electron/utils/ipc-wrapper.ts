@@ -1,4 +1,4 @@
-import type { IpcMainInvokeEvent } from 'electron';
+import { app, type IpcMainInvokeEvent } from 'electron';
 import logger from './logger';
 
 export type { IpcMainInvokeEvent };
@@ -58,7 +58,7 @@ export function wrap<TArgs extends unknown[], TReturn>(
         error: {
           code: (error as NodeJS.ErrnoException)?.code || 'INTERNAL_ERROR',
           message: err.message || '操作失败',
-          details: err.stack,
+          details: app.isPackaged ? undefined : err.stack,
         },
       };
     }

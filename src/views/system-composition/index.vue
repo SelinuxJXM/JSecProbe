@@ -243,7 +243,7 @@
         </el-table-column>
         <el-table-column label="测评对象" width="80" align="center">
           <template #default="{ row }">
-            <el-switch v-model="row.isAssessmentTarget" size="small" @change="markModified(row)" />
+            <el-switch v-model="row.isAssessmentTarget" size="small" :active-value="true" :inactive-value="false" @change="markModified(row)" />
             <span style="font-size:12px; color:#4B5563; margin-left:4px;">是</span>
           </template>
         </el-table-column>
@@ -349,7 +349,7 @@
           </el-col>
           <el-col :span="12">
             <el-form-item label="虚拟设备">
-              <el-switch v-model="formData.isVirtual" />
+              <el-switch v-model="formData.isVirtual" :active-value="true" :inactive-value="false" />
             </el-form-item>
           </el-col>
         </el-row>
@@ -606,7 +606,11 @@ async function loadAssets() {
     
     if (res.success && res.data) {
       const data = res.data as AssetListResult;
-      assetList.value = data.list.map(row => ({ ...row }));
+      assetList.value = data.list.map(row => ({
+        ...row,
+        isVirtual: Boolean(row.isVirtual),
+        isAssessmentTarget: Boolean(row.isAssessmentTarget),
+      }));
       pagination.total = data.total;
       categories.value = data.categoryStats;
       modifiedRows.clear();
@@ -644,7 +648,11 @@ async function loadAssets() {
         });
         if (res2.success && res2.data) {
           const data2 = res2.data as AssetListResult;
-          assetList.value = data2.list.map(row => ({ ...row }));
+          assetList.value = data2.list.map(row => ({
+            ...row,
+            isVirtual: Boolean(row.isVirtual),
+            isAssessmentTarget: Boolean(row.isAssessmentTarget),
+          }));
           pagination.total = data2.total;
         }
       }
@@ -677,7 +685,11 @@ async function loadAssets() {
         });
         if (res3.success && res3.data) {
           const data3 = res3.data as AssetListResult;
-          assetList.value = data3.list.map(row => ({ ...row }));
+          assetList.value = data3.list.map(row => ({
+            ...row,
+            isVirtual: Boolean(row.isVirtual),
+            isAssessmentTarget: Boolean(row.isAssessmentTarget),
+          }));
           pagination.total = data3.total;
         }
       }

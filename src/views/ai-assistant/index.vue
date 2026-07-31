@@ -125,8 +125,8 @@
           </div>
 
           <div
-            v-for="(msg, index) in messages"
-            :key="index"
+            v-for="msg in messages"
+            :key="msg.id"
             class="ai-message"
             :class="msg.role"
           >
@@ -236,7 +236,7 @@
           <div class="setting-item">
             <div class="setting-label-row">
               <label class="setting-label"><span class="required">*</span>自定义请求地址</label>
-              <el-switch v-model="aiSettings.fullUrl" size="small" />
+              <el-switch v-model="aiSettings.fullUrl" size="small" :active-value="true" :inactive-value="false" />
             </div>
             <el-input
               v-model="aiSettings.baseUrl"
@@ -406,7 +406,7 @@
                       :percentage="downloadPercent" 
                       :stroke-width="8" 
                       :show-text="false"
-                      status="primary"
+                      :status="downloadProgress.status === 'completed' ? 'success' : ''"
                     />
                     <div v-if="downloadProgress.completed && downloadProgress.total" class="progress-size">
                       {{ formatBytes(downloadProgress.completed) }} / {{ formatBytes(downloadProgress.total) }}
@@ -451,7 +451,7 @@
         <div class="setting-item">
           <div class="setting-label-row">
             <label class="setting-label">隐私模式</label>
-            <el-switch v-model="aiSettings.privacyMode" size="small" />
+            <el-switch v-model="aiSettings.privacyMode" size="small" :active-value="true" :inactive-value="false" />
           </div>
           <div class="setting-hint" style="margin-top: 4px;">
             开启后，截图中的IP地址将被OCR识别并局部遮盖，其余内容保持清晰；文本内容中的涉密信息将自动脱敏后发送给AI分析。
@@ -534,7 +534,7 @@
         <div class="setting-item">
           <div class="setting-label-row">
             <label class="setting-label">OCR预处理</label>
-            <el-switch v-model="aiSettings.ocrPreprocess" size="small" />
+            <el-switch v-model="aiSettings.ocrPreprocess" size="small" :active-value="true" :inactive-value="false" />
           </div>
           <div class="setting-hint" style="margin-top: 4px;">
             开启后，截图分析时会先用OCR提取截图中的文字，再发送给AI分析。对本地小模型效果提升明显。
@@ -709,7 +709,7 @@ import {
 const showSettings = ref(false);
 const loading = ref(false);
 const analyzing = ref(false);
-const messages = ref<{ role: string; content: string; suggestions?: string[] }[]>([]);
+const messages = ref<{ id: number; role: string; content: string; suggestions?: string[] }[]>([]);
 const inputMessage = ref('');
 const screenshotPreview = ref('');
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -823,6 +823,8 @@ async function handleTestConnection() {
       apiBase: baseUrl,
       apiKey: aiSettings.apiKey,
       model: aiSettings.model,
+      mode: aiSettings.mode,
+      ollamaUrl: aiSettings.ollamaUrl,
     });
     cloudTestResult.value = res;
   } catch (err: any) {
@@ -1020,6 +1022,8 @@ watch(showSettings, (visible) => {
 
 watch(() => aiSettings.mode, (mode) => {
   if (mode === 'local' && showSettings.value) {
+    // 立即检测一次状态，再启动定时轮询
+    checkOllamaStatus();
     startHealthCheck();
   } else {
     stopHealthCheck();
@@ -1159,13 +1163,16 @@ async function loadSettings() {
       aiSettings.ollamaModel = data.ollamaModel || '';
       aiSettings.ollamaUrl = data.ollamaUrl || 'http://localhost:11434';
       // 云端配置
-      aiSettings.apiKey = data.apiKey || '';
+      // 仅在 apiKey 不是脱敏掩码（含 ****）时才填充输入框，避免覆盖为无意义值
+      if (data.apiKey && !data.apiKey.includes('****')) {
+        aiSettings.apiKey = data.apiKey;
+      }
       aiSettings.baseUrl = data.apiBase || 'https://api.openai.com/v1';
       aiSettings.model = data.model || 'gpt-4o';
       aiSettings.fullUrl = aiSettings.baseUrl.includes('/v1');
-      aiSettings.apiFormat = 'openai';
+      aiSettings.apiFormat = data.apiFormat || 'openai';
       // OCR预处理配置：云端模式默认关闭，本地模式默认开启
-      aiSettings.ocrPreprocess = data.ocrPreprocess !== undefined ? data.ocrPreprocess : (data.mode === 'local');
+      aiSettings.ocrPreprocess = data.ocrPreprocess !== undefined ? Boolean(data.ocrPreprocess) : (data.mode === 'local');
     }
   } catch (e) {
     console.error('Failed to load AI settings', e);
@@ -1239,18 +1246,21 @@ async function sendMessage(customMessage?: string, context?: string) {
   // 重新检查配置
   if (!isConfigured.value) {
     messages.value.push({
+      id: Date.now() + Math.random(),
       role: 'user',
       content,
     });
     messages.value.push({
+      id: Date.now() + Math.random(),
       role: 'assistant',
       content: 'AI 未配置，无法进行分析。请点击右上角的「AI设置」按钮配置 API Key。',
       suggestions: ['配置AI API Key', '查看使用帮助'],
     });
     return;
   }
-  
+
   messages.value.push({
+    id: Date.now() + Math.random(),
     role: 'user',
     content,
   });
@@ -1272,6 +1282,7 @@ async function sendMessage(customMessage?: string, context?: string) {
       });
       if (res.success && res.data) {
         messages.value.push({
+          id: Date.now() + Math.random(),
           role: 'assistant',
           content: res.data.content,
           suggestions: res.data.suggestions,
@@ -1284,6 +1295,7 @@ async function sendMessage(customMessage?: string, context?: string) {
     } catch (error: any) {
       // AI调用失败，显示错误信息，不降级
       messages.value.push({
+        id: Date.now() + Math.random(),
         role: 'assistant',
         content: `AI调用失败：${error.message || '未知错误'}`,
         suggestions: ['检查AI配置', '查看控制台日志'],
@@ -1296,6 +1308,7 @@ async function sendMessage(customMessage?: string, context?: string) {
 
   // 未配置AI，提示用户配置
   messages.value.push({
+    id: Date.now() + Math.random(),
     role: 'assistant',
     content: 'AI 未配置，无法进行分析。请点击右上角的「AI设置」按钮配置 API Key。',
     suggestions: ['配置AI API Key', '查看使用帮助'],
@@ -1336,16 +1349,23 @@ function handleFileSelect(e: Event) {
   if (file) {
     processImage(file);
   }
+  target.value = '';
 }
 
 function handleDrop(e: DragEvent) {
   const file = e.dataTransfer?.files?.[0];
-  if (file && file.type.startsWith('image/')) {
+  const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'];
+  const ext = file?.name.toLowerCase().match(/\.[^.]+$/)?.[0] || '';
+  if (file && file.type.startsWith('image/') && imageExtensions.includes(ext)) {
     processImage(file);
   }
 }
 
 function processImage(file: File) {
+  if (file.size > 10 * 1024 * 1024) {
+    ElMessage.warning('图片大小不能超过 10MB');
+    return;
+  }
   const reader = new FileReader();
   reader.onload = (e) => {
     screenshotPreview.value = e.target?.result as string;
@@ -1358,6 +1378,7 @@ async function analyzeScreenshot() {
   analyzing.value = true;
   
   messages.value.push({
+    id: Date.now() + Math.random(),
     role: 'user',
     content: '[图片] 请分析这张截图中的安全配置情况',
   });
@@ -1385,6 +1406,7 @@ async function analyzeScreenshot() {
         
         if (res.success && res.data) {
           messages.value.push({
+            id: Date.now() + Math.random(),
             role: 'assistant',
             content: res.data.content || 'AI分析完成，但未返回具体内容',
             suggestions: ['进一步分析', '生成整改建议', '保存分析结果'],
@@ -1397,6 +1419,7 @@ async function analyzeScreenshot() {
       }
     } else {
       messages.value.push({
+        id: Date.now() + Math.random(),
         role: 'assistant',
         content: '请先配置AI API Key，然后才能使用截图分析功能。',
         suggestions: ['配置AI API Key', '查看使用帮助'],
@@ -1404,6 +1427,7 @@ async function analyzeScreenshot() {
     }
   } catch (error: any) {
     messages.value.push({
+      id: Date.now() + Math.random(),
       role: 'assistant',
       content: `截图分析失败：${error.message || '未知错误'}`,
       suggestions: ['重试', '检查AI配置'],

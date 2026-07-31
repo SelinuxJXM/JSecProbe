@@ -1,8 +1,9 @@
 import { ipcMain, dialog } from 'electron';
 import log from 'electron-log';
+import { logger } from '../utils/logger';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, and, desc, count, sql, inArray, lte, or, like } from 'drizzle-orm';
+import { eq, and, desc, count, sql, inArray, lte, or } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
@@ -17,7 +18,7 @@ import { resolvePath } from '../utils/path-resolver';
 export function registerAssessmentHandlers(): void {
   // 根据项目等级和扩展类型筛选测评项
   ipcMain.handle('assessment:getItems', wrap(async (_event, standardId: string, domain?: string, projectLevel?: number, extensionType?: string | string[]) => {
-      console.log(`[assessment:getItems] 调用参数: standardId=${standardId}, domain=${domain}, level=${projectLevel}, extension=${JSON.stringify(extensionType)}`);
+      logger.debug('[assessment:getItems] 调用参数', { module: 'assessment', standardId, domain, level: projectLevel, extension: extensionType });
       const db = getDb();
       
       const conditions = [eq(schema.assessmentItems.standardId, standardId)];
@@ -52,7 +53,7 @@ export function registerAssessmentHandlers(): void {
       const extensionItems = items.filter(i => i.extensionType !== 'general');
       const sortedItems = [...generalItems, ...extensionItems];
 
-      console.log(`[assessment:getItems] 查询结果: ${sortedItems.length} 条（通用: ${generalItems.length}, 扩展: ${extensionItems.length}）`);
+      logger.debug('[assessment:getItems] 查询结果', { module: 'assessment', total: sortedItems.length, general: generalItems.length, extension: extensionItems.length });
       return sortedItems.map((item) => ({
         ...item,
         isHighRisk: !!item.isHighRisk,
@@ -104,7 +105,7 @@ export function registerAssessmentHandlers(): void {
 
   // 按层面获取全局测评记录（assetId为空的记录）
   ipcMain.handle('assessment:getRecordsByDomain', wrap(async (_event, projectId: string, domain: string, projectLevel?: number, extensionType?: string | string[]) => {
-      console.log(`[assessment:getRecordsByDomain] 调用参数: projectId=${projectId}, domain=${domain}, level=${projectLevel}, extension=${JSON.stringify(extensionType)}`);
+      logger.debug('[assessment:getRecordsByDomain] 调用参数', { module: 'assessment', projectId, domain, level: projectLevel, extension: extensionType });
       const db = getDb();
 
       // 从项目获取standardId
@@ -137,7 +138,7 @@ export function registerAssessmentHandlers(): void {
         columns: { id: true },
       });
 
-      console.log(`[assessment:getRecordsByDomain] 找到测评项: ${items.length} 个`);
+      logger.debug('[assessment:getRecordsByDomain] 找到测评项', { module: 'assessment', count: items.length });
       const itemIds = items.map(i => i.id);
       if (itemIds.length === 0) return [];
 
@@ -150,7 +151,7 @@ export function registerAssessmentHandlers(): void {
         ),
       });
 
-      console.log(`[assessment:getRecordsByDomain] 找到记录: ${records.length} 条`);
+      logger.debug('[assessment:getRecordsByDomain] 找到记录', { module: 'assessment', count: records.length });
       return records;
     })
   );
@@ -168,13 +169,23 @@ export function registerAssessmentHandlers(): void {
         data.findings = sanitizeInput(data.findings, 10000);
       }
 
+      // 显式字段白名单，防止 Mass Assignment 覆盖 id/createdAt/updatedAt 等内部字段
+      const {
+        projectId, itemId, assetId, result, method, commandOutput, evidence,
+        findings, assessor, assessmentDate, screenshotPaths,
+      } = data;
+
       const db = getDb();
       const now = new Date().toISOString();
 
       if (data.id) {
         validateUuid(data.id, '记录ID');
         await db.update(schema.assessmentRecords)
-          .set({ ...data, updatedAt: now })
+          .set({
+            projectId, itemId, assetId, result, method, commandOutput,
+            evidence, findings, assessor, assessmentDate, screenshotPaths,
+            updatedAt: now,
+          })
           .where(eq(schema.assessmentRecords.id, data.id));
 
         const record = await db.query.assessmentRecords.findFirst({
@@ -184,7 +195,8 @@ export function registerAssessmentHandlers(): void {
       } else {
         const id = randomUUID();
         await db.insert(schema.assessmentRecords).values({
-          ...data,
+          projectId, itemId, assetId, result, method, commandOutput,
+          evidence, findings, assessor, assessmentDate, screenshotPaths,
           id,
           createdAt: now,
           updatedAt: now,
@@ -1261,10 +1273,11 @@ export function registerAssessmentHandlers(): void {
                 if (asset) {
                   assetId = asset.id;
                 } else {
+                  const escapedAssetName = assetName.replace(/[%_\\]/g, '\\$&');
                   const fuzzyAssets = await db.query.assets.findMany({
                     where: and(
                       eq(schema.assets.projectId, projectId),
-                      like(schema.assets.name, `%${assetName}%`)
+                      sql`${schema.assets.name} LIKE ${`%${escapedAssetName}%`} ESCAPE '\\'`
                     ),
                     limit: 1,
                   });

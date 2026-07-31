@@ -5,9 +5,9 @@ const require = createRequire(import.meta.url);
 const compressing = require('compressing');
 const AdmZip = require('adm-zip');
 import Database from 'better-sqlite3';
-import { getDbPath, getAppDataPath, getDefaultBasePath } from '../main/paths';
+import { getDbPath, getAppDataPath } from '../main/paths';
 import { join } from 'path';
-import { closeDb, getDb, walCheckpoint } from '../db';
+import { closeDb, getDb, walCheckpoint, initDatabase } from '../db';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
 import log from 'electron-log';
@@ -60,6 +60,31 @@ const BACKUP_DIRS: ContentKey[] = ['screenshots', 'evidence', 'attachments', 'st
 
 function getBackupRootPath(): Promise<string> {
   return getAppDataPath().then(p => path.join(p, 'backups'));
+}
+
+function validateExtractedPaths(extractDir: string): void {
+  const resolvedBase = path.resolve(extractDir);
+  const walk = (dir: string) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      const resolved = path.resolve(fullPath);
+      if (!resolved.startsWith(resolvedBase + path.sep) && resolved !== resolvedBase) {
+        throw new Error(`非法的 zip 条目路径: ${entry.name}`);
+      }
+      if (entry.isSymbolicLink()) {
+        const linkTarget = fs.readlinkSync(fullPath);
+        const resolvedTarget = path.resolve(path.dirname(fullPath), linkTarget);
+        if (!resolvedTarget.startsWith(resolvedBase + path.sep) && resolvedTarget !== resolvedBase) {
+          throw new Error(`非法的符号链接: ${entry.name} -> ${linkTarget}`);
+        }
+      }
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      }
+    }
+  };
+  walk(extractDir);
 }
 
 export async function createFullBackup(customPath?: string): Promise<BackupResult> {
@@ -182,6 +207,13 @@ export async function restoreFromZipBackup(backupPath: string): Promise<BackupRe
       return { success: false, error: '备份文件解压失败，文件可能已损坏' };
     }
 
+    try {
+      validateExtractedPaths(tempExtractPath);
+    } catch (e: any) {
+      fs.rmSync(tempExtractPath, { recursive: true, force: true });
+      return { success: false, error: e.message || '备份文件包含非法路径' };
+    }
+
     let manifestPath = path.join(tempExtractPath, 'manifest.json');
     if (!fs.existsSync(manifestPath)) {
       const subDirs = fs.readdirSync(tempExtractPath, { withFileTypes: true })
@@ -245,10 +277,16 @@ export async function restoreFromZipBackup(backupPath: string): Promise<BackupRe
     }
 
     if (fs.existsSync(dbBackupPath)) {
-      const tempPath = dbPath + '.restore_tmp';
-      fs.copyFileSync(dbBackupPath, tempPath);
-      fs.copyFileSync(tempPath, dbPath);
-      fs.unlinkSync(tempPath);
+      const tempNewPath = dbPath + '.new';
+      fs.copyFileSync(dbBackupPath, tempNewPath);
+      if (fs.existsSync(dbPath)) {
+        const bakPath = dbPath + '.bak';
+        if (fs.existsSync(bakPath)) {
+          fs.unlinkSync(bakPath);
+        }
+        fs.renameSync(dbPath, bakPath);
+      }
+      fs.renameSync(tempNewPath, dbPath);
     }
 
     for (const dirName of BACKUP_DIRS) {
@@ -278,6 +316,8 @@ export async function restoreFromZipBackup(backupPath: string): Promise<BackupRe
     fs.rmSync(tempExtractPath, { recursive: true, force: true });
 
     log.info(`[恢复] 完整恢复完成: ${backupPath}`);
+
+    await initDatabase();
 
     return { success: true };
   } catch (error: any) {
@@ -377,6 +417,13 @@ export async function previewZipBackup(backupPath: string): Promise<BackupPrevie
 
     try {
       await compressing.zip.uncompress(backupPath, tempExtractPath);
+    } catch {
+      fs.rmSync(tempExtractPath, { recursive: true, force: true });
+      return null;
+    }
+
+    try {
+      validateExtractedPaths(tempExtractPath);
     } catch {
       fs.rmSync(tempExtractPath, { recursive: true, force: true });
       return null;
@@ -509,6 +556,13 @@ export async function restoreFromZipBackupIncremental(
       return { success: false, error: '备份文件解压失败，文件可能已损坏' };
     }
 
+    try {
+      validateExtractedPaths(tempExtractPath);
+    } catch (e: any) {
+      fs.rmSync(tempExtractPath, { recursive: true, force: true });
+      return { success: false, error: e.message || '备份文件包含非法路径' };
+    }
+
     let manifestPath = path.join(tempExtractPath, 'manifest.json');
     if (!fs.existsSync(manifestPath)) {
       const subDirs = fs.readdirSync(tempExtractPath, { withFileTypes: true })
@@ -592,219 +646,222 @@ export async function restoreFromZipBackupIncremental(
 
       const backupProjectIds = projectsToRestore.map((p: any) => p.id);
 
-      for (const project of projectsToRestore) {
-        const existing = db.select().from(schema.projects).where(eq(schema.projects.id, project.id)).get();
-        if (existing) {
-          db.update(schema.projects)
-            .set({
-              name: project.name,
-              projectNo: project.project_no,
-              systemName: project.system_name,
-              assessedUnit: project.assessed_unit,
-              standardSystem: project.standard_system,
-              levelCombo: project.level_combo,
-              extensionType: project.extension_type,
-              customerName: project.customer_name,
-              assessor: project.assessor,
-              startDate: project.start_date,
-              endDate: project.end_date,
-              description: project.description,
-              level: project.level,
-              status: project.status,
-              standardId: project.standard_id,
-              progress: project.progress,
-              complianceRate: project.compliance_rate,
-              assetCount: project.asset_count,
-              updatedAt: project.updated_at,
-            })
-            .where(eq(schema.projects.id, project.id))
-            .run();
-        } else {
-          db.insert(schema.projects)
-            .values({
-              id: project.id,
-              name: project.name,
-              projectNo: project.project_no,
-              systemName: project.system_name,
-              assessedUnit: project.assessed_unit,
-              standardSystem: project.standard_system,
-              levelCombo: project.level_combo,
-              extensionType: project.extension_type,
-              customerName: project.customer_name,
-              assessor: project.assessor,
-              startDate: project.start_date,
-              endDate: project.end_date,
-              description: project.description,
-              level: project.level,
-              status: project.status,
-              standardId: project.standard_id,
-              progress: project.progress || 0,
-              complianceRate: project.compliance_rate,
-              assetCount: project.asset_count || 0,
-              createdAt: project.created_at,
-              updatedAt: project.updated_at,
-            })
-            .run();
+      // 所有数据库恢复操作包裹在事务中，保证原子性（中途失败自动回滚）
+      db.transaction((tx) => {
+        for (const project of projectsToRestore) {
+          const existing = tx.select().from(schema.projects).where(eq(schema.projects.id, project.id)).get();
+          if (existing) {
+            tx.update(schema.projects)
+              .set({
+                name: project.name,
+                projectNo: project.project_no,
+                systemName: project.system_name,
+                assessedUnit: project.assessed_unit,
+                standardSystem: project.standard_system,
+                levelCombo: project.level_combo,
+                extensionType: project.extension_type,
+                customerName: project.customer_name,
+                assessor: project.assessor,
+                startDate: project.start_date,
+                endDate: project.end_date,
+                description: project.description,
+                level: project.level,
+                status: project.status,
+                standardId: project.standard_id,
+                progress: project.progress,
+                complianceRate: project.compliance_rate,
+                assetCount: project.asset_count,
+                updatedAt: project.updated_at,
+              })
+              .where(eq(schema.projects.id, project.id))
+              .run();
+          } else {
+            tx.insert(schema.projects)
+              .values({
+                id: project.id,
+                name: project.name,
+                projectNo: project.project_no,
+                systemName: project.system_name,
+                assessedUnit: project.assessed_unit,
+                standardSystem: project.standard_system,
+                levelCombo: project.level_combo,
+                extensionType: project.extension_type,
+                customerName: project.customer_name,
+                assessor: project.assessor,
+                startDate: project.start_date,
+                endDate: project.end_date,
+                description: project.description,
+                level: project.level,
+                status: project.status,
+                standardId: project.standard_id,
+                progress: project.progress || 0,
+                complianceRate: project.compliance_rate,
+                assetCount: project.asset_count || 0,
+                createdAt: project.created_at,
+                updatedAt: project.updated_at,
+              })
+              .run();
+          }
+          restoredProjectIds.push(project.id);
         }
-        restoredProjectIds.push(project.id);
-      }
 
-      const members = backupDb.prepare(`SELECT * FROM project_members WHERE project_id IN (${backupProjectIds.map(() => '?').join(',')})`).all(...backupProjectIds) as any[];
-      for (const member of members) {
-        const existing = db.select().from(schema.projectMembers).where(eq(schema.projectMembers.id, member.id)).get();
-        if (!existing) {
-          db.insert(schema.projectMembers)
-            .values({
-              id: member.id,
-              projectId: member.project_id,
-              userId: member.user_id,
-              role: member.role,
-              createdAt: member.created_at,
-            })
-            .run();
+        const members = backupDb.prepare(`SELECT * FROM project_members WHERE project_id IN (${backupProjectIds.map(() => '?').join(',')})`).all(...backupProjectIds) as any[];
+        for (const member of members) {
+          const existing = tx.select().from(schema.projectMembers).where(eq(schema.projectMembers.id, member.id)).get();
+          if (!existing) {
+            tx.insert(schema.projectMembers)
+              .values({
+                id: member.id,
+                projectId: member.project_id,
+                userId: member.user_id,
+                role: member.role,
+                createdAt: member.created_at,
+              })
+              .run();
+          }
         }
-      }
 
-      const assets = backupDb.prepare(`SELECT * FROM assets WHERE project_id IN (${backupProjectIds.map(() => '?').join(',')})`).all(...backupProjectIds) as any[];
-      for (const asset of assets) {
-        const existing = db.select().from(schema.assets).where(eq(schema.assets.id, asset.id)).get();
-        if (existing) {
-          db.update(schema.assets)
-            .set({
-              name: asset.name,
-              category: asset.category,
-              os: asset.os,
-              version: asset.version,
-              deviceUsage: asset.device_usage,
-              description: asset.description,
-              quantity: asset.quantity,
-              ip: asset.ip,
-              importance: asset.importance,
-              isVirtual: asset.is_virtual,
-              dbSystem: asset.db_system,
-              middleware: asset.middleware,
-              isAssessmentTarget: asset.is_assessment_target,
-              position: asset.position,
-              responsiblePerson: asset.responsible_person,
-              sortOrder: asset.sort_order,
-              updatedAt: asset.updated_at,
-            })
-            .where(eq(schema.assets.id, asset.id))
-            .run();
-        } else {
-          db.insert(schema.assets)
-            .values({
-              id: asset.id,
-              projectId: asset.project_id,
-              name: asset.name,
-              category: asset.category,
-              os: asset.os,
-              version: asset.version,
-              deviceUsage: asset.device_usage,
-              description: asset.description,
-              quantity: asset.quantity || 1,
-              ip: asset.ip,
-              importance: asset.importance || 'medium',
-              isVirtual: asset.is_virtual || 0,
-              dbSystem: asset.db_system,
-              middleware: asset.middleware,
-              isAssessmentTarget: asset.is_assessment_target || 1,
-              position: asset.position,
-              responsiblePerson: asset.responsible_person,
-              sortOrder: asset.sort_order || 0,
-              createdAt: asset.created_at,
-              updatedAt: asset.updated_at,
-            })
-            .run();
+        const assets = backupDb.prepare(`SELECT * FROM assets WHERE project_id IN (${backupProjectIds.map(() => '?').join(',')})`).all(...backupProjectIds) as any[];
+        for (const asset of assets) {
+          const existing = tx.select().from(schema.assets).where(eq(schema.assets.id, asset.id)).get();
+          if (existing) {
+            tx.update(schema.assets)
+              .set({
+                name: asset.name,
+                category: asset.category,
+                os: asset.os,
+                version: asset.version,
+                deviceUsage: asset.device_usage,
+                description: asset.description,
+                quantity: asset.quantity,
+                ip: asset.ip,
+                importance: asset.importance,
+                isVirtual: asset.is_virtual,
+                dbSystem: asset.db_system,
+                middleware: asset.middleware,
+                isAssessmentTarget: asset.is_assessment_target,
+                position: asset.position,
+                responsiblePerson: asset.responsible_person,
+                sortOrder: asset.sort_order,
+                updatedAt: asset.updated_at,
+              })
+              .where(eq(schema.assets.id, asset.id))
+              .run();
+          } else {
+            tx.insert(schema.assets)
+              .values({
+                id: asset.id,
+                projectId: asset.project_id,
+                name: asset.name,
+                category: asset.category,
+                os: asset.os,
+                version: asset.version,
+                deviceUsage: asset.device_usage,
+                description: asset.description,
+                quantity: asset.quantity || 1,
+                ip: asset.ip,
+                importance: asset.importance || 'medium',
+                isVirtual: asset.is_virtual || 0,
+                dbSystem: asset.db_system,
+                middleware: asset.middleware,
+                isAssessmentTarget: asset.is_assessment_target || 1,
+                position: asset.position,
+                responsiblePerson: asset.responsible_person,
+                sortOrder: asset.sort_order || 0,
+                createdAt: asset.created_at,
+                updatedAt: asset.updated_at,
+              })
+              .run();
+          }
         }
-      }
 
-      const records = backupDb.prepare(`SELECT * FROM assessment_records WHERE project_id IN (${backupProjectIds.map(() => '?').join(',')})`).all(...backupProjectIds) as any[];
-      for (const record of records) {
-        const existing = db.select().from(schema.assessmentRecords).where(eq(schema.assessmentRecords.id, record.id)).get();
-        if (existing) {
-          db.update(schema.assessmentRecords)
-            .set({
-              result: record.result,
-              evidence: record.evidence,
-              findings: record.findings,
-              method: record.method,
-              commandOutput: record.command_output,
-              screenshotPaths: record.screenshot_paths,
-              assessmentDate: record.assessment_date,
-              updatedAt: record.updated_at,
-            })
-            .where(eq(schema.assessmentRecords.id, record.id))
-            .run();
-        } else {
-          db.insert(schema.assessmentRecords)
-            .values({
-              id: record.id,
-              projectId: record.project_id,
-              itemId: record.item_id,
-              assetId: record.asset_id || null,
-              result: record.result,
-              evidence: record.evidence,
-              findings: record.findings,
-              method: record.method,
-              commandOutput: record.command_output,
-              screenshotPaths: record.screenshot_paths,
-              assessmentDate: record.assessment_date,
-              createdAt: record.created_at,
-              updatedAt: record.updated_at,
-            })
-            .run();
+        const records = backupDb.prepare(`SELECT * FROM assessment_records WHERE project_id IN (${backupProjectIds.map(() => '?').join(',')})`).all(...backupProjectIds) as any[];
+        for (const record of records) {
+          const existing = tx.select().from(schema.assessmentRecords).where(eq(schema.assessmentRecords.id, record.id)).get();
+          if (existing) {
+            tx.update(schema.assessmentRecords)
+              .set({
+                result: record.result,
+                evidence: record.evidence,
+                findings: record.findings,
+                method: record.method,
+                commandOutput: record.command_output,
+                screenshotPaths: record.screenshot_paths,
+                assessmentDate: record.assessment_date,
+                updatedAt: record.updated_at,
+              })
+              .where(eq(schema.assessmentRecords.id, record.id))
+              .run();
+          } else {
+            tx.insert(schema.assessmentRecords)
+              .values({
+                id: record.id,
+                projectId: record.project_id,
+                itemId: record.item_id,
+                assetId: record.asset_id || null,
+                result: record.result,
+                evidence: record.evidence,
+                findings: record.findings,
+                method: record.method,
+                commandOutput: record.command_output,
+                screenshotPaths: record.screenshot_paths,
+                assessmentDate: record.assessment_date,
+                createdAt: record.created_at,
+                updatedAt: record.updated_at,
+              })
+              .run();
+          }
         }
-      }
 
-      const issues = backupDb.prepare(`SELECT * FROM issues WHERE project_id IN (${backupProjectIds.map(() => '?').join(',')})`).all(...backupProjectIds) as any[];
-      for (const issue of issues) {
-        const existing = db.select().from(schema.issues).where(eq(schema.issues.id, issue.id)).get();
-        if (existing) {
-          db.update(schema.issues)
-            .set({
-              issueTitle: issue.issue_title,
-              issueDescription: issue.issue_description,
-              riskLevel: issue.risk_level,
-              status: issue.status,
-              rectificationSuggestion: issue.rectification_suggestion,
-              rectificationDeadline: issue.rectification_deadline,
-              responsiblePerson: issue.responsible_person,
-              fixedDescription: issue.fixed_description,
-              fixedDate: issue.fixed_date,
-              assessor: issue.assessor,
-              evidenceFiles: issue.evidence_files,
-              updatedAt: issue.updated_at,
-            })
-            .where(eq(schema.issues.id, issue.id))
-            .run();
-        } else {
-          db.insert(schema.issues)
-            .values({
-              id: issue.id,
-              projectId: issue.project_id,
-              assetId: issue.asset_id,
-              itemId: issue.item_id,
-              securityDomain: issue.security_domain,
-              controlPoint: issue.control_point,
-              controlName: issue.control_name,
-              issueTitle: issue.issue_title,
-              issueDescription: issue.issue_description,
-              riskLevel: issue.risk_level || 'medium',
-              status: issue.status || 'pending',
-              rectificationSuggestion: issue.rectification_suggestion,
-              rectificationDeadline: issue.rectification_deadline,
-              responsiblePerson: issue.responsible_person,
-              fixedDescription: issue.fixed_description,
-              fixedDate: issue.fixed_date,
-              assessor: issue.assessor,
-              evidenceFiles: issue.evidence_files,
-              createdAt: issue.created_at,
-              updatedAt: issue.updated_at,
-            })
-            .run();
+        const issues = backupDb.prepare(`SELECT * FROM issues WHERE project_id IN (${backupProjectIds.map(() => '?').join(',')})`).all(...backupProjectIds) as any[];
+        for (const issue of issues) {
+          const existing = tx.select().from(schema.issues).where(eq(schema.issues.id, issue.id)).get();
+          if (existing) {
+            tx.update(schema.issues)
+              .set({
+                issueTitle: issue.issue_title,
+                issueDescription: issue.issue_description,
+                riskLevel: issue.risk_level,
+                status: issue.status,
+                rectificationSuggestion: issue.rectification_suggestion,
+                rectificationDeadline: issue.rectification_deadline,
+                responsiblePerson: issue.responsible_person,
+                fixedDescription: issue.fixed_description,
+                fixedDate: issue.fixed_date,
+                assessor: issue.assessor,
+                evidenceFiles: issue.evidence_files,
+                updatedAt: issue.updated_at,
+              })
+              .where(eq(schema.issues.id, issue.id))
+              .run();
+          } else {
+            tx.insert(schema.issues)
+              .values({
+                id: issue.id,
+                projectId: issue.project_id,
+                assetId: issue.asset_id,
+                itemId: issue.item_id,
+                securityDomain: issue.security_domain,
+                controlPoint: issue.control_point,
+                controlName: issue.control_name,
+                issueTitle: issue.issue_title,
+                issueDescription: issue.issue_description,
+                riskLevel: issue.risk_level || 'medium',
+                status: issue.status || 'pending',
+                rectificationSuggestion: issue.rectification_suggestion,
+                rectificationDeadline: issue.rectification_deadline,
+                responsiblePerson: issue.responsible_person,
+                fixedDescription: issue.fixed_description,
+                fixedDate: issue.fixed_date,
+                assessor: issue.assessor,
+                evidenceFiles: issue.evidence_files,
+                createdAt: issue.created_at,
+                updatedAt: issue.updated_at,
+              })
+              .run();
+          }
         }
-      }
+      });
 
       backupDb.close();
       log.info(`[增量恢复] 数据库恢复完成，共恢复 ${restoredProjectIds.length} 个项目`);
@@ -867,7 +924,7 @@ export async function checkAndPerformAutoBackup(): Promise<void> {
       return;
     }
 
-    const backupPath = join(getDefaultBasePath(), 'backup');
+    const backupPath = await getBackupRootPath();
     if (!fs.existsSync(backupPath)) {
       fs.mkdirSync(backupPath, { recursive: true });
     }

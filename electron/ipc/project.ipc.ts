@@ -52,7 +52,8 @@ export function registerProjectHandlers(): void {
 
       const conditions = [];
       if (keyword) {
-        conditions.push(like(schema.projects.name, `%${keyword}%`));
+        const escapedKeyword = keyword.replace(/[%_\\]/g, '\\$&');
+        conditions.push(sql`${schema.projects.name} LIKE ${`%${escapedKeyword}%`} ESCAPE '\\'`);
       }
       if (status) {
         conditions.push(eq(schema.projects.status, status));
@@ -467,8 +468,19 @@ export function registerProjectHandlers(): void {
         }
       }
 
+      // 显式字段白名单，防止 Mass Assignment 覆盖 id/createdAt/standardId/projectNo 等内部字段
+      const {
+        name, systemName, assessedUnit, standardSystem, levelCombo,
+        extensionType, status, customerName, assessor, startDate, endDate,
+        description, progress,
+      } = data;
+
       await db.update(schema.projects)
-        .set({ ...data, level, updatedAt: now })
+        .set({
+          name, systemName, assessedUnit, standardSystem, levelCombo,
+          extensionType, level, status, customerName, assessor, startDate,
+          endDate, description, progress, updatedAt: now,
+        })
         .where(eq(schema.projects.id, id));
 
       calcProjectProgress(id).catch((err) => {

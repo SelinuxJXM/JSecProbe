@@ -19,7 +19,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   runMigration()
     .then(() => process.exit(0))
     .catch((err) => {
-      console.error(err);
+      log.error('迁移脚本执行失败:', err);
       process.exit(1);
     });
 }

@@ -1,8 +1,9 @@
 import { ipcMain, dialog, app } from 'electron';
 import log from 'electron-log';
+import { logger } from '../utils/logger';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, like, and, count } from 'drizzle-orm';
+import { eq, and, count, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import ExcelJS from 'exceljs';
 import { getRowMaxHeight, styleCell } from '../utils/excel-helper';
@@ -261,7 +262,8 @@ export function registerAssetHandlers(): void {
         conditions.push(eq(schema.assets.category, category));
       }
       if (keyword) {
-        conditions.push(like(schema.assets.name, `%${keyword}%`));
+        const escapedKeyword = keyword.replace(/[%_\\]/g, '\\$&');
+        conditions.push(sql`${schema.assets.name} LIKE ${`%${escapedKeyword}%`} ESCAPE '\\'`);
       }
 
       const totalResult = await db
@@ -382,11 +384,22 @@ export function registerAssetHandlers(): void {
       const db = getDb();
       const now = new Date().toISOString();
 
-      const updateData: any = { ...data, updatedAt: now };
-      if ('isVirtual' in updateData) updateData.isVirtual = updateData.isVirtual ? 1 : 0;
-      if ('dbSystem' in updateData) updateData.dbSystem = updateData.dbSystem || null;
-      if ('middleware' in updateData) updateData.middleware = updateData.middleware || null;
-      if ('isAssessmentTarget' in updateData) updateData.isAssessmentTarget = updateData.isAssessmentTarget ? 1 : 0;
+      // 显式字段白名单，防止 Mass Assignment 覆盖 id/projectId/createdAt 等内部字段
+      const {
+        category, name, os, version, deviceUsage, description, quantity, ip,
+        importance, isVirtual, dbSystem, middleware, isAssessmentTarget,
+        position, responsiblePerson, sortOrder,
+      } = data;
+
+      const updateData: any = {
+        category, name, os, version, deviceUsage, description, quantity, ip,
+        importance, position, responsiblePerson, sortOrder,
+        updatedAt: now,
+      };
+      if (isVirtual !== undefined) updateData.isVirtual = isVirtual ? 1 : 0;
+      if (dbSystem !== undefined) updateData.dbSystem = dbSystem || null;
+      if (middleware !== undefined) updateData.middleware = middleware || null;
+      if (isAssessmentTarget !== undefined) updateData.isAssessmentTarget = isAssessmentTarget ? 1 : 0;
 
       await db.update(schema.assets)
         .set(updateData)
@@ -695,7 +708,7 @@ export function registerAssetHandlers(): void {
           importCount++;
         }
 
-        console.log(`[AssetImport] Sheet "${worksheet.name}": imported ${importCount} rows, skipped ${skippedRows} rows, total rows in sheet: ${worksheet.rowCount}`);
+        logger.info(`[AssetImport] Sheet "${worksheet.name}": imported ${importCount} rows, skipped ${skippedRows} rows, total rows in sheet: ${worksheet.rowCount}`);
         return importCount;
       };
 

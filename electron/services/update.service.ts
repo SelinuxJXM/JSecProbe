@@ -138,8 +138,14 @@ function parseLatestYml(yml: string): { version: string; sha512: string; size: n
   let releaseDate = '';
   let releaseNotes = '';
   let inReleaseNotes = false;
+  const MULTILINE_MARKERS = ['|', '>', '|-', '>-', '|+', '>+'];
   for (const line of lines) {
     const trimmed = line.trim();
+    if (inReleaseNotes && line.startsWith(' ')) {
+      releaseNotes += (releaseNotes ? '\n' : '') + trimmed;
+      continue;
+    }
+    inReleaseNotes = false;
     if (trimmed.startsWith('version:')) {
       version = trimmed.substring(8).trim();
     } else if (trimmed.startsWith('sha512:')) {
@@ -150,11 +156,12 @@ function parseLatestYml(yml: string): { version: string; sha512: string; size: n
       releaseDate = trimmed.substring(12).trim().replace(/^['"]|['"]$/g, '');
     } else if (trimmed.startsWith('releaseNotes:')) {
       inReleaseNotes = true;
-      releaseNotes = trimmed.substring(13).trim();
-    } else if (inReleaseNotes && line.startsWith(' ')) {
-      releaseNotes += '\n' + trimmed;
-    } else {
-      inReleaseNotes = false;
+      const value = trimmed.substring(13).trim();
+      if (MULTILINE_MARKERS.includes(value)) {
+        releaseNotes = '';
+      } else {
+        releaseNotes = value.replace(/^['"]|['"]$/g, '');
+      }
     }
   }
   if (!version || !sha512) return null;
@@ -235,6 +242,10 @@ async function downloadFromR2(version: string, expectedSha512: string): Promise<
     }
   }
   writeStream.end();
+  await new Promise<void>((resolve, reject) => {
+    writeStream.on('finish', resolve);
+    writeStream.on('error', reject);
+  });
 
   log.info('[更新-R2] 校验文件完整性...');
   const fileBuffer = fs.readFileSync(destPath);
@@ -368,6 +379,10 @@ async function downloadFromGitCode(installerUrl: string, version: string, expect
     }
   }
   writeStream.end();
+  await new Promise<void>((resolve, reject) => {
+    writeStream.on('finish', resolve);
+    writeStream.on('error', reject);
+  });
   log.info('[更新-GitCode] 校验文件完整性...');
   const fileBuffer = fs.readFileSync(destPath);
   const actualSha512 = crypto.createHash('sha512').update(fileBuffer).digest('base64');

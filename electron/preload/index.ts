@@ -1,6 +1,4 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
-import * as fs from 'fs';
-import { resolvePathSync } from '../utils/path-resolver';
 
 const ipc = <T = any>(channel: string) => (...args: any[]): Promise<T> => ipcRenderer.invoke(channel, ...args);
 
@@ -149,16 +147,9 @@ const api = {
     readWordFile: ipc<{ html: string }>('knowledge:readWordFile'),
   },
   file: {
-    exists: (filePath: string) => fs.existsSync(resolvePathSync(filePath)),
-    readAsArrayBuffer: (filePath: string): { success: boolean; data?: number[]; error?: string } => {
-      try {
-        const buf = fs.readFileSync(resolvePathSync(filePath));
-        return { success: true, data: Array.from(buf) };
-      } catch (err: any) {
-        return { success: false, error: err.message };
-      }
-    },
-    readAsText: (filePath: string, encoding: BufferEncoding = 'utf-8') => fs.readFileSync(resolvePathSync(filePath), encoding),
+    exists: (filePath: string) => ipcRenderer.invoke('file:exists', filePath),
+    readAsArrayBuffer: (filePath: string) => ipcRenderer.invoke('file:readAsArrayBuffer', filePath),
+    readAsText: (filePath: string, encoding?: string) => ipcRenderer.invoke('file:readAsText', filePath, encoding),
   },
   system: {
     getInfo: ipc<any>('system:getInfo'),
@@ -231,6 +222,15 @@ const api = {
 
   sendLog(level: string, message: string) {
     ipcRenderer.send('log:line', { level, message });
+  },
+
+  /**
+   * 监听主进程日志，转发到 DevTools Console
+   */
+  onMainLog: (callback: (data: { level: string; message: string; timestamp: string; context?: any }) => void) => {
+    const handler = (_e: IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on('main-process-log', handler);
+    return () => ipcRenderer.removeListener('main-process-log', handler);
   },
 
   versions: {

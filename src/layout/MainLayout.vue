@@ -61,7 +61,7 @@
       
       <div class="sidebar-footer" v-if="!appStore.sidebarCollapsed">
         <div class="sidebar-footer-card">
-          <div class="sf-version">v2.1.3</div>
+          <div class="sf-version">v2.1.4</div>
           <a href="https://github.com/SelinuxJXM/JSecProbe" target="_blank" class="sf-github" title="访问 GitHub 仓库">
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
@@ -183,7 +183,7 @@
         <p>最新版本：v{{ updateStatus.version }}</p>
         <div v-if="updateStatus.releaseNotes" class="release-notes">
           <h4>更新内容：</h4>
-          <div class="release-notes-content" v-html="updateStatus.releaseNotes"></div>
+          <div class="release-notes-content" v-html="sanitizedReleaseNotes"></div>
         </div>
         <el-button type="primary" @click="downloadUpdate">下载更新</el-button>
       </div>
@@ -290,6 +290,7 @@ import {
   Expand,
 } from '@element-plus/icons-vue';
 import OnboardingGuide from '@/components/OnboardingGuide/index.vue';
+import DOMPurify from 'dompurify';
 
 const route = useRoute();
 const router = useRouter();
@@ -313,6 +314,11 @@ const updateStatus = ref<{
 }>({ status: 'idle' });
 
 const hasUpdate = computed(() => updateStatus.value.status === 'available');
+
+const sanitizedReleaseNotes = computed(() => {
+  if (!updateStatus.value.releaseNotes) return '';
+  return DOMPurify.sanitize(updateStatus.value.releaseNotes);
+});
 
 function formatSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return '0 B';
@@ -377,7 +383,8 @@ function handleUpdateStatus(status: any) {
   updateStatus.value = status;
 }
 
-let unsubscribe: () => void;
+let unsubscribe: (() => void) | undefined;
+let onboardingTimer: ReturnType<typeof setTimeout> | undefined;
 
 onMounted(async () => {
   if (window.api) {
@@ -393,7 +400,7 @@ onMounted(async () => {
   }
 
   // 启动新手引导
-  setTimeout(() => {
+  onboardingTimer = setTimeout(() => {
     onboardingRef.value?.start();
   }, 500);
 });
@@ -402,10 +409,13 @@ onUnmounted(() => {
   if (unsubscribe) {
     unsubscribe();
   }
+  if (onboardingTimer) {
+    clearTimeout(onboardingTimer);
+  }
 });
 
 watch(showUpdateDialog, (visible) => {
-  if (visible) {
+  if (visible && updateStatus.value.status !== 'downloading') {
     updateStatus.value = { status: 'idle' };
   }
 });
@@ -413,9 +423,9 @@ watch(showUpdateDialog, (visible) => {
 const activeMenu = computed(() => {
   const path = route.path;
   // 匹配项目子路由（如 /projects/xxx/assets）
-  if (path.startsWith('/projects/') && path.includes('/assets')) return '/projects/assets';
-  if (path.startsWith('/projects/') && path.includes('/assessment')) return '/projects/assessment';
-  if (path.startsWith('/projects/') && path.includes('/issues')) return '/projects/issues';
+  if (path.startsWith('/projects/') && /\/assets(\/|$)/.test(path)) return '/projects/assets';
+  if (path.startsWith('/projects/') && /\/assessment(\/|$)/.test(path)) return '/projects/assessment';
+  if (path.startsWith('/projects/') && /\/issues(\/|$)/.test(path)) return '/projects/issues';
   // 项目列表页
   if (path === '/projects/list' || path === '/projects') return '/projects/list';
   return path;

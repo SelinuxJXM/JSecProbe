@@ -7,6 +7,7 @@ const OLLAMA_DEFAULT_URL = 'http://localhost:11434';
 const MIN_DISK_SPACE_GB = 5;
 
 let ollamaProcess: ReturnType<typeof spawn> | null = null;
+let startInProgress = false;
 const OLLAMA_API_TAGS = '/api/tags';
 const OLLAMA_API_SHOW = '/api/show';
 const OLLAMA_API_PULL = '/api/pull';
@@ -68,6 +69,10 @@ function validateOllamaUrl(url: string): { valid: boolean; error?: string } {
     if (hostname.includes('..') || hostname.includes('/') || hostname.includes('\\')) {
       return { valid: false, error: 'URL 格式无效' };
     }
+    // 禁止用户名/密码嵌入 URL（避免凭据泄露到日志）
+    if (parsed.username || parsed.password) {
+      return { valid: false, error: 'URL 中不允许包含用户名密码' };
+    }
     if (parsed.port) {
       const port = parseInt(parsed.port, 10);
       if (isNaN(port) || port < 1 || port > 65535) {
@@ -126,18 +131,6 @@ function getOllamaExePath(): string {
 
 async function checkDiskSpace(targetPath: string): Promise<{ free: number; total: number }> {
   try {
-    if (process.platform === 'win32') {
-      const drive = path.parse(targetPath).root.split(':')[0] || 'C';
-      const output = execSync(
-        `wmic logicaldisk where "DeviceID='${drive}:'" Get FreeSpace,Size /format:value`,
-        { stdio: 'pipe', timeout: 5000 }
-      ).toString();
-      const freeMatch = output.match(/FreeSpace=(\d+)/);
-      const totalMatch = output.match(/Size=(\d+)/);
-      const free = freeMatch ? parseInt(freeMatch[1], 10) : 0;
-      const total = totalMatch ? parseInt(totalMatch[1], 10) : 0;
-      return { free, total };
-    }
     const stats = fs.statfsSync(targetPath);
     return {
       free: stats.bavail * stats.bsize,
@@ -157,8 +150,11 @@ export async function checkOllamaInstalled(): Promise<boolean> {
         return true;
       }
     }
-    const output = execSync('where ollama 2>nul || echo NOT_FOUND', { stdio: 'pipe', timeout: 3000 }).toString();
-    return !output.includes('NOT_FOUND') && output.trim().length > 0;
+    const output = execSync(
+      'powershell -NoProfile -Command "(Get-Command ollama -ErrorAction SilentlyContinue).Source"',
+      { stdio: 'pipe', timeout: 5000 }
+    ).toString();
+    return output.trim().length > 0;
   } catch {
     return false;
   }
@@ -245,57 +241,69 @@ export async function pullModel(
       throw new Error(`磁盘空间不足，剩余 ${freeGB} GB，需要至少 ${MIN_DISK_SPACE_GB} GB 可用空间`);
     }
     onProgress?.({ status: 'pulling', completed: 0, total: 0 });
-    log.info(`[Ollama] 开始下载模型: ${modelName}, URL: ${url}${OLLAMA_API_PULL}`);
+    log.info(`[Ollama] 开始下载模型: ${modelName}`);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(new Error('下载超时')), 30 * 60 * 1000);
-    const response = await fetch(`${url}${OLLAMA_API_PULL}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: modelName, stream: true }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    if (!response.body) {
-      onProgress?.({ status: 'downloading', completed: 0, total: 0 });
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    // 总超时 30 分钟
+    const totalTimeout = setTimeout(() => controller.abort(new Error('下载总超时(30分钟)')), 30 * 60 * 1000);
+    // chunk 间超时：每次读取重置 60 秒计时器
+    let chunkTimeout: NodeJS.Timeout | null = null;
+    const resetChunkTimeout = () => {
+      if (chunkTimeout) clearTimeout(chunkTimeout);
+      chunkTimeout = setTimeout(() => controller.abort(new Error('数据流停滞超时(60秒)')), 60000);
+    };
+    try {
+      const response = await fetch(`${url}${OLLAMA_API_PULL}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: modelName, stream: true }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      if (!response.body) {
+        // 无响应体：视为异常，不再误报成功
+        throw new Error('Ollama 返回空响应体，可能是服务异常');
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let lastProgress = { status: 'downloading', completed: 0, total: 0 };
+      let totalBytes = 0;
+      let chunkCount = 0;
+      resetChunkTimeout();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (chunkTimeout) clearTimeout(chunkTimeout);
+        if (done) break;
+        chunkCount++;
+        totalBytes += value.length;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const data = JSON.parse(line);
+            lastProgress = {
+              status: data.status || 'downloading',
+              completed: data.completed,
+              total: data.total,
+            };
+            onProgress?.(lastProgress);
+          } catch {
+            // ignore parse errors
+          }
+        }
+        resetChunkTimeout();
+      }
+      log.info(`[Ollama] 模型下载完成: ${modelName}, 共接收 ${chunkCount} 个数据块, 总大小: ${(totalBytes / 1024 / 1024).toFixed(1)} MB`);
       onProgress?.({ status: 'success', completed: 100, total: 100 });
       return true;
+    } finally {
+      clearTimeout(totalTimeout);
+      if (chunkTimeout) clearTimeout(chunkTimeout);
     }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let lastProgress = { status: 'downloading', completed: 0, total: 0 };
-    let totalBytes = 0;
-    let chunkCount = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunkCount++;
-      totalBytes += value.length;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const data = JSON.parse(line);
-          lastProgress = {
-            status: data.status || 'downloading',
-            completed: data.completed,
-            total: data.total,
-          };
-          onProgress?.(lastProgress);
-        } catch {
-          // ignore parse errors
-        }
-      }
-    }
-    log.info(`[Ollama] 模型下载完成: ${modelName}, 共接收 ${chunkCount} 个数据块, 总大小: ${(totalBytes / 1024 / 1024).toFixed(1)} MB`);
-    onProgress?.({ status: 'success', completed: 100, total: 100 });
-    return true;
   } catch (err: any) {
     log.error('[Ollama] 拉取模型失败:', err.message);
     onProgress?.({ status: 'error', completed: 0, total: 0 });
@@ -353,6 +361,18 @@ export async function deleteModel(modelName: string, url: string = OLLAMA_DEFAUL
 }
 
 export async function startOllama(url: string = OLLAMA_DEFAULT_URL): Promise<{ success: boolean; message: string }> {
+  // 已有进程：检查是否仍健康
+  if (ollamaProcess) {
+    const running = await checkOllamaRunning(url);
+    return running
+      ? { success: true, message: 'Ollama 已在运行' }
+      : { success: false, message: 'Ollama 进程异常，请先停止再启动' };
+  }
+  // 防止并发 spawn
+  if (startInProgress) {
+    return { success: false, message: 'Ollama 正在启动中，请稍候' };
+  }
+  startInProgress = true;
   try {
     const validation = validateOllamaUrl(url);
     if (!validation.valid) {
@@ -390,19 +410,54 @@ export async function startOllama(url: string = OLLAMA_DEFAULT_URL): Promise<{ s
   } catch (err: any) {
     log.error('[Ollama] 启动失败:', err.message);
     return { success: false, message: err.message };
+  } finally {
+    startInProgress = false;
   }
 }
 
-export function stopOllama(): void {
-  if (ollamaProcess) {
-    try {
-      ollamaProcess.kill('SIGTERM');
-      log.info('[Ollama] 进程已终止');
-    } catch (err) {
-      log.warn('[Ollama] 终止进程失败:', err);
-    }
-    ollamaProcess = null;
+export async function stopOllama(): Promise<{ success: boolean; message: string }> {
+  if (!ollamaProcess) {
+    return { success: true, message: 'Ollama 未在运行' };
   }
+  const proc = ollamaProcess;
+  ollamaProcess = null; // 立即清空引用，避免并发问题
+
+  return new Promise((resolve) => {
+    let resolved = false;
+    const forceTimeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        try {
+          proc.kill('SIGKILL');
+          log.warn('[Ollama] 进程未响应 SIGTERM，已强制终止');
+        } catch {
+          // 进程可能已退出，忽略
+        }
+        resolve({ success: true, message: 'Ollama 已强制停止' });
+      }
+    }, 3000);
+
+    proc.once('exit', () => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(forceTimeout);
+        log.info('[Ollama] 进程已退出');
+        resolve({ success: true, message: 'Ollama 已停止' });
+      }
+    });
+
+    try {
+      proc.kill('SIGTERM');
+      log.info('[Ollama] 进程终止信号已发送');
+    } catch (err) {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(forceTimeout);
+        log.warn('[Ollama] 终止进程失败:', err);
+        resolve({ success: false, message: '终止进程失败' });
+      }
+    }
+  });
 }
 
 export async function testOllamaConnection(url: string = OLLAMA_DEFAULT_URL): Promise<{ success: boolean; message: string }> {

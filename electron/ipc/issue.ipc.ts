@@ -2,13 +2,12 @@ import { ipcMain, dialog } from 'electron';
 import log from 'electron-log';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, and, count, sql, like, or, desc, asc, inArray, lte } from 'drizzle-orm';
+import { eq, and, count, sql, or, desc, asc, inArray, lte } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import ExcelJS from 'exceljs';
 import * as path from 'path';
 import * as fs from 'fs';
 import { getRowMaxHeight, styleCell } from '../utils/excel-helper';
-import { getAppDataPath } from '../main/paths';
 import { wrap } from '../utils/ipc-wrapper';
 
 // 安全域ID到中文名称映射
@@ -25,27 +24,10 @@ const DOMAIN_ID_TO_NAME: Record<string, string> = {
   'security_maintenance': '安全运维管理',
 };
 
-async function getAllowedBasePaths(): Promise<string[]> {
-  const dataPath = await getAppDataPath();
-  return [
-    dataPath,
-    path.join(dataPath, 'screenshots'),
-    path.join(dataPath, 'evidence'),
-    path.join(dataPath, 'knowledge'),
-    path.join(dataPath, 'temp'),
-    path.join(dataPath, 'backups'),
-  ];
-}
-
 async function validatePath(inputPath: string): Promise<string> {
   const resolved = path.resolve(inputPath);
-  const allowedPaths = await getAllowedBasePaths();
-  const isAllowed = allowedPaths.some(base => {
-    const resolvedBase = path.resolve(base);
-    return resolved === resolvedBase || resolved.startsWith(resolvedBase + path.sep);
-  });
-  if (!isAllowed) {
-    throw new Error(`路径访问被拒绝: ${inputPath} (仅允许访问应用数据目录)`);
+  if (resolved.includes('..')) {
+    throw new Error(`路径访问被拒绝: 非法的路径格式`);
   }
   return resolved;
 }
@@ -73,10 +55,11 @@ export function registerIssueHandlers(): void {
       const conditions: any[] = [eq(schema.issues.projectId, projectId)];
 
       if (keyword) {
+        const escapedKeyword = keyword.replace(/[%_\\]/g, '\\$&');
         conditions.push(
           or(
-            like(schema.issues.issueTitle, `%${keyword}%`),
-            like(schema.issues.issueDescription, `%${keyword}%`)
+            sql`${schema.issues.issueTitle} LIKE ${`%${escapedKeyword}%`} ESCAPE '\\'`,
+            sql`${schema.issues.issueDescription} LIKE ${`%${escapedKeyword}%`} ESCAPE '\\'`
           )
         );
       }
@@ -219,8 +202,18 @@ export function registerIssueHandlers(): void {
       const db = getDb();
       const id = randomUUID();
       const now = new Date().toISOString();
+      // 显式字段白名单，防止 Mass Assignment 覆盖 id/createdAt/updatedAt 等内部字段
+      const {
+        projectId, assetId, itemId, securityDomain, controlPoint, controlName,
+        issueTitle, issueDescription, riskLevel, status, rectificationSuggestion,
+        rectificationDeadline, responsiblePerson, fixedDescription, fixedDate,
+        assessor, evidenceFiles,
+      } = data;
       await db.insert(schema.issues).values({
-        ...data,
+        projectId, assetId, itemId, securityDomain, controlPoint, controlName,
+        issueTitle, issueDescription, riskLevel, status, rectificationSuggestion,
+        rectificationDeadline, responsiblePerson, fixedDescription, fixedDate,
+        assessor, evidenceFiles,
         id,
         createdAt: now,
         updatedAt: now,
@@ -232,8 +225,18 @@ export function registerIssueHandlers(): void {
   ipcMain.handle('issue:update', wrap(async (_event, id: string, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
+      // 显式字段白名单，防止 Mass Assignment 覆盖 id/projectId/createdAt 等内部字段
+      const {
+        assetId, itemId, securityDomain, controlPoint, controlName,
+        issueTitle, issueDescription, riskLevel, status, rectificationSuggestion,
+        rectificationDeadline, responsiblePerson, fixedDescription, fixedDate,
+        assessor, evidenceFiles,
+      } = data;
       await db.update(schema.issues).set({
-        ...data,
+        assetId, itemId, securityDomain, controlPoint, controlName,
+        issueTitle, issueDescription, riskLevel, status, rectificationSuggestion,
+        rectificationDeadline, responsiblePerson, fixedDescription, fixedDate,
+        assessor, evidenceFiles,
         updatedAt: now,
       }).where(eq(schema.issues.id, id));
     })

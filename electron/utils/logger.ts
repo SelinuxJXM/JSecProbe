@@ -1,4 +1,5 @@
 import log from 'electron-log';
+import type { WebContents } from 'electron';
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 
@@ -13,12 +14,20 @@ export interface LogContext {
 class AppLogger {
   private static instance: AppLogger;
   private isProduction: boolean = false;
+  private targetWebContents: WebContents | null = null;
 
   static getInstance(): AppLogger {
     if (!AppLogger.instance) {
       AppLogger.instance = new AppLogger();
     }
     return AppLogger.instance;
+  }
+
+  /**
+   * 设置目标窗口，用于将日志转发到 DevTools Console
+   */
+  setTargetWindow(contents: WebContents | null): void {
+    this.targetWebContents = contents;
   }
 
   setProductionMode(isProd: boolean): void {
@@ -81,6 +90,39 @@ class AppLogger {
     });
   }
 
+  private forwardToDevTools(level: LogLevel, message: string, context?: LogContext): void {
+    if (!this.targetWebContents || this.isProduction) return;
+
+    try {
+      this.targetWebContents.send('main-process-log', {
+        level,
+        message,
+        timestamp: new Date().toISOString(),
+        context: context ? this.serializeContext(context) : undefined,
+      });
+    } catch {
+      // 静默忽略转发失败
+    }
+  }
+
+  private serializeContext(context: LogContext): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(context)) {
+      if (key === 'stack') {
+        result[key] = typeof value === 'string' ? value : String(value);
+      } else if (typeof value !== 'function' && typeof value !== 'symbol') {
+        try {
+          // 尝试序列化，避免循环引用
+          JSON.stringify(value);
+          result[key] = value;
+        } catch {
+          result[key] = '[Unserializable]';
+        }
+      }
+    }
+    return result;
+  }
+
   private log(level: LogLevel, message: string, context?: LogContext): void {
     const parts: string[] = [];
 
@@ -94,6 +136,9 @@ class AppLogger {
     const prefix = parts.length > 0 ? parts.join(' ') + ' ' : '';
 
     const logMessage = `${prefix}${message}`;
+
+    // 转发到 DevTools Console（仅开发模式）
+    this.forwardToDevTools(level, logMessage, context);
 
     if (context && Object.keys(context).filter(k => !['module', 'duration'].includes(k)).length > 0) {
       const { module: _m, duration: _d, ...extra } = context;

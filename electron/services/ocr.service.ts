@@ -7,6 +7,7 @@ const MAX_IMAGE_SIZE_MB = 20;
 const MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024;
 
 let sharedWorker: Worker | null = null;
+let sharedWorkerLanguage: string | null = null;
 let sharedWorkerInitializing: Promise<Worker | null> | null = null;
 
 export interface OCROptions {
@@ -30,19 +31,69 @@ function isImageFile(filePath: string): boolean {
 }
 
 export async function getSharedWorker(language: string = 'eng'): Promise<Worker | null> {
-  if (sharedWorker) return sharedWorker;
-  if (sharedWorkerInitializing) return sharedWorkerInitializing;
+  // 已有 Worker 且语言匹配，直接返回
+  if (sharedWorker && sharedWorkerLanguage === language) {
+    return sharedWorker;
+  }
 
+  // 正在初始化且语言匹配，复用当前初始化 Promise
+  if (sharedWorkerInitializing && sharedWorkerLanguage === language) {
+    return sharedWorkerInitializing;
+  }
+
+  // 语言不匹配：先终止旧 Worker（先清空引用避免竞态）
+  if (sharedWorker) {
+    const oldWorker = sharedWorker;
+    sharedWorker = null;
+    sharedWorkerLanguage = null;
+    log.info(`[OCR] 语言切换: 重建 Worker (target=${language})`);
+    try {
+      await oldWorker.terminate();
+    } catch (err) {
+      log.warn('[OCR] 终止旧 Worker 失败:', err);
+    }
+  }
+
+  // 正在初始化但语言不同：等待当前初始化完成后再创建新语言 Worker
+  if (sharedWorkerInitializing && sharedWorkerLanguage !== language) {
+    const pendingInit = sharedWorkerInitializing;
+    try {
+      const worker = await pendingInit;
+      // 初始化完成的 Worker 语言不对，需要终止
+      if (worker) {
+        try {
+          await worker.terminate();
+        } catch (err) {
+          log.warn('[OCR] 终止不匹配 Worker 失败:', err);
+        }
+        if (sharedWorker === worker) {
+          sharedWorker = null;
+          sharedWorkerLanguage = null;
+        }
+      }
+    } catch {
+      // 忽略初始化错误
+    }
+    sharedWorkerInitializing = null;
+    sharedWorkerLanguage = null;
+  }
+
+  // 创建新 Worker
+  sharedWorkerLanguage = language;
   sharedWorkerInitializing = (async () => {
     try {
       const worker = await createWorker(language);
       sharedWorker = worker;
-      log.info('[OCR] Worker 初始化成功');
+      sharedWorkerLanguage = language;
+      log.info(`[OCR] Worker 初始化成功 (language=${language})`);
       return worker;
     } catch (error) {
-      sharedWorkerInitializing = null;
       log.error('[OCR] 初始化 worker 失败:', error);
+      sharedWorker = null;
+      sharedWorkerLanguage = null;
       return null;
+    } finally {
+      sharedWorkerInitializing = null;
     }
   })();
 
@@ -127,28 +178,52 @@ export async function extractTextFromMultipleImages(
   options: OCROptions = {}
 ): Promise<Array<{ path: string; result: OCRResult }>> {
   const results: Array<{ path: string; result: OCRResult }> = [];
+  const SINGLE_TIMEOUT = 60 * 1000; // 单张超时 60 秒
 
+  // 串行处理（OCR Worker 是共享单例，并行会冲突），但加单张超时
   for (const imagePath of imagePaths) {
-    const result = await extractTextFromImage(imagePath, options);
-    results.push({ path: imagePath, result });
+    try {
+      const result = await Promise.race([
+        extractTextFromImage(imagePath, options),
+        new Promise<OCRResult>((_, reject) =>
+          setTimeout(() => reject(new Error(`OCR 单张超时(${SINGLE_TIMEOUT / 1000}s): ${imagePath}`)), SINGLE_TIMEOUT)
+        ),
+      ]);
+      results.push({ path: imagePath, result });
+    } catch (err: any) {
+      log.warn(`[OCR] 批量处理单张失败: ${err.message}`);
+      results.push({
+        path: imagePath,
+        result: { text: '', confidence: 0, words: [] },
+      });
+    }
   }
 
   return results;
 }
 
 export async function terminateOCRWorker(): Promise<void> {
+  // 若正在初始化，等待其完成再终止
+  if (sharedWorkerInitializing) {
+    try {
+      await sharedWorkerInitializing;
+    } catch {
+      // 忽略初始化错误
+    }
+  }
   if (sharedWorker) {
     try {
       await sharedWorker.terminate();
-      sharedWorker = null;
-      sharedWorkerInitializing = null;
       log.info('[OCR] Worker 已终止');
     } catch (err) {
       log.warn('[OCR] 终止 Worker 失败:', err);
     }
   }
+  sharedWorker = null;
+  sharedWorkerLanguage = null;
+  sharedWorkerInitializing = null;
 }
 
 export function isOCREnabled(): boolean {
-  return sharedWorker !== null;
+  return sharedWorker !== null || sharedWorkerInitializing !== null;
 }

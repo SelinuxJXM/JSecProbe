@@ -183,6 +183,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount } from 'vue';
+import { ElMessage } from 'element-plus';
 import type { Issue } from '../../../../shared/types';
 
 const props = defineProps<{
@@ -218,6 +219,7 @@ const batchProgress = ref({
   current: 0,
   total: 0,
 });
+const batchLoading = ref(false);
 const batchMinimized = ref(false);
 const batchElapsedTime = ref(0);
 const batchEstimatedRemaining = ref(0);
@@ -241,6 +243,11 @@ function formatTime(seconds: number): string {
 // ==================== 单条分析 ====================
 async function analyzeIssue(issue: Issue) {
   if (!window.api) return;
+
+  if (singleLoading.value) {
+    ElMessage.warning('AI 分析进行中，请稍候');
+    return;
+  }
 
   console.log('[issue-ai-analysis.analyzeIssue] 开始分析, issueId:', issue.id, 'issueTitle:', issue.issueTitle);
 
@@ -282,11 +289,14 @@ async function analyzeIssue(issue: Issue) {
       console.log('[issue-ai-analysis.analyzeIssue] AI返回内容长度:', res.data.content.length);
     } else {
       singleResult.value = null;
+      const errMsg = res.error?.message || 'AI分析失败，请稍后重试';
       console.error('[issue-ai-analysis.analyzeIssue] AI分析失败:', res.error);
+      ElMessage.error(errMsg);
     }
   } catch (err: any) {
     console.error('[issue-ai-analysis.analyzeIssue] IPC调用异常:', err.message);
     singleResult.value = null;
+    ElMessage.error('AI分析失败：' + (err.message || '未知错误'));
   } finally {
     clearInterval(stepInterval);
     singleLoading.value = false;
@@ -303,8 +313,14 @@ function applySingleResult() {
 async function batchAnalyzeIssues(issues: Issue[]) {
   if (!window.api || issues.length === 0) return;
 
+  if (batchLoading.value) {
+    ElMessage.warning('批量 AI 分析进行中，请稍候');
+    return;
+  }
+
   console.log('[issue-ai-analysis.batchAnalyzeIssues] 开始批量分析, 问题总数:', issues.length);
 
+  batchLoading.value = true;
   batchProgress.value = { visible: true, percent: 0, message: '准备中...', stage: 'init', current: 0, total: issues.length };
   batchMinimized.value = false;
   batchElapsedTime.value = 0;
@@ -361,9 +377,23 @@ async function batchAnalyzeIssues(issues: Issue[]) {
         }
       }
       console.log('[issue-ai-analysis.batchAnalyzeIssues] 批量分析完成, 成功:', batchSuccessCount.value, '失败:', batchFailedCount.value);
+      if (batchSuccessCount.value === 0 && batchFailedCount.value > 0) {
+        ElMessage.error(`批量分析失败，共 ${batchFailedCount.value} 个问题未生成建议`);
+      } else if (batchFailedCount.value > 0) {
+        ElMessage.warning(`分析完成：成功 ${batchSuccessCount.value} 个，失败 ${batchFailedCount.value} 个`);
+      } else {
+        ElMessage.success(`批量分析完成，已生成 ${batchSuccessCount.value} 条整改建议`);
+      }
+    } else {
+      const errMsg = res.error?.message || 'AI批量分析失败，请稍后重试';
+      console.error('[issue-ai-analysis.batchAnalyzeIssues] AI分析失败:', res.error);
+      ElMessage.error(errMsg);
+      batchProgress.value = { ...batchProgress.value, stage: 'error', message: errMsg };
     }
   } catch (err: any) {
     console.error('[issue-ai-analysis.batchAnalyzeIssues] IPC调用异常:', err.message);
+    ElMessage.error('AI批量分析失败：' + (err.message || '未知错误'));
+    batchProgress.value = { ...batchProgress.value, stage: 'error', message: err.message || '分析失败' };
   } finally {
     if (unsubscribeBatchProgress) {
       unsubscribeBatchProgress();
@@ -373,6 +403,7 @@ async function batchAnalyzeIssues(issues: Issue[]) {
       clearInterval(batchTimerInterval);
       batchTimerInterval = null;
     }
+    batchLoading.value = false;
   }
 }
 

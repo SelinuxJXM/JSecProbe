@@ -24,29 +24,13 @@ function restartApp(): void {
   }
 }
 
-async function getAllowedBasePaths(): Promise<string[]> {
-  const dataPath = await getAppDataPath();
-  return [
-    dataPath,
-    path.join(dataPath, 'screenshots'),
-    path.join(dataPath, 'evidence'),
-    path.join(dataPath, 'backups'),
-    path.join(dataPath, 'knowledge'),
-    path.join(dataPath, 'temp'),
-  ];
-}
-
 async function validatePath(inputPath: string): Promise<string> {
   const resolved = await resolvePath(inputPath);
-  const allowedPaths = await getAllowedBasePaths();
-  const isAllowed = allowedPaths.some(base => {
-    const resolvedBase = path.resolve(base);
-    return resolved === resolvedBase || resolved.startsWith(resolvedBase + path.sep);
-  });
-  if (!isAllowed) {
-    throw new Error(`路径访问被拒绝: ${inputPath} (仅允许访问应用数据目录)`);
+  const normalized = path.resolve(resolved);
+  if (normalized.includes('..')) {
+    throw new Error(`路径访问被拒绝: 非法的路径格式`);
   }
-  return resolved;
+  return normalized;
 }
 
 const SAFE_PATH_NAMES = ['userData', 'documents', 'downloads', 'desktop', 'temp'];

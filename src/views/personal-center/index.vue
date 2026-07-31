@@ -156,15 +156,15 @@ async function handleSubmit() {
   const valid = await formRef.value.validate().catch(() => false);
   if (!valid) return;
 
-  const userId = userStore.user?.id;
-  if (!userId) {
+  const token = userStore.token;
+  if (!token) {
     ElMessage.error('用户未登录');
     return;
   }
 
   loading.value = true;
   try {
-    const res = await window.api.auth.changePassword(userId, form.oldPassword, form.newPassword);
+    const res = await window.api.auth.changePassword({ token, oldPassword: form.oldPassword, newPassword: form.newPassword });
     if (!res.success) {
       ElMessage.error(res.error?.message || '修改密码失败');
       return;

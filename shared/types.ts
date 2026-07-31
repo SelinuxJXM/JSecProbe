@@ -327,7 +327,7 @@ export interface ApiBridge {
     login: (username: string, password: string) => Promise<IpcResponse<LoginResult>>;
     logout: (token?: string) => Promise<IpcResponse<void>>;
     getCurrentUser: (token: string) => Promise<IpcResponse<{ userId: string; username: string } | null>>;
-    changePassword: (userId: string, oldPassword: string, newPassword: string) => Promise<IpcResponse<void>>;
+    changePassword: (params: { token: string; oldPassword: string; newPassword: string }) => Promise<IpcResponse<void>>;
     validateSession: (token: string) => Promise<IpcResponse<{ valid: boolean; userId?: string; username?: string }>>;
   };
   project: {
@@ -476,7 +476,7 @@ export interface ApiBridge {
     batchAnalyzeIssues: (params: { issues: Array<{ issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string }> }) => Promise<IpcResponse<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }> }>>;
     getConfig: () => Promise<IpcResponse<any>>;
     saveConfig: (config: { apiBase: string; apiKey: string; model: string; temperature: number; privacyMode?: number; sensitiveWords?: string; mode?: string; ollamaModel?: string; ollamaUrl?: string; ocrPreprocess?: boolean }) => Promise<IpcResponse<void>>;
-    testConnection: (params?: { apiBase?: string; apiKey?: string; model?: string }) => Promise<IpcResponse<any>>;
+    testConnection: (params?: { apiBase?: string; apiKey?: string; model?: string; mode?: string; ollamaUrl?: string }) => Promise<IpcResponse<any>>;
     getProgress: () => Promise<IpcResponse<{ stage: string; message: string; percent: number; timestamp: number } | null>>;
     onAnalysisProgress: (callback: (data: { stage: string; message: string; percent: number }) => void) => () => void;
     onBatchIssueProgress: (callback: (data: { stage: string; message: string; percent: number; current: number; total: number }) => void) => () => void;
@@ -520,6 +520,18 @@ export interface ApiBridge {
     ensureDir: (path: string) => Promise<IpcResponse<void>>;
     writeFile: (path: string, data: Buffer) => Promise<IpcResponse<void>>;
   };
+  /**
+   * 渲染进程发送日志到主进程
+   */
+  sendLog: (level: string, message: string) => void;
+  /**
+   * 监听主进程日志，转发到 DevTools Console
+   */
+  onMainLog: (callback: (data: { level: string; message: string; timestamp: string; context?: any }) => void) => () => void;
+  /**
+   * 监听 IPC 事件
+   */
+  on: (channel: string, callback: (...args: any[]) => void) => () => void;
 }
 
 export interface DialogOpenOptions {
@@ -563,5 +575,8 @@ export interface UpdateStatus {
   releaseDate?: string;
   releaseNotes?: string;
   downloadProgress?: number;
+  downloadSpeed?: number;
+  downloadTransferred?: number;
+  downloadTotal?: number;
   error?: string;
 }

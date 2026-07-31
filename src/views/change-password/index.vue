@@ -56,18 +56,15 @@
 
 <script setup lang="ts">
 import { reactive, ref } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRouter } from 'vue-router';
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus';
 import { Lock } from '@element-plus/icons-vue';
 import { useUserStore } from '@/stores/user';
 
-const route = useRoute();
 const router = useRouter();
 const userStore = useUserStore();
 const formRef = ref<FormInstance>();
 const loading = ref(false);
-
-const userId = (route.query.userId as string) || '';
 
 const form = reactive({
   oldPassword: 'admin123',
@@ -101,9 +98,15 @@ async function handleSubmit() {
   const valid = await formRef.value.validate().catch(() => false);
   if (!valid) return;
 
+  const token = userStore.token;
+  if (!token) {
+    ElMessage.error('用户未登录');
+    return;
+  }
+
   loading.value = true;
   try {
-    const changeRes = await window.api.auth.changePassword(userId, form.oldPassword, form.newPassword);
+    const changeRes = await window.api.auth.changePassword({ token, oldPassword: form.oldPassword, newPassword: form.newPassword });
     if (!changeRes.success) {
       ElMessage.error(changeRes.error?.message || '修改密码失败');
       return;

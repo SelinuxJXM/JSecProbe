@@ -3,9 +3,12 @@ import { getDb } from '../db';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { readFile, stat } from 'fs/promises';
+import * as fs from 'fs';
+import * as path from 'path';
 import log from 'electron-log';
 import sharp from 'sharp';
 import { writeOperationLog } from '../utils/operation-log';
+import { resolvePath } from '../utils/path-resolver';
 import {
   getOllamaStatus,
   listModels,
@@ -27,7 +30,9 @@ const MAX_IMAGE_SIZE_MB = 20;
 const MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024;
 
 // 进度存储（用于轮询 fallback）
+// 注意：单任务进度，并发批量任务会互相覆盖（已知限制，UI 层应禁止并发批量）
 let currentProgress: { stage: string; message: string; percent: number; timestamp: number } | null = null;
+const PROGRESS_EXPIRE_MS = 5 * 60 * 1000; // 5 分钟过期
 
 function sanitize<T>(obj: T): any {
   try {
@@ -51,6 +56,48 @@ function calculateTimeout(itemCount: number, imageCount: number, totalImageSizeK
 function isImageFile(filePath: string): boolean {
   const ext = filePath.toLowerCase().split('.').pop() || '';
   return ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff'].includes(ext);
+}
+
+async function validateScreenshotPath(inputPath: string): Promise<string> {
+  const resolved = await resolvePath(inputPath);
+  const normalized = path.resolve(resolved);
+  if (normalized.includes('..')) {
+    throw new Error(`路径访问被拒绝: 非法的路径格式`);
+  }
+
+  // 容错：如果精确路径不存在，尝试按文件名（去时间戳）模糊匹配
+  if (!fs.existsSync(normalized)) {
+    const dir = path.dirname(normalized);
+    const baseName = path.basename(normalized);
+    const ext = path.extname(baseName);
+    const nameWithoutExt = path.basename(baseName, ext);
+    const match = nameWithoutExt.match(/^(.+?)_(\d{10,13})$/);
+    if (match && fs.existsSync(dir)) {
+      const basePrefix = match[1];
+      const candidates = fs.readdirSync(dir)
+        .filter(f => f.startsWith(basePrefix + '_') && f.endsWith(ext))
+        .map(f => ({
+          fullPath: path.join(dir, f),
+          mtime: fs.statSync(path.join(dir, f)).mtime.getTime(),
+        }))
+        .sort((a, b) => b.mtime - a.mtime);
+      if (candidates.length > 0) {
+        log.info(`[AI截图] 路径已更新: ${normalized} -> ${candidates[0].fullPath}`);
+        return candidates[0].fullPath;
+      }
+    }
+  }
+
+  return normalized;
+}
+
+async function validateScreenshotPaths(inputPaths: string[] | undefined): Promise<string[]> {
+  if (!inputPaths || inputPaths.length === 0) return [];
+  const validated: string[] = [];
+  for (const p of inputPaths) {
+    validated.push(await validateScreenshotPath(p));
+  }
+  return validated;
 }
 
 async function encodeImageToBase64(imagePath: string, maxSizeKB: number = 120): Promise<string> {
@@ -157,18 +204,43 @@ async function desensitizeImage(imagePath: string): Promise<string> {
     log.info(`[图片脱敏] ${imagePath}: 共遮盖 ${maskRects.length} 处敏感文本, ${originalSizeMB.toFixed(1)} MB → ${processedSizeMB.toFixed(1)} MB`);
     return processed.toString('base64');
   } catch (err: any) {
-    log.error(`[图片脱敏失败] ${imagePath}: ${err.message}，将发送原图`);
-    try {
-      return (await readFile(imagePath)).toString('base64');
-    } catch {
-      return '';
-    }
+    log.error(`[图片脱敏失败] ${imagePath}: ${err.message}`);
+    return '';
   }
 }
 
-function ensureApiUrl(baseUrl: string | null | undefined): string {
+function isBlockedIp(hostname: string): boolean {
+  // 云元数据端点
+  if (hostname === '169.254.169.254' || hostname === '169.254.170.2') return true;
+  // 链路本地 169.254.0.0/16
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
+  // 0.0.0.0
+  if (hostname === '0.0.0.0') return true;
+  return false;
+}
+
+function ensureApiUrl(baseUrl: string | null | undefined, mode?: string): string {
   const raw = (baseUrl || '').trim().replace(/\/+$/, '');
   if (!raw) return '';
+
+  // 协议校验：仅允许 http/https，阻止 file://、ftp:// 等
+  if (!/^https?:\/\//i.test(raw)) {
+    throw new Error('API地址必须以 http:// 或 https:// 开头');
+  }
+
+  // 云端模式下校验 IP 黑名单，阻止 SSRF 探测云元数据/链路本地地址
+  // 本地模式（Ollama）不校验，因为用户可能在任意内网地址部署 Ollama
+  if (mode !== 'local') {
+    let hostname = '';
+    try {
+      hostname = new URL(raw).hostname;
+    } catch {
+      throw new Error('API地址格式无效');
+    }
+    if (isBlockedIp(hostname)) {
+      throw new Error(`API地址被禁止访问: ${hostname}`);
+    }
+  }
 
   const queryIndex = raw.indexOf('?');
   const base = queryIndex >= 0 ? raw.substring(0, queryIndex) : raw;
@@ -188,6 +260,14 @@ function getApiKeyForMode(config: any): string {
     return 'ollama';
   }
   return config.apiKey || '';
+}
+
+function getEffectiveApiBase(config: any, mode?: string): string {
+  const effectiveMode = mode || config.mode || 'cloud';
+  if (effectiveMode === 'local') {
+    return `${(config.ollamaUrl || 'http://localhost:11434').replace(/\/+$/, '')}/v1`;
+  }
+  return config.apiBase || '';
 }
 
 function shouldValidateApiKey(config: any): boolean {
@@ -261,6 +341,38 @@ function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
     });
 }
 
+/**
+ * 规范化从数据库读取的 aiConfigs 配置：
+ * - mode 强制为 'cloud' | 'local'
+ * - 数值字段强制为 number
+ * - 字符串字段兜底空串
+ * - privacyMode/ocrPreprocess 强制为 0/1
+ */
+function normalizeConfig(raw: any): any {
+  if (!raw || typeof raw !== 'object') return raw;
+  const mode = raw.mode === 'local' ? 'local' : 'cloud';
+  const toInt = (v: any): number => (v === 1 || v === true ? 1 : 0);
+  const toStr = (v: any, def = ''): string => (typeof v === 'string' ? v : def);
+  const toNum = (v: any, def: number): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : def;
+  };
+  return {
+    ...raw,
+    mode,
+    apiKey: toStr(raw.apiKey),
+    apiBase: toStr(raw.apiBase),
+    model: toStr(raw.model, 'gpt-4o-mini'),
+    provider: toStr(raw.provider, 'openai'),
+    ollamaUrl: toStr(raw.ollamaUrl, 'http://localhost:11434'),
+    ollamaModel: raw.ollamaModel || null,
+    temperature: toNum(raw.temperature, 0.3),
+    privacyMode: toInt(raw.privacyMode),
+    ocrPreprocess: toInt(raw.ocrPreprocess),
+    sensitiveWords: toStr(raw.sensitiveWords),
+  };
+}
+
 
 
 export function registerAIHandlers(): void {
@@ -268,7 +380,18 @@ export function registerAIHandlers(): void {
     wrap(async () => {
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
-      return configs[0] || {};
+      const config: any = configs[0] ? { ...configs[0] } : {};
+      // 返回前对 apiKey 脱敏，防止明文泄露到渲染层
+      // testConnection 等需要完整 apiKey 的场景通过 params.apiKey 单独传参
+      if (config.apiKey) {
+        const key = config.apiKey;
+        if (key.length > 12) {
+          config.apiKey = key.substring(0, 4) + '****' + key.substring(key.length - 4);
+        } else {
+          config.apiKey = '****';
+        }
+      }
+      return config;
     })
   );
 
@@ -306,26 +429,19 @@ export function registerAIHandlers(): void {
       };
 
       if (mode === 'local') {
-        // 本地模式：保留云端配置，更新本地配置
+        // 本地模式：仅保存 Ollama 相关字段，不覆盖云端的 apiKey/apiBase/model
+        // 这确保云端配置在切换模式时不会被丢失
         saveData.ollamaUrl = ollamaUrl;
         saveData.ollamaModel = ollamaModel;
-        saveData.apiBase = `${ollamaUrl.replace(/\/+$/, '')}/v1`;
-        saveData.apiKey = 'ollama';
-        saveData.model = ollamaModel;
         saveData.provider = 'ollama';
-        // 保留云端配置
-        if (existing) {
-          saveData.apiKey = existing.apiKey || '';
-          saveData.baseUrl = existing.apiBase || '';
-          saveData.cloudModel = existing.model || '';
-        }
+        // 关键：不修改 apiKey、apiBase、model、provider（云端字段保持不变）
       } else {
-        // 云端模式：保留本地配置，更新云端配置
+        // 云端模式：保存云端配置，同时保留本地 Ollama 配置
         saveData.apiBase = apiBase;
         saveData.apiKey = config.apiKey;
         saveData.model = config.model;
         saveData.provider = config.provider || 'openai';
-        // 保留本地配置
+        // 保留本地 Ollama 配置
         if (existing) {
           saveData.ollamaUrl = existing.ollamaUrl || ollamaUrl;
           saveData.ollamaModel = existing.ollamaModel || null;
@@ -347,6 +463,8 @@ export function registerAIHandlers(): void {
           createdAt: now,
         });
       }
+
+      log.info(`[保存AI配置] 模式: ${mode}, API地址: ${mode === 'cloud' ? (saveData.apiBase || '未设置') : '使用Ollama'}, 模型: ${mode === 'cloud' ? (saveData.model || '未设置') : saveData.ollamaModel || '未设置'}`);
     })
   );
 
@@ -432,28 +550,35 @@ export function registerAIHandlers(): void {
 
   // 进度轮询（fallback 机制）
   ipcMain.handle('ai:getProgress', async () => {
+    // 过期进度返回 null，避免读到陈旧数据
+    if (currentProgress && Date.now() - currentProgress.timestamp > PROGRESS_EXPIRE_MS) {
+      currentProgress = null;
+    }
     return sanitize({ success: true, data: currentProgress });
   });
 
-  ipcMain.handle('ai:testConnection', async (_event, params?: { apiBase?: string; apiKey?: string; model?: string }) => {
+  ipcMain.handle('ai:testConnection', async (_event, params?: { apiBase?: string; apiKey?: string; model?: string; mode?: string; ollamaUrl?: string }) => {
     try {
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) return sanitize({ success: false, error: { code: 'NOT_CONFIGURED', message: 'AI未配置' } });
 
-      const config = sanitize(configs[0]);
-      const mode = config.mode || 'cloud';
-      const apiBase = params?.apiBase || config.apiBase || '';
-      const apiKey = getApiKeyForMode({ ...config, apiKey: params?.apiKey || config.apiKey });
-      const model = getEffectiveModel(params, config);
+      const config = normalizeConfig(sanitize(configs[0]));
+      const mode = params?.mode || config.mode || 'cloud';
+      // 合并 params 到 config，使 getEffectiveApiBase 能根据 mode 选择正确的 API 地址
+      const mergedConfig = { ...config, ...params };
+      const apiBase = getEffectiveApiBase(mergedConfig, mode);
+      const apiKey = getApiKeyForMode({ ...config, mode, apiKey: params?.apiKey || config.apiKey });
+      const model = getEffectiveModel(params, { ...config, mode });
 
-      if (shouldValidateApiKey(config) && !apiKey) {
+      if (shouldValidateApiKey({ ...config, mode }) && !apiKey) {
         return sanitize({ success: false, error: { code: 'NO_API_KEY', message: 'API Key未配置' } });
       }
       if (!apiBase) return sanitize({ success: false, error: { code: 'NO_API_BASE', message: 'API地址未配置' } });
 
-      const apiUrl = ensureApiUrl(apiBase);
-      log.info(`[测试连接] 模式: ${mode}, URL: ${apiUrl}, 模型: ${model}`);
+      const apiUrl = ensureApiUrl(apiBase, mode);
+      // 日志中不打印完整 URL（可能含 query 参数中的 token）
+      log.info(`[测试连接] 模式: ${mode}, 模型: ${model}`);
 
       const requestBody = {
         model,
@@ -462,14 +587,29 @@ export function registerAIHandlers(): void {
         temperature: 0.1,
       };
 
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(requestBody),
-      });
+      // 测试连接超时控制（15秒）
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      let response;
+      try {
+        response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+      } catch (fetchErr: any) {
+        clearTimeout(timeout);
+        const errMsg = fetchErr.name === 'AbortError' ? `连接超时(15秒): ${apiUrl}` : `网络错误: ${fetchErr.message}`;
+        return sanitize({
+          success: false,
+          error: { code: 'TEST_CONNECTION_ERROR', message: errMsg, apiUrl }
+        });
+      }
+      clearTimeout(timeout);
 
       const responseText = await response.text();
       log.info(`[测试连接] 状态: ${response.status}, 响应: ${responseText.substring(0, 500)}`);
@@ -512,7 +652,7 @@ export function registerAIHandlers(): void {
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) throw new Error('AI未配置');
-      const config = sanitize(configs[0]);
+      const config = normalizeConfig(sanitize(configs[0]));
       const mode = config.mode || 'cloud';
 
       if (shouldValidateApiKey(config) && !config.apiKey) {
@@ -521,7 +661,7 @@ export function registerAIHandlers(): void {
 
       const model = getEffectiveModel(params, config);
       const temperature = params.temperature ?? config.temperature ?? 0.3;
-      const apiUrl = ensureApiUrl(config.apiBase);
+      const apiUrl = ensureApiUrl(getEffectiveApiBase(config, mode), mode);
       const apiKey = getApiKeyForMode(config);
 
       if (!apiUrl) throw new Error('API地址未配置');
@@ -626,7 +766,7 @@ export function registerAIHandlers(): void {
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) throw new Error('AI未配置');
-      const config = sanitize(configs[0]);
+      const config = normalizeConfig(sanitize(configs[0]));
       const mode = config.mode || 'cloud';
 
       if (shouldValidateApiKey(config) && !config.apiKey) {
@@ -635,7 +775,7 @@ export function registerAIHandlers(): void {
 
       const model = mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
-      const apiUrl = ensureApiUrl(config.apiBase);
+      const apiUrl = ensureApiUrl(getEffectiveApiBase(config, mode), mode);
       const apiKey = getApiKeyForMode(config);
 
       if (!apiUrl) throw new Error('API地址未配置');
@@ -645,6 +785,7 @@ export function registerAIHandlers(): void {
       const extraWords = config.sensitiveWords
         ? config.sensitiveWords.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
         : [];
+      params.screenshots = await validateScreenshotPaths(params.screenshots);
       let hasScreenshots = params.screenshots && params.screenshots.length > 0;
 
       const userContent: any[] = [];
@@ -842,7 +983,7 @@ export function registerAIHandlers(): void {
 
     const sendProgress = (data: { stage: string; message: string; percent: number }) => {
       currentProgress = { ...data, timestamp: Date.now() };
-      try { _event.sender.send('ai:analysisProgress', data); } catch (innerErr: any) {
+      try { _event.sender.send('ai:progress', data); } catch (innerErr: any) {
         log.warn('[批量分析] 发送进度失败:', innerErr.message);
       }
     };
@@ -869,7 +1010,7 @@ export function registerAIHandlers(): void {
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) throw new Error('AI未配置');
-      const config = sanitize(configs[0]);
+      const config = normalizeConfig(sanitize(configs[0]));
       const mode = config.mode || 'cloud';
 
       if (shouldValidateApiKey(config) && !config.apiKey) {
@@ -878,7 +1019,7 @@ export function registerAIHandlers(): void {
 
       const model = mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
-      const apiUrl = ensureApiUrl(config.apiBase);
+      const apiUrl = ensureApiUrl(getEffectiveApiBase(config, mode), mode);
       const apiKey = getApiKeyForMode(config);
 
       if (!apiUrl) throw new Error('API地址未配置');
@@ -887,6 +1028,7 @@ export function registerAIHandlers(): void {
       const extraWords = config.sensitiveWords
         ? config.sensitiveWords.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
         : [];
+      params.screenshots = await validateScreenshotPaths(params.screenshots);
       const hasImages = params.screenshots && params.screenshots.length > 0;
 
       // 计算图片总大小（用于动态超时）
@@ -1066,8 +1208,8 @@ ${itemsJson}
         });
 
       const bodySizeKB = Buffer.byteLength(batchRequestBody, 'utf8') / 1024;
-      const logApiKey = getApiKeyForMode(config);
-      log.info(`[批量AI分析] 请求体大小: ${bodySizeKB.toFixed(1)} KB, 用户内容项数: ${userContent.length}, 动态超时: ${dynamicTimeout}ms, API Key: ${logApiKey ? logApiKey.substring(0, 8) + '***' : 'none'}`);
+      const hasApiKey = !!getApiKeyForMode(config);
+      log.info(`[批量AI分析] 请求体大小: ${bodySizeKB.toFixed(1)} KB, 用户内容项数: ${userContent.length}, 动态超时: ${dynamicTimeout}ms, API Key: ${hasApiKey ? '已配置' : '未配置'}`);
 
       sendProgress({ stage: 'sending', message: '正在提交给AI分析...', percent: 60 });
 
@@ -1164,9 +1306,8 @@ ${itemsJson}
   }) => {
     try {
       const params = sanitize(rawParams);
-      console.log('[ai:analyzeIssue] 调用参数:', JSON.stringify({
+      log.info('[ai:analyzeIssue] 调用参数:', JSON.stringify({
         issueId: params.issueId,
-        issueTitle: params.issueTitle,
         securityDomain: params.securityDomain,
         controlPoint: params.controlPoint,
         controlName: params.controlName,
@@ -1174,7 +1315,7 @@ ${itemsJson}
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) throw new Error('AI未配置');
-      const config = sanitize(configs[0]);
+      const config = normalizeConfig(sanitize(configs[0]));
       const mode = config.mode || 'cloud';
 
       if (shouldValidateApiKey(config) && !config.apiKey) {
@@ -1183,14 +1324,13 @@ ${itemsJson}
 
       const model = config.mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
-      const apiUrl = ensureApiUrl(config.apiBase);
+      const apiUrl = ensureApiUrl(getEffectiveApiBase(config), mode);
       const apiKey = getApiKeyForMode(config);
       if (!apiUrl) throw new Error('API地址未配置');
 
-      console.log('[ai:analyzeIssue] AI配置:', JSON.stringify({
+      log.info('[ai:analyzeIssue] AI配置:', JSON.stringify({
         model,
         temperature,
-        apiUrl,
         mode,
         privacyMode: config.privacyMode === 1,
       }));
@@ -1234,11 +1374,11 @@ ${itemsJson}
         temperature,
       });
 
-      console.log('[ai:analyzeIssue] 发送API请求, 请求体大小:', Buffer.byteLength(requestBody, 'utf8'), 'bytes');
+      log.info('[ai:analyzeIssue] 发送API请求, 请求体大小:', Buffer.byteLength(requestBody, 'utf8'), 'bytes');
 
       const abortController = new AbortController();
       const timeout = setTimeout(() => {
-        console.warn('[ai:analyzeIssue] 请求超时(60s)，终止请求');
+        log.warn('[ai:analyzeIssue] 请求超时(60s)，终止请求');
         abortController.abort(new Error('请求超时'));
       }, 60000);
 
@@ -1260,7 +1400,7 @@ ${itemsJson}
         clearTimeout(timeout);
       }
 
-      console.log('[ai:analyzeIssue] API响应状态:', response.status);
+      log.info('[ai:analyzeIssue] API响应状态:', response.status);
 
       if (!response.ok) {
         const errorBody = await response.text().catch(() => '');
@@ -1272,9 +1412,7 @@ ${itemsJson}
       // 移除所有前导换行符和回车符
       content = content.replace(/^[\r\n]+/, '').trim();
 
-      console.log('[ai:analyzeIssue] AI返回内容长度:', content.length);
-      console.log('[ai:analyzeIssue] AI返回内容前200字符:', content.substring(0, 200));
-      console.log('[ai:analyzeIssue] AI返回内容首字符charCode:', content.charCodeAt(0), content.charCodeAt(1), content.charCodeAt(2));
+      log.info('[ai:analyzeIssue] AI返回内容长度:', content.length);
 
       try {
         writeOperationLog({
@@ -1289,7 +1427,7 @@ ${itemsJson}
 
       return sanitize({ success: true, data: { content } });
     } catch (error: any) {
-      console.error('[ai:analyzeIssue] 错误:', error.message);
+      log.error('[ai:analyzeIssue] 错误:', error.message);
       log.error('AI分析问题错误:', error);
       return sanitize({
         success: false,
@@ -1308,9 +1446,8 @@ ${itemsJson}
   }) => {
     try {
       const params = sanitize(rawParams);
-      console.log('[ai:analyzeIssueDescription] 调用参数:', JSON.stringify({
+      log.info('[ai:analyzeIssueDescription] 调用参数:', JSON.stringify({
         issueId: params.issueId,
-        issueTitle: params.issueTitle,
         securityDomain: params.securityDomain,
         controlPoint: params.controlPoint,
         controlName: params.controlName,
@@ -1318,7 +1455,7 @@ ${itemsJson}
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) throw new Error('AI未配置');
-      const config = sanitize(configs[0]);
+      const config = normalizeConfig(sanitize(configs[0]));
       const mode = config.mode || 'cloud';
 
       if (shouldValidateApiKey(config) && !config.apiKey) {
@@ -1327,14 +1464,13 @@ ${itemsJson}
 
       const model = config.mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
-      const apiUrl = ensureApiUrl(config.apiBase);
+      const apiUrl = ensureApiUrl(getEffectiveApiBase(config), mode);
       const apiKey = getApiKeyForMode(config);
       if (!apiUrl) throw new Error('API地址未配置');
 
-      console.log('[ai:analyzeIssueDescription] AI配置:', JSON.stringify({
+      log.info('[ai:analyzeIssueDescription] AI配置:', JSON.stringify({
         model,
         temperature,
-        apiUrl,
         mode,
         privacyMode: config.privacyMode === 1,
       }));
@@ -1381,11 +1517,11 @@ ${itemsJson}
         temperature,
       });
 
-      console.log('[ai:analyzeIssueDescription] 发送API请求, 请求体大小:', Buffer.byteLength(requestBody, 'utf8'), 'bytes');
+      log.info('[ai:analyzeIssueDescription] 发送API请求, 请求体大小:', Buffer.byteLength(requestBody, 'utf8'), 'bytes');
 
       const abortController = new AbortController();
       const timeout = setTimeout(() => {
-        console.warn('[ai:analyzeIssueDescription] 请求超时(60s)，终止请求');
+        log.warn('[ai:analyzeIssueDescription] 请求超时(60s)，终止请求');
         abortController.abort(new Error('请求超时'));
       }, 60000);
 
@@ -1407,7 +1543,7 @@ ${itemsJson}
         clearTimeout(timeout);
       }
 
-      console.log('[ai:analyzeIssueDescription] API响应状态:', response.status);
+      log.info('[ai:analyzeIssueDescription] API响应状态:', response.status);
 
       if (!response.ok) {
         const errorBody = await response.text().catch(() => '');
@@ -1419,8 +1555,7 @@ ${itemsJson}
       // 移除所有前导换行符和回车符
       content = content.replace(/^[\r\n]+/, '').trim().replace(/^["'"']|["'"']$/g, '');
 
-      console.log('[ai:analyzeIssueDescription] AI返回内容长度:', content.length);
-      console.log('[ai:analyzeIssueDescription] AI返回内容:', content);
+      log.info('[ai:analyzeIssueDescription] AI返回内容长度:', content.length);
 
       try {
         writeOperationLog({
@@ -1435,7 +1570,7 @@ ${itemsJson}
 
       return sanitize({ success: true, data: { content } });
     } catch (error: any) {
-      console.error('[ai:analyzeIssueDescription] 错误:', error.message);
+      log.error('[ai:analyzeIssueDescription] 错误:', error.message);
       log.error('AI分析问题描述错误:', error);
       return sanitize({
         success: false,
@@ -1466,18 +1601,14 @@ ${itemsJson}
       const total = params.issues.length;
       const results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }> = [];
 
-      console.log('[ai:batchAnalyzeIssues] 开始批量分析, 问题总数:', total);
-      console.log('[ai:batchAnalyzeIssues] 问题列表:', JSON.stringify(params.issues.map((i: any) => ({
-        issueId: i.issueId,
-        issueTitle: i.issueTitle,
-      }))));
+      log.info('[ai:batchAnalyzeIssues] 开始批量分析, 问题总数:', total);
 
       sendProgress({ stage: 'init', message: '正在读取配置...', percent: 0, current: 0, total });
 
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       if (configs.length === 0) throw new Error('AI未配置');
-      const config = sanitize(configs[0]);
+      const config = normalizeConfig(sanitize(configs[0]));
       const mode = config.mode || 'cloud';
 
       if (shouldValidateApiKey(config) && !config.apiKey) {
@@ -1486,14 +1617,13 @@ ${itemsJson}
 
       const model = config.mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
-      const apiUrl = ensureApiUrl(config.apiBase);
+      const apiUrl = ensureApiUrl(getEffectiveApiBase(config), mode);
       const apiKey = getApiKeyForMode(config);
       if (!apiUrl) throw new Error('API地址未配置');
 
-      console.log('[ai:batchAnalyzeIssues] AI配置:', JSON.stringify({
+      log.info('[ai:batchAnalyzeIssues] AI配置:', JSON.stringify({
         model,
         temperature,
-        apiUrl,
         mode,
         privacyMode: config.privacyMode === 1,
       }));
@@ -1517,7 +1647,7 @@ ${itemsJson}
         });
 
         try {
-          console.log(`[ai:batchAnalyzeIssues] [${i + 1}/${total}] 开始分析: ${issue.issueTitle}`);
+          log.info(`[ai:batchAnalyzeIssues] [${i + 1}/${total}] 开始分析`);
 
           const issueTitle = privacyMode ? desensitizeText(issue.issueTitle, extraWords) : issue.issueTitle;
           const issueDescription = privacyMode ? desensitizeText(issue.issueDescription, extraWords) : issue.issueDescription;
@@ -1584,17 +1714,17 @@ ${itemsJson}
           const content = (data.choices?.[0]?.message?.content || '').replace(/^[\r\n]+/, '').trim();
           results.push({ issueId: issue.issueId, suggestion: content, success: true });
           successCount++;
-          console.log(`[ai:batchAnalyzeIssues] [${i + 1}/${total}] 分析成功, 返回内容长度: ${content.length}`);
+          log.info(`[ai:batchAnalyzeIssues] [${i + 1}/${total}] 分析成功, 返回内容长度: ${content.length}`);
         } catch (error: any) {
           results.push({ issueId: issue.issueId, suggestion: '', success: false, error: error.message });
           failCount++;
-          console.error(`[ai:batchAnalyzeIssues] [${i + 1}/${total}] 分析失败: ${error.message}`);
+          log.error(`[ai:batchAnalyzeIssues] [${i + 1}/${total}] 分析失败: ${error.message}`);
         }
       }
 
       sendProgress({ stage: 'done', message: '分析完成', percent: 100, current: total, total });
 
-      console.log(`[ai:batchAnalyzeIssues] 批量分析完成, 成功: ${successCount}, 失败: ${failCount}`);
+      log.info(`[ai:batchAnalyzeIssues] 批量分析完成, 成功: ${successCount}, 失败: ${failCount}`);
 
       try {
         writeOperationLog({
@@ -1609,7 +1739,7 @@ ${itemsJson}
       return sanitize({ success: true, data: { results } });
     } catch (error: any) {
       sendProgress({ stage: 'error', message: error.message || '分析失败', percent: 0, current: 0, total: rawParams.issues?.length || 0 });
-      console.error('[ai:batchAnalyzeIssues] 错误:', error.message);
+      log.error('[ai:batchAnalyzeIssues] 错误:', error.message);
       log.error('AI批量分析问题错误:', error);
       return sanitize({
         success: false,

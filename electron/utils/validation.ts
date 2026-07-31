@@ -48,7 +48,16 @@ export function validateProjectLevel(level: number): void {
 }
 
 export function validateComplianceStatus(status: string): void {
-  const validStatuses = ['untested', 'conform', 'partial', 'nonconform', 'notapplicable'];
+  // 支持两种格式：
+  // - 旧格式：'conform', 'nonconform', 'notapplicable'（数据库存储）
+  // - 新格式：'compliant', 'non_compliant', 'not_applicable'（前端传递）
+  const validStatuses = [
+    'untested',
+    'conform', 'compliant',
+    'partial',
+    'nonconform', 'non_compliant',
+    'notapplicable', 'not_applicable',
+  ];
   if (!validStatuses.includes(status)) {
     throw new Error('无效的合规状态值');
   }
