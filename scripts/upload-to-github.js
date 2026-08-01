@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.1.6';
+const TAG = 'v2.1.7';
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,9 +57,18 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.1.6 更新内容
+    body: `## v2.1.7 更新内容
 
-- 更新推荐本地大模型列表，首个推荐模型更改为 haervwe/qwen3-vl-8b-heretic
+- 新增多模型池管理：云端/本地各独立维护模型列表，支持启用/禁用、设为兜底模型
+- 新增任务路由配置：5 种 AI 任务类型（AI 对话、单行分析、批量截图分析、单条问题、批量问题）各自配置候选模型优先级
+- 新增失败自动切换：AI 调用时按候选列表顺序逐个尝试，第一个失败自动切下一个
+- 新增多模态强制筛选：批量截图任务和带图任务自动过滤纯文本模型
+- 新增三层兜底机制：路由配置 → 默认模型 → 旧版模型逻辑
+- 旧版兼容：升级后自动从 ai_configs 迁移已有模型为默认模型，行为不变
+- 修复 better-sqlite3 事务不支持 async 回调的问题
+- 修复模型池保存时修改不生效的问题
+- 修复 AI 调用失败时友好提示不生效的问题
+- 修复本地 Ollama 未运行时仍返回兜底模型的问题
     `,
     draft: false,
     prerelease: false,

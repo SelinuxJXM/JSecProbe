@@ -774,8 +774,31 @@ const installedModelNames = computed(() => {
   return new Set(ollamaStatus.value.models.map(m => m.name));
 });
 
-// 检查模型是否已安装
-const isModelInstalled = (modelName: string) => installedModelNames.value.has(modelName);
+// 剥离模型名的 Tag（最后一个冒号及其后的内容）
+function stripModelTag(name: string): string {
+  const lastColon = name.lastIndexOf(':');
+  // 只剥离 Windows 盘符以外的冒号（避免 C:\path 这种被误剥）
+  if (lastColon > 1) return name.substring(0, lastColon);
+  return name;
+}
+
+// 检查模型是否已安装（Tag 无关 + 大小写无关 + 兼容 :latest 自动追加）
+const isModelInstalled = (modelName: string) => {
+  if (!modelName) return false;
+  const inputBase = stripModelTag(modelName).toLowerCase();
+  if (!inputBase) return false;
+  for (const installed of installedModelNames.value) {
+    if (!installed) continue;
+    // 精确匹配（大小写敏感）
+    if (installed === modelName) return true;
+    // 精确匹配 + :latest
+    if (installed === modelName + ':latest') return true;
+    // Tag 无关 + 大小写无关（兜底，覆盖 Ollama 改名/大小写差异）
+    const installedBase = stripModelTag(installed).toLowerCase();
+    if (installedBase === inputBase) return true;
+  }
+  return false;
+};
 
 const currentPlatformSteps = computed(() => {
   if (!installGuide.value) return [];
@@ -901,7 +924,13 @@ async function handlePullModel(modelName: string) {
   // 注册进度事件监听器
   if (window.api.ollama.onPullProgress) {
     pullProgressCleanup = window.api.ollama.onPullProgress((data) => {
-      if (data.modelName === modelName) {
+      // 抗竞态：只有当前正在拉取的模型、且 downloadProgress 未被置空时才更新
+      // 双重保险：
+      // 1) pullingModel.value 已清空时：说明 finally 已执行，不再接受事件
+      // 2) downloadProgress.value 已置 null 时：说明 success/error 分支已清空进度，不再接受覆盖
+      if (data.modelName === modelName
+          && pullingModel.value === modelName
+          && downloadProgress.value !== null) {
         downloadProgress.value = data;
       }
     });
@@ -912,9 +941,18 @@ async function handlePullModel(modelName: string) {
     const res = await window.api.ollama.pullModel(modelName, aiSettings.ollamaUrl);
     if (res.success) {
       ElMessage.success('模型下载成功');
+      // 清空进度展示（必须在轮询检查之前，防止轮询间隔被事件覆盖）
       downloadProgress.value = null;
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      await checkOllamaStatus();
+      // 轮询检查（最多 10 秒）：Ollama 落盘/写入 Tags 需要时间，固定 1 秒延迟不可靠
+      // 只要 isModelInstalled 返回 true 就立即停止，避免用户等待
+      let retries = 0;
+      const maxRetries = 20; // 20 × 500ms = 10 秒
+      while (retries < maxRetries) {
+        await checkOllamaStatus();
+        if (isModelInstalled(modelName)) break;
+        retries++;
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     } else {
       const errorMsg = res.error?.message || '未知错误';
       // 提供更友好的错误提示

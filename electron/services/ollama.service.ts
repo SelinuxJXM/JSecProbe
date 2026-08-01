@@ -485,31 +485,23 @@ export function getInstallGuide(): OllamaInstallGuide {
       '访问 https://ollama.com/download 下载 Windows 安装包',
       '运行下载的 OllamaSetup.exe 完成安装',
       '安装完成后 Ollama 会自动启动，或手动从开始菜单启动',
-      '打开命令提示符，运行 ollama pull haervwe/qwen3-vl-8b-heretic 下载推荐模型',
+      '打开命令提示符，运行 ollama pull qcwind/qwen3-vl-8B-Q4_K_M 下载推荐模型',
     ],
     mac: [
       '访问 https://ollama.com/download 下载 macOS 安装包',
       '打开下载的 .zip 文件，将 Ollama 拖入 Applications 文件夹',
       '从启动台或 Applications 文件夹启动 Ollama',
-      '打开终端，运行 ollama pull haervwe/qwen3-vl-8b-heretic 下载推荐模型',
+      '打开终端，运行 ollama pull qcwind/qwen3-vl-8B-Q4_K_M 下载推荐模型',
     ],
     linux: [
       '打开终端，运行 curl -fsSL https://ollama.com/install.sh | sh 安装',
       '安装完成后运行 ollama serve 启动服务',
-      '运行 ollama pull haervwe/qwen3-vl-8b-heretic 下载推荐模型',
+      '运行 ollama pull qcwind/qwen3-vl-8B-Q4_K_M 下载推荐模型',
     ],
   };
 }
 
 export const RECOMMENDED_MODELS = [
-  {
-    name: 'haervwe/qwen3-vl-8b-heretic',
-    label: 'Qwen3-VL 8B Heretic（推荐）',
-    description: '阿里最新多模态模型，中文支持优秀，OCR能力强，适合等保测评截图分析',
-    size: '~8GB',
-    minMemory: 12,
-    supportsVision: true,
-  },
   {
     name: 'gemma4:e4b',
     label: 'Gemma 4 E4B',
