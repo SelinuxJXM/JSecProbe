@@ -1,4 +1,4 @@
-﻿import * as path from 'path';
+import * as path from 'path';
 import * as fs from 'fs';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
@@ -374,7 +374,7 @@ export class ReportService {
       .where(and(
         eq(schema.assessmentRecords.projectId, projectId),
         inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-        sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'notapplicable')`
+        sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'not_applicable')`
       ));
 
     const compliantRecords = await db
@@ -410,7 +410,7 @@ export class ReportService {
       .where(and(
         eq(schema.assessmentRecords.projectId, projectId),
         inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-        sql`result = 'notapplicable'`
+        sql`result = 'not_applicable'`
       ));
 
     const tested = testedRecords[0]?.value || 0;

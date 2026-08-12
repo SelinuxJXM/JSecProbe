@@ -14,6 +14,14 @@ import * as fs from 'fs';
 import { writeOperationLog } from '../utils/operation-log';
 import { wrap } from '../utils/ipc-wrapper';
 
+// 默认不作为测评对象的分类
+const NON_ASSESSMENT_CATEGORIES = ['sys_doc', 'other_asset', 'crypto_product', 'security_personnel'];
+
+// 根据分类判断是否默认为测评对象
+function getDefaultIsAssessmentTarget(category: string): number {
+  return NON_ASSESSMENT_CATEGORIES.includes(category) ? 0 : 1;
+}
+
 function detectCategoryFromFileName(filePath: string): string {
   const lowerPath = filePath.toLowerCase();
   if (lowerPath.includes('机房') || lowerPath.includes('physical') || lowerPath.includes('machine_room')) return 'machine_room';
@@ -26,6 +34,9 @@ function detectCategoryFromFileName(filePath: string): string {
   if (lowerPath.includes('应用') || lowerPath.includes('app') || lowerPath.includes('业务系统')) return 'business_app';
   if (lowerPath.includes('终端') || lowerPath.includes('terminal') || lowerPath.includes('运维')) return 'terminal';
   if (lowerPath.includes('数据资源') || lowerPath.includes('data')) return 'data_resource';
+  if (lowerPath.includes('其他系统') || lowerPath.includes('other_asset') || lowerPath.includes('其他设备')) return 'other_asset';
+  if (lowerPath.includes('密码产品') || lowerPath.includes('crypto') || lowerPath.includes('加密')) return 'crypto_product';
+  if (lowerPath.includes('安全相关人员') || lowerPath.includes('security_personnel') || lowerPath.includes('安全人员')) return 'security_personnel';
   return 'server_storage';
 }
 
@@ -54,10 +65,10 @@ const ASSET_CATEGORY_SHEET_MAP: Record<string, string[]> = {
 };
 
 const RESULT_MAP: Record<string, string> = {
-  '符合': 'conform',
+  '符合': 'compliant',
   '部分符合': 'partial',
-  '不符合': 'nonconform',
-  '不适用': 'na',
+  '不符合': 'non_compliant',
+  '不适用': 'not_applicable',
   '待判定': 'untested',
   '': 'untested',
 };
@@ -297,7 +308,10 @@ export function registerAssetHandlers(): void {
         { id: 'management_platform', name: '系统管理平台', icon: 'Settings' },
         { id: 'business_app', name: '业务应用系统', icon: 'Layers' },
         { id: 'terminal', name: '业务终端/运维终端', icon: 'Monitor' },
+        { id: 'other_asset', name: '其他系统或设备', icon: 'Box' },
         { id: 'data_resource', name: '数据资源', icon: 'FileData' },
+        { id: 'crypto_product', name: '密码产品', icon: 'Key' },
+        { id: 'security_personnel', name: '安全相关人员', icon: 'Users' },
         { id: 'sys_doc', name: '系统管理文档', icon: 'HardDrive' },
       ];
 
@@ -361,7 +375,9 @@ export function registerAssetHandlers(): void {
         isVirtual: data.isVirtual ? 1 : 0,
         dbSystem: data.dbSystem || null,
         middleware: data.middleware || null,
-        isAssessmentTarget: data.isAssessmentTarget !== false ? 1 : 0,
+        isAssessmentTarget: data.isAssessmentTarget === undefined
+          ? getDefaultIsAssessmentTarget(data.category)
+          : (data.isAssessmentTarget ? 1 : 0),
         responsiblePerson: data.responsiblePerson,
         sortOrder: data.sortOrder || 0,
         createdAt: now,
@@ -474,6 +490,11 @@ export function registerAssetHandlers(): void {
         '业务终端': 'terminal',
         '终端': 'terminal',
         '数据资源': 'data_resource',
+        '其他系统或设备': 'other_asset',
+        '其他系统设备': 'other_asset',
+        '密码产品': 'crypto_product',
+        '安全相关人员': 'security_personnel',
+        '安全人员': 'security_personnel',
       };
 
       const COLUMNS_MAP: Record<string, { header: string; key: string; width: number }[]> = {
@@ -568,6 +589,32 @@ export function registerAssetHandlers(): void {
           { header: '重要程度', key: 'importance', width: 12 },
           { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
         ],
+        other_asset: [
+          { header: '设备名称', key: 'name', width: 25 },
+          { header: '虚拟设备', key: 'isVirtual', width: 10 },
+          { header: '系统及版本', key: 'os', width: 25 },
+          { header: '设备类别/用途', key: 'deviceUsage', width: 20 },
+          { header: '备注', key: 'description', width: 40 },
+          { header: 'IP地址', key: 'ip', width: 18 },
+          { header: '重要程度', key: 'importance', width: 12 },
+          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+        ],
+        crypto_product: [
+          { header: '产品/模块名称', key: 'name', width: 25 },
+          { header: '生产厂商', key: 'version', width: 20 },
+          { header: '证书编号', key: 'dbSystem', width: 22 },
+          { header: '密码算法', key: 'middleware', width: 20 },
+          { header: '用途', key: 'deviceUsage', width: 25 },
+          { header: '重要程度', key: 'importance', width: 12 },
+          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+        ],
+        security_personnel: [
+          { header: '姓名', key: 'name', width: 20 },
+          { header: '岗位/角色', key: 'deviceUsage', width: 20 },
+          { header: '联系方式', key: 'ip', width: 18 },
+          { header: '所属单位', key: 'os', width: 25 },
+          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+        ],
       };
 
       const importFromSheet = async (worksheet: ExcelJS.Worksheet, category: string) => {
@@ -651,9 +698,9 @@ export function registerAssetHandlers(): void {
           return val || undefined;
         };
 
-        const getCellBool = (row: ExcelJS.Row, colKey: string): number => {
+        const getCellBool = (row: ExcelJS.Row, colKey: string, defaultValue: number = 0): number => {
           const colIdx = colPositions[colKey];
-          if (!colIdx) return 0;
+          if (!colIdx) return defaultValue;
           const val = row.getCell(colIdx).value?.toString()?.trim();
           return val === '是' ? 1 : 0;
         };
@@ -690,7 +737,7 @@ export function registerAssetHandlers(): void {
             isVirtual: getCellBool(row, 'isVirtual'),
             dbSystem: getCellString(row, 'dbSystem'),
             middleware: getCellString(row, 'middleware'),
-            isAssessmentTarget: getCellBool(row, 'isAssessmentTarget'),
+            isAssessmentTarget: getCellBool(row, 'isAssessmentTarget', getDefaultIsAssessmentTarget(category)),
             sortOrder: rowNum - 1,
             createdAt: now,
             updatedAt: now,
@@ -741,6 +788,12 @@ export function registerAssetHandlers(): void {
             category = 'terminal';
           } else if (lowerSheetName.includes('数据')) {
             category = 'data_resource';
+          } else if (lowerSheetName.includes('其他系统') || lowerSheetName.includes('其他设备')) {
+            category = 'other_asset';
+          } else if (lowerSheetName.includes('密码') || lowerSheetName.includes('加密')) {
+            category = 'crypto_product';
+          } else if (lowerSheetName.includes('安全人员') || lowerSheetName.includes('相关人员') || lowerSheetName.includes('人员')) {
+            category = 'security_personnel';
           } else {
             category = detectCategoryFromFileName(filePath);
           }

@@ -114,13 +114,23 @@
             <el-input v-model="row.name" placeholder="数据类别" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="设备名称" min-width="140">
+        <el-table-column v-if="currentCategory === 'crypto_product'" label="产品/模块名称" min-width="180">
+          <template #default="{ row }">
+            <el-input v-model="row.name" placeholder="产品/模块名称" size="small" class="cell-input" @input="markModified(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentCategory === 'security_personnel'" label="姓名" min-width="140">
+          <template #default="{ row }">
+            <el-input v-model="row.name" placeholder="姓名" size="small" class="cell-input" @input="markModified(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'crypto_product' && currentCategory !== 'security_personnel'" label="设备名称" min-width="140">
           <template #default="{ row }">
             <el-input v-model="row.name" placeholder="设备名称" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
         <!-- 虚拟设备 -->
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="虚拟设备" width="80" align="center">
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'crypto_product' && currentCategory !== 'security_personnel'" label="虚拟设备" width="80" align="center">
           <template #default="{ row }">
             <el-checkbox v-model="row.isVirtual" @change="markModified(row)" />
           </template>
@@ -167,7 +177,12 @@
             <el-input v-model="row.os" placeholder="操作系统及版本" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'network_device' && currentCategory !== 'security_device' && currentCategory !== 'server_storage' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'terminal'" label="操作系统" min-width="130">
+        <el-table-column v-if="currentCategory === 'other_asset'" label="系统及版本" min-width="140">
+          <template #default="{ row }">
+            <el-input v-model="row.os" placeholder="系统及版本" size="small" class="cell-input" @input="markModified(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'network_device' && currentCategory !== 'security_device' && currentCategory !== 'server_storage' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'terminal' && currentCategory !== 'other_asset' && currentCategory !== 'security_personnel' && currentCategory !== 'crypto_product'" label="操作系统" min-width="130">
           <template #default="{ row }">
             <el-input v-model="row.os" placeholder="操作系统" size="small" class="cell-input" @input="markModified(row)" />
           </template>
@@ -194,6 +209,28 @@
           </template>
         </el-table-column>
 
+        <!-- 密码产品专属列 -->
+        <el-table-column v-if="currentCategory === 'crypto_product'" label="生产厂商" min-width="140">
+          <template #default="{ row }">
+            <el-input v-model="row.version" placeholder="生产厂商" size="small" class="cell-input" @input="markModified(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentCategory === 'crypto_product'" label="证书编号" min-width="160">
+          <template #default="{ row }">
+            <el-input v-model="row.dbSystem" placeholder="如 GM/T 00xx-20xx" size="small" class="cell-input" @input="markModified(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentCategory === 'crypto_product'" label="密码算法" min-width="140">
+          <template #default="{ row }">
+            <el-input v-model="row.middleware" placeholder="如 SM2/SM3/SM4" size="small" class="cell-input" @input="markModified(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentCategory === 'crypto_product'" label="用途" min-width="160">
+          <template #default="{ row }">
+            <el-input v-model="row.deviceUsage" placeholder="如 数据加密、签名验签" size="small" class="cell-input" @input="markModified(row)" />
+          </template>
+        </el-table-column>
+
         <el-table-column v-if="currentCategory === 'management_platform'" label="版本" min-width="140">
           <template #default="{ row }">
             <el-input v-model="row.version" placeholder="版本" size="small" class="cell-input" @input="markModified(row)" />
@@ -209,30 +246,51 @@
             <el-input v-model="row.deviceUsage" placeholder="如 保密性、完整性" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'network_device' && currentCategory !== 'security_device' && currentCategory !== 'server_storage' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="设备类别/用途" min-width="140">
+        <el-table-column v-if="currentCategory === 'security_personnel'" label="岗位/角色" min-width="140">
+          <template #default="{ row }">
+            <el-input v-model="row.deviceUsage" placeholder="如 安全管理员" size="small" class="cell-input" @input="markModified(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'network_device' && currentCategory !== 'security_device' && currentCategory !== 'server_storage' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'crypto_product' && currentCategory !== 'security_personnel'" label="设备类别/用途" min-width="140">
           <template #default="{ row }">
             <el-input v-model="row.deviceUsage" placeholder="设备用途" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
         <!-- 备注 -->
-        <el-table-column v-if="currentCategory !== 'data_resource' && currentCategory !== 'management_platform'" label="备注" min-width="120">
+        <el-table-column v-if="currentCategory !== 'data_resource' && currentCategory !== 'management_platform' && currentCategory !== 'crypto_product' && currentCategory !== 'security_personnel' && currentCategory !== 'other_asset'" label="备注" min-width="120">
           <template #default="{ row }">
             <el-input v-model="row.description" placeholder="备注" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
         <!-- 数量 -->
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'management_platform' && currentCategory !== 'sys_doc'" label="数量" width="70" align="center">
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'management_platform' && currentCategory !== 'sys_doc' && currentCategory !== 'other_asset' && currentCategory !== 'crypto_product' && currentCategory !== 'security_personnel'" label="数量" width="70" align="center">
           <template #default="{ row }">
             <el-input-number v-model="row.quantity" :min="1" :max="999" size="small" controls-position="right" style="width: 68px" @change="markModified(row)" />
           </template>
         </el-table-column>
         <!-- IP地址 -->
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'sys_doc' && currentCategory !== 'business_app' && currentCategory !== 'data_resource'" label="IP地址" min-width="130">
+        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'sys_doc' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'crypto_product' && currentCategory !== 'security_personnel'" label="IP地址" min-width="130">
           <template #default="{ row }">
             <el-input v-model="row.ip" placeholder="IP地址" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory !== 'sys_doc'" label="重要程度" width="100" align="center">
+        <!-- 备注 (其他系统或设备专属，放IP地址后) -->
+        <el-table-column v-if="currentCategory === 'other_asset'" label="备注" min-width="120">
+          <template #default="{ row }">
+            <el-input v-model="row.description" placeholder="备注" size="small" class="cell-input" @input="markModified(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentCategory === 'security_personnel'" label="联系方式" min-width="140">
+          <template #default="{ row }">
+            <el-input v-model="row.ip" placeholder="联系方式" size="small" class="cell-input" @input="markModified(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentCategory === 'security_personnel'" label="所属单位" min-width="160">
+          <template #default="{ row }">
+            <el-input v-model="row.os" placeholder="所属单位" size="small" class="cell-input" @input="markModified(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentCategory !== 'sys_doc' && currentCategory !== 'security_personnel'" label="重要程度" width="100" align="center">
           <template #default="{ row }">
             <el-select v-model="row.importance" size="small" style="width: 100%" @change="markModified(row)">
               <el-option label="关键" value="high" />
@@ -446,7 +504,10 @@ const CATEGORY_NAMES: Record<string, string> = {
   management_platform: '系统管理平台',
   business_app: '业务应用系统',
   terminal: '业务终端/运维终端',
+  other_asset: '其他系统或设备',
   data_resource: '数据资源',
+  crypto_product: '密码产品',
+  security_personnel: '安全相关人员',
 };
 
 // 分类图标映射 (SVG innerHTML)
@@ -460,7 +521,10 @@ const CATEGORY_ICONS: Record<string, string> = {
   management_platform: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1.08 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1.08z"/>',
   business_app: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
   terminal: '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>',
+  other_asset: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
   data_resource: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  crypto_product: '<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 1 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>',
+  security_personnel: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
 };
 
 const currentCategoryName = computed(() => CATEGORY_NAMES[currentCategory.value] || currentCategory.value);
@@ -475,7 +539,10 @@ const EDITABLE_COLUMNS: Record<string, string[]> = {
   management_platform: ['name', 'os', 'version', 'ip', 'deviceUsage', 'importance', 'isAssessmentTarget'],
   business_app: ['name', 'os', 'deviceUsage', 'description', 'ip', 'importance', 'isAssessmentTarget'],
   terminal: ['name', 'isVirtual', 'os', 'deviceUsage', 'description', 'quantity', 'ip', 'importance', 'isAssessmentTarget'],
+  other_asset: ['name', 'isVirtual', 'os', 'deviceUsage', 'ip', 'description', 'importance', 'isAssessmentTarget'],
   data_resource: ['name', 'os', 'deviceUsage', 'importance', 'isAssessmentTarget'],
+  crypto_product: ['name', 'version', 'dbSystem', 'middleware', 'deviceUsage', 'importance', 'isAssessmentTarget'],
+  security_personnel: ['name', 'os', 'deviceUsage', 'ip', 'isAssessmentTarget'],
 };
 
 function getEditableColumns() {
@@ -523,7 +590,7 @@ function handlePaste(event: ClipboardEvent, row: Asset, field: string) {
         isVirtual: false,
         dbSystem: '',
         middleware: '',
-        isAssessmentTarget: currentCategory.value !== 'sys_doc',
+        isAssessmentTarget: !['sys_doc', 'other_asset', 'crypto_product', 'security_personnel'].includes(currentCategory.value),
         sortOrder: 0,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -744,7 +811,7 @@ async function handleSave() {
         ...formData,
         projectId,
         category: currentCategory.value,
-        isAssessmentTarget: currentCategory.value !== 'sys_doc',
+        isAssessmentTarget: !['sys_doc', 'other_asset', 'crypto_product', 'security_personnel'].includes(currentCategory.value),
       });
       if (res.success) {
         ElMessage.success('添加成功');
@@ -777,7 +844,7 @@ function addEmptyRow() {
     isVirtual: false,
     dbSystem: '',
     middleware: '',
-    isAssessmentTarget: currentCategory.value !== 'sys_doc',
+    isAssessmentTarget: !['sys_doc', 'other_asset', 'crypto_product', 'security_personnel'].includes(currentCategory.value),
   };
   modifiedRows.add(String(newRow.id));
   assetList.value.unshift(newRow);
@@ -1057,7 +1124,7 @@ onUnmounted(() => {
   background: var(--color-bg-card);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
-  padding: 0 24px;
+  padding: 0 20px;
   margin-bottom: 16px;
   display: flex;
   align-items: center;
@@ -1071,9 +1138,9 @@ onUnmounted(() => {
   .category-tab {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 12px 18px;
-    font-size: 13px;
+    gap: 5px;
+    padding: 10px 14px;
+    font-size: 12.5px;
     color: var(--color-text-secondary);
     border-bottom: 2px solid transparent;
     cursor: pointer;

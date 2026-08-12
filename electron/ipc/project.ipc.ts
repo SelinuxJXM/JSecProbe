@@ -339,10 +339,10 @@ export function registerProjectHandlers(): void {
       };
       
       const resultMap: Record<string, string> = {
-        '符合': 'conform',
+        '符合': 'compliant',
         '部分符合': 'partial',
-        '不符合': 'nonconform',
-        '不适用': 'na',
+        '不符合': 'non_compliant',
+        '不适用': 'not_applicable',
         '待判定': 'untested',
         '': 'untested',
       };

@@ -39,6 +39,7 @@ export function useAutoSave(options: AutoSaveOptions) {
     tableRows,
     route,
     updateAssetProgress,
+    loadProgress,
     debounceDelay = 1500,
     periodicInterval = 30000,
   } = options;
@@ -109,6 +110,10 @@ export function useAutoSave(options: AutoSaveOptions) {
       if (assetId) {
         updateAssetProgress(assetId, tableRows.value);
       }
+
+      // 重新加载顶部项目级统计（总项数、已完成、符合、符合率）
+      // 异步触发，不阻塞保存流程
+      loadProgress();
 
       return failedCount === 0;
     } catch (error) {

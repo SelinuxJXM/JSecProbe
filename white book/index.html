@@ -1,0 +1,1288 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JSecProbe - 等级保护现场测评系统</title>
+<meta name="description" content="JSecProbe（等级保护现场测评系统）是一款用于网络安全等级保护（等保2.0）现场测评的桌面工具。支持项目管理、系统构成录入、自动化核查、AI辅助分析等功能。">
+<meta name="keywords" content="等保测评,等级保护,等保2.0,GB/T 22239,安全测评,现场测评工具,JSecProbe">
+<meta name="author" content="JSecProbe">
+<link rel="canonical" href="https://github.com/SelinuxJXM/JSecProbe">
+
+<!-- Open Graph -->
+<meta property="og:title" content="JSecProbe - 等级保护现场测评系统">
+<meta property="og:description" content="严格对标 GB/T 22239-2019，覆盖项目管理、资产录入、现场核查、AI辅助分析、报告生成全流程。">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://github.com/SelinuxJXM/JSecProbe">
+
+<!-- Structured Data -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "JSecProbe",
+  "operatingSystem": "Windows 10/11",
+  "applicationCategory": "SecurityApplication",
+  "description": "等级保护现场测评系统，支持项目管理、资产录入、现场核查、AI辅助分析、报告生成。",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "CNY" },
+  "url": "https://github.com/SelinuxJXM/JSecProbe"
+}
+</script>
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+
+<!-- Preconnect for performance -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+<!-- Async font loading -->
+<link rel="stylesheet" media="print" onload="this.media='all'" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap"></noscript>
+
+<style>
+:root {
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --primary-light: #dbeafe;
+  --accent: #06b6d4;
+  --accent-light: #cffafe;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --gray-50: #f9fafb;
+  --gray-100: #f3f4f6;
+  --gray-200: #e5e7eb;
+  --gray-300: #d1d5db;
+  --gray-400: #9ca3af;
+  --gray-500: #6b7280;
+  --gray-600: #4b5563;
+  --gray-700: #374151;
+  --gray-800: #1f2937;
+  --gray-900: #111827;
+  --radius: 12px;
+  --radius-lg: 20px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+  --shadow-lg: 0 10px 25px -3px rgba(0,0,0,0.1);
+  --shadow-xl: 0 20px 50px -12px rgba(0,0,0,0.15);
+  --transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
+  --nav-height: 64px;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+
+html { scroll-behavior: smooth; }
+
+/* Offset scroll target for fixed nav */
+[id] { scroll-margin-top: calc(var(--nav-height) + 20px); }
+
+body {
+  font-family: 'Noto Sans SC', 'Inter', -apple-system, sans-serif;
+  color: var(--gray-800);
+  line-height: 1.7;
+  overflow-x: hidden;
+  background: #ffffff;
+}
+
+/* Skip to content link */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 16px;
+  background: var(--primary);
+  color: white;
+  padding: 10px 20px;
+  border-radius: 8px;
+  z-index: 10000;
+  font-weight: 600;
+  text-decoration: none;
+  transition: top 0.2s;
+}
+.skip-link:focus { top: 16px; }
+
+/* Focus styles for accessibility */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+:focus:not(:focus-visible) { outline: none; }
+
+/* Navigation */
+.nav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 1000;
+  background: rgba(255,255,255,0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+  transition: var(--transition);
+}
+.nav.scrolled { box-shadow: var(--shadow); }
+.nav-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+  height: var(--nav-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.nav-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 20px;
+  color: var(--gray-900);
+  text-decoration: none;
+}
+.nav-logo .logo-icon {
+  width: 36px; height: 36px;
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 18px;
+}
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  list-style: none;
+}
+.nav-links a {
+  text-decoration: none;
+  color: var(--gray-600);
+  font-size: 15px;
+  font-weight: 500;
+  transition: var(--transition);
+}
+.nav-links a:hover { color: var(--primary); }
+.nav-cta {
+  background: var(--primary) !important;
+  color: white !important;
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-weight: 600 !important;
+}
+.nav-cta:hover { background: var(--primary-dark) !important; }
+.mobile-toggle {
+  display: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 8px;
+  transition: var(--transition);
+}
+.mobile-toggle:hover { background: var(--gray-100); }
+.mobile-toggle span { display: block; width: 22px; height: 2px; background: var(--gray-700); margin: 5px 0; transition: var(--transition); }
+.mobile-toggle[aria-expanded="true"] span:nth-child(1) { transform: rotate(45deg) translate(5px, 5px); }
+.mobile-toggle[aria-expanded="true"] span:nth-child(2) { opacity: 0; }
+.mobile-toggle[aria-expanded="true"] span:nth-child(3) { transform: rotate(-45deg) translate(5px, -5px); }
+
+/* Hero Section */
+.hero {
+  min-height: 100svh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(var(--nav-height) + 40px) 24px 80px;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, #f0f7ff 0%, #ffffff 60%);
+}
+.hero::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  right: -20%;
+  width: 800px;
+  height: 800px;
+  background: radial-gradient(circle, rgba(37,99,235,0.06) 0%, transparent 70%);
+  border-radius: 50%;
+}
+.hero::after {
+  content: '';
+  position: absolute;
+  bottom: -30%;
+  left: -10%;
+  width: 600px;
+  height: 600px;
+  background: radial-gradient(circle, rgba(6,182,212,0.05) 0%, transparent 70%);
+  border-radius: 50%;
+}
+.hero-content {
+  max-width: 800px;
+  text-align: center;
+  position: relative;
+  z-index: 1;
+}
+.hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--primary-light);
+  color: var(--primary);
+  padding: 6px 16px;
+  border-radius: 100px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 24px;
+  animation: fadeInUp 0.6s ease;
+}
+.hero h1 {
+  font-size: clamp(36px, 6vw, 64px);
+  font-weight: 900;
+  line-height: 1.15;
+  color: var(--gray-900);
+  margin-bottom: 24px;
+  letter-spacing: -0.02em;
+  animation: fadeInUp 0.6s ease 0.1s both;
+}
+.hero h1 .gradient {
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.hero-desc {
+  font-size: clamp(16px, 2.5vw, 20px);
+  color: var(--gray-500);
+  max-width: 600px;
+  margin: 0 auto 40px;
+  line-height: 1.8;
+  animation: fadeInUp 0.6s ease 0.2s both;
+}
+.hero-actions {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+  animation: fadeInUp 0.6s ease 0.3s both;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 32px;
+  border-radius: 10px;
+  font-size: 16px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: var(--transition);
+  cursor: pointer;
+  border: none;
+}
+.btn-primary {
+  background: var(--primary);
+  color: white;
+  box-shadow: 0 4px 15px rgba(37,99,235,0.3);
+}
+.btn-primary:hover {
+  background: var(--primary-dark);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(37,99,235,0.4);
+}
+.btn-secondary {
+  background: white;
+  color: var(--gray-700);
+  border: 1px solid var(--gray-200);
+  box-shadow: var(--shadow-sm);
+}
+.btn-secondary:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  transform: translateY(-2px);
+}
+.hero-stats {
+  display: flex;
+  justify-content: center;
+  gap: 48px;
+  margin-top: 60px;
+  animation: fadeInUp 0.6s ease 0.4s both;
+}
+/* Hero layout */
+.hero .hero-content {
+  max-width: 100%;
+  text-align: center;
+}
+.hero-stats {
+  margin-top: 32px;
+  justify-content: center;
+}
+.hero-actions {
+  justify-content: center;
+}
+.hero-screenshot {
+  max-width: 900px;
+  margin: 48px auto 0;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.05);
+  animation: fadeInUp 0.6s ease 0.3s both;
+  line-height: 0;
+}
+.hero-screenshot img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.hero {
+  display: block;
+}
+.stat-item { text-align: center; }
+.stat-number {
+  font-size: 32px;
+  font-weight: 800;
+  color: var(--gray-900);
+}
+.stat-label {
+  font-size: 13px;
+  color: var(--gray-500);
+  margin-top: 2px;
+}
+
+/* Section Common */
+.section {
+  padding: 100px 24px;
+  position: relative;
+}
+.section-inner { max-width: 1200px; margin: 0 auto; }
+.section-header {
+  text-align: center;
+  margin-bottom: 64px;
+}
+.section-tag {
+  display: inline-block;
+  background: var(--primary-light);
+  color: var(--primary);
+  padding: 4px 14px;
+  border-radius: 100px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+.section-title {
+  font-size: clamp(28px, 4vw, 42px);
+  font-weight: 800;
+  color: var(--gray-900);
+  margin-bottom: 16px;
+  letter-spacing: -0.01em;
+}
+.section-desc {
+  font-size: 17px;
+  color: var(--gray-500);
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+/* Features Grid */
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+}
+.feature-card {
+  background: white;
+  border: 1px solid var(--gray-100);
+  border-radius: var(--radius-lg);
+  padding: 36px 28px;
+  transition: var(--transition);
+  position: relative;
+  overflow: hidden;
+}
+.feature-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--primary), var(--accent));
+  opacity: 0;
+  transition: var(--transition);
+}
+.feature-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-xl);
+  border-color: transparent;
+}
+.feature-card:hover::before { opacity: 1; }
+.feature-icon {
+  width: 52px; height: 52px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  margin-bottom: 20px;
+}
+.feature-card h3 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gray-900);
+  margin-bottom: 10px;
+}
+.feature-card p {
+  font-size: 14px;
+  color: var(--gray-500);
+  line-height: 1.7;
+}
+
+/* Highlights */
+.highlights { background: var(--gray-50); }
+.highlight-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 60px;
+  align-items: center;
+  margin-bottom: 100px;
+}
+.highlight-row:last-child { margin-bottom: 0; }
+.highlight-row.reverse .highlight-content { order: 2; }
+.highlight-row.reverse .highlight-visual { order: 1; }
+.highlight-content h3 {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--gray-900);
+  margin-bottom: 16px;
+}
+.highlight-content p {
+  font-size: 16px;
+  color: var(--gray-500);
+  margin-bottom: 20px;
+  line-height: 1.8;
+}
+.highlight-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.highlight-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  color: var(--gray-700);
+}
+.highlight-list li .check {
+  width: 22px; height: 22px;
+  background: var(--accent-light);
+  color: var(--accent);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.highlight-visual {
+  background: white;
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--gray-100);
+}
+.highlight-box {
+  padding: 40px;
+  text-align: center;
+  border-radius: 12px;
+}
+.highlight-box .emoji { font-size: 48px; margin-bottom: 16px; }
+.highlight-box .title { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+.highlight-box .subtitle { font-size: 14px; }
+.highlight-box .tags {
+  margin-top: 20px;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.highlight-box .tag {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.box-green { background: linear-gradient(135deg, #f0f7f4, #e8f5e9); }
+.box-green .title { color: #155724; }
+.box-green .subtitle { color: #28a745; }
+.box-green .tag { background: #d4edda; color: #155724; }
+.box-purple { background: linear-gradient(135deg, #f3e5f5, #e1bee7); }
+.box-purple .title { color: #4a148c; }
+.box-purple .subtitle { color: #7b1fa2; }
+.box-purple .tag { background: #e1bee7; color: #4a148c; }
+.box-orange { background: linear-gradient(135deg, #fff3e0, #ffe0b2); }
+.box-orange .title { color: #e65100; }
+.box-orange .subtitle { color: #f57c00; }
+.box-orange .tag { background: #ffe0b2; color: #e65100; }
+
+/* Stats Bar */
+.stats-bar {
+  background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+  padding: 60px 24px;
+}
+.stats-grid {
+  max-width: 1000px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 32px;
+  text-align: center;
+}
+.stat-box { color: white; }
+.stat-box .number {
+  font-size: 36px;
+  font-weight: 800;
+  display: block;
+}
+.stat-box .label {
+  font-size: 14px;
+  opacity: 0.85;
+  margin-top: 4px;
+}
+
+/* Flow Section */
+.flow-section { background: var(--gray-50); }
+.flow-steps {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 0;
+  max-width: 1000px;
+  margin: 0 auto;
+  position: relative;
+}
+.flow-step {
+  flex: 1;
+  text-align: center;
+  position: relative;
+  padding: 0 16px;
+}
+.flow-step::after {
+  content: '';
+  position: absolute;
+  top: 28px;
+  left: 50%;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, var(--primary), var(--accent));
+  z-index: 0;
+}
+.flow-step:last-child::after { display: none; }
+.flow-icon {
+  width: 56px; height: 56px;
+  background: white;
+  border: 3px solid var(--primary);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  margin: 0 auto 16px;
+  position: relative;
+  z-index: 1;
+  box-shadow: var(--shadow);
+}
+.flow-step h4 {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--gray-900);
+  margin-bottom: 6px;
+}
+.flow-step p {
+  font-size: 13px;
+  color: var(--gray-500);
+}
+
+/* FAQ */
+.faq-list {
+  max-width: 760px;
+  margin: 0 auto;
+}
+.faq-item {
+  background: white;
+  border: 1px solid var(--gray-100);
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+  overflow: hidden;
+  transition: var(--transition);
+}
+.faq-item:hover { border-color: var(--primary-light); }
+.faq-question {
+  width: 100%;
+  padding: 20px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--gray-800);
+  font-size: 15px;
+  background: none;
+  border: none;
+  text-align: left;
+  font-family: inherit;
+  gap: 16px;
+}
+.faq-question .arrow {
+  transition: var(--transition);
+  color: var(--gray-400);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.faq-item.open .faq-question .arrow { transform: rotate(180deg); color: var(--primary); }
+.faq-answer {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease, padding 0.3s ease;
+}
+.faq-item.open .faq-answer {
+  max-height: 500px;
+  padding: 0 24px 20px;
+}
+.faq-answer p {
+  font-size: 14px;
+  color: var(--gray-500);
+  line-height: 1.8;
+}
+
+/* CTA Section */
+.cta-section {
+  padding: 100px 24px;
+  background: linear-gradient(135deg, #1e3a5f 0%, #0f2744 100%);
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+.cta-section::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 800px;
+  height: 800px;
+  background: radial-gradient(circle, rgba(37,99,235,0.15) 0%, transparent 60%);
+  border-radius: 50%;
+}
+.cta-section h2 {
+  font-size: clamp(28px, 4vw, 40px);
+  font-weight: 800;
+  color: white;
+  margin-bottom: 16px;
+  position: relative;
+}
+.cta-section p {
+  font-size: 17px;
+  color: rgba(255,255,255,0.7);
+  margin-bottom: 36px;
+  max-width: 500px;
+  margin-left: auto;
+  margin-right: auto;
+  position: relative;
+}
+.cta-buttons {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+  position: relative;
+}
+.cta-section .btn-primary { background: var(--accent); box-shadow: 0 4px 15px rgba(6,182,212,0.4); }
+.cta-section .btn-primary:hover { background: #0891b2; }
+.cta-section .btn-secondary { background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); }
+.cta-section .btn-secondary:hover { background: rgba(255,255,255,0.2); }
+
+/* Footer */
+.footer {
+  background: var(--gray-900);
+  padding: 60px 24px 30px;
+}
+.footer-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+.footer-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 40px;
+  margin-bottom: 40px;
+}
+.footer-brand p {
+  color: var(--gray-400);
+  font-size: 14px;
+  margin-top: 12px;
+  line-height: 1.7;
+}
+.footer-col h4 {
+  color: white;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+.footer-col a {
+  display: block;
+  color: var(--gray-400);
+  text-decoration: none;
+  font-size: 14px;
+  padding: 4px 0;
+  transition: var(--transition);
+}
+.footer-col a:hover { color: white; }
+.footer-bottom {
+  border-top: 1px solid rgba(255,255,255,0.1);
+  padding-top: 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.footer-bottom p {
+  color: var(--gray-500);
+  font-size: 13px;
+}
+.footer-bottom a { color: var(--gray-400); text-decoration: none; }
+.footer-bottom a:hover { color: white; }
+
+/* Animations */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-on-scroll {
+  opacity: 0;
+  transform: translateY(30px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.animate-on-scroll.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+  .features-grid { grid-template-columns: repeat(2, 1fr); }
+  .highlight-row { grid-template-columns: 1fr; gap: 32px; }
+  .highlight-row.reverse .highlight-content { order: 0; }
+  .highlight-row.reverse .highlight-visual { order: 0; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .footer-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 768px) {
+  .nav-links { display: none; }
+  .mobile-toggle { display: block; }
+  .nav-links.open {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    top: var(--nav-height); left: 0; right: 0;
+    background: white;
+    padding: 16px 24px;
+    box-shadow: var(--shadow-lg);
+    gap: 8px;
+  }
+  .features-grid { grid-template-columns: 1fr; }
+  .hero-stats { gap: 24px; }
+  .stat-number { font-size: 24px; }
+  .flow-steps { flex-direction: column; gap: 24px; }
+  .flow-step::after { display: none; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 24px; }
+  .footer-grid { grid-template-columns: 1fr; gap: 24px; }
+  .section { padding: 60px 16px; }
+  .hero { padding: calc(var(--nav-height) + 20px) 16px 60px; }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  html { scroll-behavior: auto; }
+}
+</style>
+</head>
+<body>
+
+<!-- Skip to content -->
+<a href="#main-content" class="skip-link">跳转到主要内容</a>
+
+<!-- Navigation -->
+<nav class="nav" id="nav" aria-label="主导航">
+  <div class="nav-inner">
+    <a href="#" class="nav-logo">
+      <div class="logo-icon" aria-hidden="true">🛡️</div>
+      JSecProbe
+    </a>
+    <ul class="nav-links" id="navLinks" role="menubar">
+      <li role="none"><a href="#features" role="menuitem">功能特性</a></li>
+      <li role="none"><a href="#highlights" role="menuitem">产品优势</a></li>
+      <li role="none"><a href="#workflow" role="menuitem">工作流程</a></li>
+      <li role="none"><a href="docs.html" role="menuitem">白皮书</a></li>
+      <li role="none"><a href="https://github.com/SelinuxJXM/JSecProbe" target="_blank" rel="noopener" role="menuitem">GitHub</a></li>
+      <li role="none"><a href="#cta" class="nav-cta" role="menuitem">免费下载</a></li>
+    </ul>
+    <button class="mobile-toggle" id="mobileToggle" aria-label="打开菜单" aria-expanded="false" aria-controls="navLinks">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<!-- Main content -->
+<main id="main-content">
+
+<!-- Hero -->
+<section class="hero">
+  <div class="hero-content">
+    <div class="hero-badge">🚀 全新升级</div>
+    <h1>让等保测评<br><span class="gradient">更高效、更规范、更智能</span></h1>
+    <p class="hero-desc">
+      严格对标 GB/T 22239-2019，覆盖项目管理、资产录入、现场核查、AI 辅助分析、报告生成全流程，
+      一站式解决等保现场测评痛点。
+    </p>
+    <div class="hero-actions">
+      <a href="https://github.com/SelinuxJXM/JSecProbe/releases" target="_blank" rel="noopener" class="btn btn-primary">
+        ⬇️ 下载 Windows 版
+      </a>
+      <a href="#features" class="btn btn-secondary">
+        了解更多 →
+      </a>
+    </div>
+    <div class="hero-stats">
+      <div class="stat-item">
+        <div class="stat-number">300+</div>
+        <div class="stat-label">三级测评项</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-number">100+</div>
+        <div class="stat-label">核查命令</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-number">10</div>
+        <div class="stat-label">安全域覆盖</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-number">AI</div>
+        <div class="stat-label">智能辅助</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="hero-screenshot">
+    <img src="screenshots/02-主界面.png" alt="JSecProbe 主界面 - 等级保护现场测评系统" />
+  </div>
+</section>
+
+<!-- Features -->
+<section class="section" id="features" aria-labelledby="features-title">
+  <div class="section-inner">
+    <div class="section-header animate-on-scroll">
+      <span class="section-tag">核心功能</span>
+      <h2 class="section-title" id="features-title">全流程覆盖，一站式测评</h2>
+      <p class="section-desc">从项目立项到差距分析报告生成，每个环节都有数字化工具支撑</p>
+    </div>
+    <div class="features-grid">
+      <article class="feature-card animate-on-scroll">
+        <div class="feature-icon" style="background:#eff6ff;color:#2563eb;" aria-hidden="true">📁</div>
+        <h3>项目管理</h3>
+        <p>创建和管理多个测评项目，支持等级组合（SxAxG）、扩展类型设置，自动计算保护等级和测评进度。--当前仅支持S3A3G2和S2A2G2--当前仅支持S</p>
+      </article>
+      <article class="feature-card animate-on-scroll">
+        <div class="feature-icon" style="background:#f0fdf4;color:#16a34a;" aria-hidden="true">🖥️</div>
+        <h3>系统构成</h3>
+        <p>10 类资产管理（机房、网络、安全设备、服务器、数据库等），支持 Excel 批量导入导出。</p>
+      </article>
+      <article class="feature-card animate-on-scroll">
+        <div class="feature-icon" style="background:#fef3c7;color:#d97706;" aria-hidden="true">✅</div>
+        <h3>现场核查</h3>
+        <p>按安全域分层测评，自动筛选适用测评项，支持核查记录填写、证据上传、自动保存。</p>
+      </article>
+      <article class="feature-card animate-on-scroll">
+        <div class="feature-icon" style="background:#ede9fe;color:#7c3aed;" aria-hidden="true">🤖</div>
+        <h3>AI 智能辅助</h3>
+        <p>支持云端/本地双模式，AI 自动分析截图和命令输出、生成测评记录、问题描述和整改建议。</p>
+      </article>
+      <article class="feature-card animate-on-scroll">
+        <div class="feature-icon" style="background:#fce7f3;color:#db2777;" aria-hidden="true">📄</div>
+        <h3>cha报告生成</h3>
+        <p>自动生成差距分析报告，支持 DOCX/PDF 格式，含问题清单、整改建议、分期计划等完整章节。</p>
+      </article>
+      <article class="feature-card animate-on-scroll">
+        <div class="feature-icon" style="background:#cffafe;color:#0891b2;" aria-hidden="true">📚</div>
+        <h3>知识库</h3>
+        <p>内置等保标准库、作业指导书、核查命令库（100+ 条），覆盖主流网络/安全/服务器设备。</p>
+      </article>
+      <article class="feature-card animate-on-scroll">
+        <div class="feature-icon" style="background:#f0f9ff;color:#0284c7;" aria-hidden="true">🔍</div>
+        <h3>OCR 识别</h3>
+        <p>截图自动文字提取（支持中英文），可辅助 AI 分析，也可用于快速录入核查证据。</p>
+      </article>
+      <article class="feature-card animate-on-scroll">
+        <div class="feature-icon" style="background:#fef9c3;color:#ca8a04;" aria-hidden="true">💾</div>
+        <h3>备份恢复</h3>
+        <p>完整数据备份为 ZIP，支持自动定时备份、增量恢复，确保测评数据安全可控。</p>
+      </article>
+      <article class="feature-card animate-on-scroll">
+        <div class="feature-icon" style="background:#f0fdf4;color:#15803d;" aria-hidden="true">🔄</div>
+        <h3>自动更新</h3>
+        <p>海外双源更新（GitHub + Cloudflare R2），国内源采用（GitCode），支持版本检测、下载进度显示、静默安装。</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- Highlights -->
+<section class="section highlights" id="highlights" aria-labelledby="highlights-title">
+  <div class="section-inner">
+    <div class="section-header animate-on-scroll">
+      <span class="section-tag">产品优势</span>
+      <h2 class="section-title" id="highlights-title">为什么选择 JSecProbe</h2>
+      <p class="section-desc">解决传统测评工作中的核心痛点</p>
+    </div>
+
+    <div class="highlight-row animate-on-scroll">
+      <div class="highlight-content">
+        <h3>标准深度内置，自动筛选测评项</h3>
+        <p>严格对标 GB/T 22239-2019，内置S2A2G2/S3标准库，根据项目等级自动筛选适用的测评项，避免人工判断遗漏。</p>
+        <ul class="highlight-list">
+          <li><span class="check" aria-hidden="true">✓</span>300+ 三级测评项完整覆盖 10 个安全域</li>
+          <li><span class="check" aria-hidden="true">✓</span>支持云计算、移动互联、物联网等 6 大扩展类型</li>
+          <li><span class="check" aria-hidden="true">✓</span>根据项目等级自动筛选，无需人工判断</li>
+          <li><span class="check" aria-hidden="true">✓</span>扩展要求与通用要求自动组合</li>
+        </ul>
+      </div>
+      <div class="highlight-visual">
+        <div class="highlight-box box-green">
+          <div class="emoji" aria-hidden="true">📋</div>
+          <div class="title">自动筛选测评项</div>
+          <div class="subtitle">等级组合 S3A2G3 → 自动匹配适用项</div>
+          <div class="tags">
+            <span class="tag">安全物理环境</span>
+            <span class="tag">安全通信网络</span>
+            <span class="tag">安全区域边界</span>
+            <span class="tag">安全计算环境</span>
+            <span class="tag">安全管理中心</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="highlight-row reverse animate-on-scroll">
+      <div class="highlight-content">
+        <h3>AI 智能辅助，效率提升 10 倍</h3>
+        <p>支持云端（OpenAPI）和本地（Ollama）双模式，AI 自动分析生成核查记录、生成问题描述和整改建议。</p>
+        <ul class="highlight-list">
+          <li><span class="check" aria-hidden="true">✓</span>截图批量分析，智能匹配测评项</li>
+          <li><span class="check" aria-hidden="true">✓</span>自动生成测评记录和符合性判定</li>
+          <li><span class="check" aria-hidden="true">✓</span>问题描述一句话提炼</li>
+          <li><span class="check" aria-hidden="true">✓</span>整改建议批量生成（含分期计划）</li>
+          <li><span class="check" aria-hidden="true">✓</span>隐私模式：IP/MAC/域名自动脱敏</li>
+        </ul>
+      </div>
+      <div class="highlight-visual">
+        <div class="highlight-box box-purple">
+          <div class="emoji" aria-hidden="true">🤖</div>
+          <div class="title">AI 辅助分析</div>
+          <div class="subtitle">截图 → AI 分析 → 自动填写测评记录</div>
+          <div class="tags">
+            <span class="tag">云端模式</span>
+            <span class="tag">本地模式</span>
+            <span class="tag">隐私保护</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="highlight-row animate-on-scroll">
+      <div class="highlight-content">
+        <h3>数据安全，完全掌控</h3>
+        <p>基于 SQLite 嵌入式数据库，所有数据存储在本地，支持离线使用，数据主权完全掌控。</p>
+        <ul class="highlight-list">
+          <li><span class="check" aria-hidden="true">✓</span>bcrypt 12 轮密码哈希 + 登录锁定</li>
+          <li><span class="check" aria-hidden="true">✓</span>SQL 注入防护 + XSS 防护</li>
+          <li><span class="check" aria-hidden="true">✓</span>路径遍历防护 + 图片校验</li>
+          <li><span class="check" aria-hidden="true">✓</span>AI 文本脱敏 + 自定义敏感词</li>
+          <li><span class="check" aria-hidden="true">✓</span>本地大模型，数据不出内网</li>
+        </ul>
+      </div>
+      <div class="highlight-visual">
+        <div class="highlight-box box-orange">
+          <div class="emoji" aria-hidden="true">🔒</div>
+          <div class="title">数据安全设计</div>
+          <div class="subtitle">本地存储 + 多层防护</div>
+          <div class="tags">
+            <span class="tag">bcrypt</span>
+            <span class="tag">参数化查询</span>
+            <span class="tag">路径验证</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Stats Bar -->
+<section class="stats-bar" aria-label="核心数据">
+  <div class="stats-grid">
+    <div class="stat-box">
+      <span class="number">300+</span>
+      <span class="label">三级测评项</span>
+    </div>
+    <div class="stat-box">
+      <span class="number">100+</span>
+      <span class="label">核查命令</span>
+    </div>
+    <div class="stat-box">
+      <span class="number">10</span>
+      <span class="label">安全域</span>
+    </div>
+    <div class="stat-box">
+      <span class="number">6</span>
+      <span class="label">扩展类型</span>
+    </div>
+  </div>
+</section>
+
+<!-- Workflow -->
+<section class="section flow-section" id="workflow" aria-labelledby="workflow-title">
+  <div class="section-inner">
+    <div class="section-header animate-on-scroll">
+      <span class="section-tag">工作流程</span>
+      <h2 class="section-title" id="workflow-title">五步完成等保现场测评</h2>
+      <p class="section-desc">从项目立项到差距分析报告生成，标准化流程驱动</p>
+    </div>
+    <div class="flow-steps">
+      <div class="flow-step animate-on-scroll">
+        <div class="flow-icon" aria-hidden="true">📁</div>
+        <h4>创建项目</h4>
+        <p>设置等级组合<br>选择扩展类型</p>
+      </div>
+      <div class="flow-step animate-on-scroll">
+        <div class="flow-icon" aria-hidden="true">🖥️</div>
+        <h4>录入资产</h4>
+        <p>Excel 批量导入<br>10 类资产管理</p>
+      </div>
+      <div class="flow-step animate-on-scroll">
+        <div class="flow-icon" aria-hidden="true">✅</div>
+        <h4>现场核查</h4>
+        <p>逐项填写记录<br>AI 辅助分析</p>
+      </div>
+      <div class="flow-step animate-on-scroll">
+        <div class="flow-icon" aria-hidden="true">⚠️</div>
+        <h4>问题管理</h4>
+        <p>自动生成问题<br>整改建议</p>
+      </div>
+      <div class="flow-step animate-on-scroll">
+        <div class="flow-icon" aria-hidden="true">📄</div>
+        <h4>差分报告</h4>
+        <p>DOCX / PDF<br>一键导出</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section class="section" id="faq" aria-labelledby="faq-title">
+  <div class="section-inner">
+    <div class="section-header animate-on-scroll">
+      <span class="section-tag">FAQ</span>
+      <h2 class="section-title" id="faq-title">常见问题</h2>
+      <p class="section-desc">关于 JSecProbe 的常见疑问解答</p>
+    </div>
+    <div class="faq-list">
+      <div class="faq-item">
+        <button class="faq-question" aria-expanded="false">
+          <span>JSecProbe 是免费的吗？</span>
+          <span class="arrow" aria-hidden="true">▼</span>
+        </button>
+        <div class="faq-answer">
+          <p>是的，JSecProbe 是完全免费的开源项目，基于 MIT 许可证。你可以从 GitHub Releases 下载安装包，无需支付任何费用。AI 功能需要自备 API Key 或使用本地 Ollama 模型。</p>
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-question" aria-expanded="false">
+          <span>支持哪些操作系统？</span>
+          <span class="arrow" aria-hidden="true">▼</span>
+        </button>
+        <div class="faq-answer">
+          <p>当前版本仅支持 Windows 10/11（64 位）。需要 4GB 以上内存、2GB 以上磁盘空间。AI 功能需要联网（云端模式）或安装 Ollama（本地模式）。</p>
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-question" aria-expanded="false">
+          <span>AI 功能必须联网吗？</span>
+          <span class="arrow" aria-hidden="true">▼</span>
+        </button>
+        <div class="faq-answer">
+          <p>不是必须的。JSecProbe 支持两种 AI 模式：云端模式（DeepSeek/GPT 等 OpenAI 兼容 API）和本地模式（Ollama 部署本地大模型）。本地模式下，数据完全不出内网，适合对数据安全要求高的场景。</p>
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-question" aria-expanded="false">
+          <span>数据安全吗？会泄露测评数据吗？</span>
+          <span class="arrow" aria-hidden="true">▼</span>
+        </button>
+        <div class="faq-answer">
+          <p>系统内置多层安全保护：所有数据存储在本地 SQLite 数据库；AI 发送前自动脱敏 IP/MAC/域名/密码等敏感信息；支持自定义敏感词过滤；支持本地大模型模式，数据完全不出内网。</p>
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-question" aria-expanded="false">
+          <span>如何迁移数据到另一台电脑？</span>
+          <span class="arrow" aria-hidden="true">▼</span>
+        </button>
+        <div class="faq-answer">
+          <p>在旧电脑上使用「完整备份」功能生成备份 ZIP，复制到新电脑后使用「数据恢复」功能即可。所有项目、资产、测评记录、截图都会完整迁移。</p>
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-question" aria-expanded="false">
+          <span>忘记密码怎么办？</span>
+          <span class="arrow" aria-hidden="true">▼</span>
+        </button>
+        <div class="faq-answer">
+          <p>如果有其他管理员账号，可用其登录并重置密码。否则需要手动修改数据库：关闭应用 → 打开 JSecProbeData/database.sqlite → 使用 SQLite 工具重置密码哈希。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta-section" id="cta">
+  <h2>开始你的高效等保测评之旅</h2>
+  <p>免费下载，开箱即用。加入等保测评数字化转型的行列。</p>
+  <div class="cta-buttons">
+    <a href="https://github.com/SelinuxJXM/JSecProbe/releases" target="_blank" rel="noopener" class="btn btn-primary">
+      ⬇️ 免费下载</a>
+    <a href="https://github.com/SelinuxJXM/JSecProbe" target="_blank" rel="noopener" class="btn btn-secondary">
+      ⭐ GitHub 仓库</a>
+  </div>
+</section>
+
+</main>
+
+<!-- Footer -->
+<footer class="footer" role="contentinfo">
+  <div class="footer-inner">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a href="#" class="nav-logo" style="color:white;">
+          <div class="logo-icon" aria-hidden="true">🛡️</div>
+          JSecProbe
+        </a>
+        <p>等级保护现场测评系统，让等保测评更高效、更规范、更智能。基于 MIT 协议开源。</p>
+      </div>
+      <nav class="footer-col" aria-label="产品导航">
+        <h4>产品</h4>
+        <a href="#features">功能特性</a>
+        <a href="#highlights">产品优势</a>
+        <a href="#workflow">工作流程</a>
+        <a href="docs.html">产品白皮书</a>
+        <a href="#faq">常见问题</a>
+      </nav>
+      <nav class="footer-col" aria-label="资源导航">
+        <h4>资源</h4>
+        <a href="https://github.com/SelinuxJXM/JSecProbe/releases" target="_blank" rel="noopener">下载安装</a>
+        <a href="https://github.com/SelinuxJXM/JSecProbe" target="_blank" rel="noopener">GitHub 仓库</a>
+        <a href="https://github.com/SelinuxJXM/JSecProbe/issues" target="_blank" rel="noopener">问题反馈</a>
+      </nav>
+      <nav class="footer-col" aria-label="联系方式">
+        <h4>联系</h4>
+        <a href="mailto:SelinuxJ@163.com">技术支持邮箱</a>
+        <a href="https://www.soer.ccwu.cc/Nav/" target="_blank" rel="noopener">官方导航站</a>
+      </nav>
+    </div>
+    <div class="footer-bottom">
+      <p>© 2025 JSecProbe. MIT License. 仅供合法安全测评活动使用。</p>
+      <p><a href="https://github.com/SelinuxJXM/JSecProbe" rel="noopener">GitHub</a> · <a href="mailto:SelinuxJ@163.com">Email</a></p>
+    </div>
+  </div>
+</footer>
+
+<script>
+// Nav scroll effect
+const nav = document.getElementById('nav');
+let scrollTimeout;
+window.addEventListener('scroll', () => {
+  if (!scrollTimeout) {
+    scrollTimeout = setTimeout(() => {
+      nav.classList.toggle('scrolled', window.scrollY > 20);
+      scrollTimeout = null;
+    }, 100);
+  }
+}, { passive: true });
+
+// Mobile menu toggle
+const mobileToggle = document.getElementById('mobileToggle');
+const navLinks = document.getElementById('navLinks');
+mobileToggle.addEventListener('click', () => {
+  const isOpen = navLinks.classList.toggle('open');
+  mobileToggle.setAttribute('aria-expanded', isOpen);
+});
+
+// Close mobile menu on link click
+navLinks.querySelectorAll('a').forEach(a => {
+  a.addEventListener('click', () => {
+    navLinks.classList.remove('open');
+    mobileToggle.setAttribute('aria-expanded', 'false');
+  });
+});
+
+// Close mobile menu on outside click
+document.addEventListener('click', (e) => {
+  if (navLinks.classList.contains('open') && !e.target.closest('.nav')) {
+    navLinks.classList.remove('open');
+    mobileToggle.setAttribute('aria-expanded', 'false');
+  }
+});
+
+// Close mobile menu on Escape key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && navLinks.classList.contains('open')) {
+    navLinks.classList.remove('open');
+    mobileToggle.setAttribute('aria-expanded', 'false');
+    mobileToggle.focus();
+  }
+});
+
+// FAQ toggle
+document.querySelectorAll('.faq-question').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const item = btn.parentElement;
+    const isOpen = item.classList.toggle('open');
+    btn.setAttribute('aria-expanded', isOpen);
+  });
+});
+
+// Scroll animations
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+      observer.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
+
+document.querySelectorAll('.animate-on-scroll').forEach(el => observer.observe(el));
+
+// Smooth scroll for anchor links
+document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+  anchor.addEventListener('click', function(e) {
+    e.preventDefault();
+    const target = document.querySelector(this.getAttribute('href'));
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+});
+</script>
+
+</body>
+</html>

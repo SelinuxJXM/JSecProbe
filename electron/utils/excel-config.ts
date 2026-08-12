@@ -8,7 +8,10 @@ export const ASSET_CATEGORY_NAMES: Record<string, string> = {
   management_platform: '系统管理平台',
   business_app: '业务应用系统',
   terminal: '业务终端/运维终端',
+  other_asset: '其他系统或设备',
   data_resource: '数据资源',
+  crypto_product: '密码产品',
+  security_personnel: '安全相关人员',
 };
 
 export const ASSET_IMPORTANCE_MAP: Record<string, string> = {
@@ -119,12 +122,42 @@ export const ASSET_COLUMNS_MAP: Record<string, { header: string; key: string; wi
     { header: '重要程度', key: 'importance', width: 12 },
     { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
   ],
+  other_asset: [
+    { header: '序号', key: 'index', width: 8 },
+    { header: '设备名称', key: 'name', width: 25 },
+    { header: '虚拟设备', key: 'isVirtual', width: 10 },
+    { header: '系统及版本', key: 'os', width: 25 },
+    { header: '设备类别/用途', key: 'deviceUsage', width: 20 },
+    { header: '备注', key: 'description', width: 40 },
+    { header: 'IP地址', key: 'ip', width: 18 },
+    { header: '重要程度', key: 'importance', width: 12 },
+    { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+  ],
+  crypto_product: [
+    { header: '序号', key: 'index', width: 8 },
+    { header: '产品/模块名称', key: 'name', width: 25 },
+    { header: '生产厂商', key: 'version', width: 20 },
+    { header: '证书编号', key: 'dbSystem', width: 22 },
+    { header: '密码算法', key: 'middleware', width: 20 },
+    { header: '用途', key: 'deviceUsage', width: 25 },
+    { header: '重要程度', key: 'importance', width: 12 },
+    { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+  ],
+  security_personnel: [
+    { header: '序号', key: 'index', width: 8 },
+    { header: '姓名', key: 'name', width: 20 },
+    { header: '岗位/角色', key: 'deviceUsage', width: 20 },
+    { header: '联系方式', key: 'ip', width: 18 },
+    { header: '所属单位', key: 'os', width: 25 },
+    { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
+  ],
 };
 
 export const ASSET_CATEGORY_ORDER = [
   'machine_room', 'network_boundary', 'network_device', 'security_device',
   'server_storage', 'management_platform', 'business_app',
-  'terminal', 'data_resource', 'sys_doc',
+  'terminal', 'other_asset', 'data_resource', 'crypto_product',
+  'security_personnel', 'sys_doc',
 ] as const;
 
 export const ASSET_EXAMPLE_DATA: Record<string, Record<string, any>[]> = {
@@ -166,6 +199,18 @@ export const ASSET_EXAMPLE_DATA: Record<string, Record<string, any>[]> = {
   data_resource: [
     { name: '用户个人信息', os: '业务信息系统', deviceUsage: '保密性、完整性保护', importance: '关键', isAssessmentTarget: '是' },
     { name: '业务运行数据', os: '业务信息系统', deviceUsage: '可用性、完整性保护', importance: '重要', isAssessmentTarget: '否' },
+  ],
+  other_asset: [
+    { name: 'UPS电源', isVirtual: '否', os: '', deviceUsage: '不间断电源', ip: '', description: '机房供电保障', importance: '重要', isAssessmentTarget: '否' },
+    { name: '网络打印机', isVirtual: '否', os: '', deviceUsage: '办公打印', ip: '192.168.1.210', description: '', importance: '一般', isAssessmentTarget: '否' },
+  ],
+  crypto_product: [
+    { name: '签名验签服务器', version: '某厂商', dbSystem: 'GM/T 00xx-20xx', middleware: 'SM2/SM3', deviceUsage: '电子签名验证', importance: '关键', isAssessmentTarget: '否' },
+    { name: '密码机', version: '某厂商', dbSystem: 'GM/T 00xx-20xx', middleware: 'SM4', deviceUsage: '数据加密', importance: '关键', isAssessmentTarget: '否' },
+  ],
+  security_personnel: [
+    { name: '张三', os: '信息中心', deviceUsage: '安全管理员', ip: '13800138000', isAssessmentTarget: '否' },
+    { name: '李四', os: '运维部', deviceUsage: '系统管理员', ip: '13900139000', isAssessmentTarget: '否' },
   ],
 };
 
