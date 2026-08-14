@@ -536,13 +536,13 @@ const EDITABLE_COLUMNS: Record<string, string[]> = {
   security_device: ['name', 'isVirtual', 'os', 'version', 'deviceUsage', 'description', 'quantity', 'ip', 'importance', 'isAssessmentTarget'],
   server_storage: ['name', 'isVirtual', 'os', 'dbSystem', 'middleware', 'description', 'quantity', 'ip', 'importance', 'isAssessmentTarget'],
   sys_doc: ['name', 'os', 'description', 'isAssessmentTarget'],
-  management_platform: ['name', 'os', 'version', 'ip', 'deviceUsage', 'importance', 'isAssessmentTarget'],
-  business_app: ['name', 'os', 'deviceUsage', 'description', 'ip', 'importance', 'isAssessmentTarget'],
+  management_platform: ['name', 'os', 'version', 'deviceUsage', 'ip', 'importance', 'isAssessmentTarget'],
+  business_app: ['name', 'os', 'deviceUsage', 'description', 'importance', 'isAssessmentTarget'],
   terminal: ['name', 'isVirtual', 'os', 'deviceUsage', 'description', 'quantity', 'ip', 'importance', 'isAssessmentTarget'],
   other_asset: ['name', 'isVirtual', 'os', 'deviceUsage', 'ip', 'description', 'importance', 'isAssessmentTarget'],
   data_resource: ['name', 'os', 'deviceUsage', 'importance', 'isAssessmentTarget'],
   crypto_product: ['name', 'version', 'dbSystem', 'middleware', 'deviceUsage', 'importance', 'isAssessmentTarget'],
-  security_personnel: ['name', 'os', 'deviceUsage', 'ip', 'isAssessmentTarget'],
+  security_personnel: ['name', 'deviceUsage', 'ip', 'os', 'isAssessmentTarget'],
 };
 
 function getEditableColumns() {

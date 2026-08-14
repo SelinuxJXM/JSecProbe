@@ -246,12 +246,14 @@ export function registerAssessmentHandlers(): void {
 
       // 按资产统计总项数：每个资产的适用项数相加
       // 获取项目所有测评对象（按层面分组）
-      const assets = await db.query.assets.findMany({
+      const allAssets = await db.query.assets.findMany({
         where: and(
           eq(schema.assets.projectId, projectId),
           eq(schema.assets.isAssessmentTarget, 1),
         ),
       });
+      // security_personnel 是登记类信息，不参与总项数和已完成统计
+      const assets = allAssets.filter(a => a.category !== 'security_personnel');
 
       // 按层面统计资产数量
       const CATEGORY_TO_DOMAIN: Record<string, string> = {
@@ -266,6 +268,8 @@ export function registerAssessmentHandlers(): void {
         'data_resource': 'secure_computing',
         'network_boundary': 'secure_boundary',
         'data_category': 'secure_computing',
+        'other_asset': 'secure_computing',
+        'crypto_product': 'secure_computing',
       };
       const domainAssetCounts: Record<string, number> = {};
       for (const asset of assets) {
@@ -330,14 +334,27 @@ export function registerAssessmentHandlers(): void {
         .from(schema.assessmentItems)
         .where(and(...applicableConditions));
 
+      // 项目当前有效的测评对象 assetId 集合（防止孤儿记录/已取消测评对象的资产记录影响统计）
+      const validAssetIds = new Set(assets.map(a => a.id));
+      const validAssetIdsArray = Array.from(validAssetIds);
+
       // 已测评：有记录且结果为已判定（符合/部分符合/不符合/不适用）
+      // - itemId 必须在适用范围内
+      // - assetId 为空（全局层面记录）或指向当前项目的有效测评对象
       const testedRecords = await db
         .select({ value: count() })
         .from(schema.assessmentRecords)
         .where(and(
           eq(schema.assessmentRecords.projectId, projectId),
           inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-          sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'not_applicable')`
+          sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'not_applicable')`,
+          // assetId 为空（全局层面）或指向有效测评对象
+          validAssetIdsArray.length > 0
+            ? or(
+                sql`(asset_id IS NULL OR asset_id = '')`,
+                inArray(schema.assessmentRecords.assetId, validAssetIdsArray)
+              )
+            : sql`(asset_id IS NULL OR asset_id = '')`
         ));
 
       // 符合：结果为符合（不包含部分符合）
@@ -347,7 +364,13 @@ export function registerAssessmentHandlers(): void {
         .where(and(
           eq(schema.assessmentRecords.projectId, projectId),
           inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-          sql`result IN ('compliant', 'conform')`
+          sql`result IN ('compliant', 'conform')`,
+          validAssetIdsArray.length > 0
+            ? or(
+                sql`(asset_id IS NULL OR asset_id = '')`,
+                inArray(schema.assessmentRecords.assetId, validAssetIdsArray)
+              )
+            : sql`(asset_id IS NULL OR asset_id = '')`
         ));
 
       // 不适用
@@ -357,7 +380,13 @@ export function registerAssessmentHandlers(): void {
         .where(and(
           eq(schema.assessmentRecords.projectId, projectId),
           inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-          sql`result = 'not_applicable'`
+          sql`result = 'not_applicable'`,
+          validAssetIdsArray.length > 0
+            ? or(
+                sql`(asset_id IS NULL OR asset_id = '')`,
+                inArray(schema.assessmentRecords.assetId, validAssetIdsArray)
+              )
+            : sql`(asset_id IS NULL OR asset_id = '')`
         ));
 
       const tested = testedRecords[0]?.value || 0;
@@ -366,13 +395,17 @@ export function registerAssessmentHandlers(): void {
       const effectiveTested = Math.max(0, tested - na);
       const complianceRate = effectiveTested > 0 ? Math.round((compliant / effectiveTested) * 100) : 0;
 
+      // 防御性限制：已完成不超过总项数（避免脏数据导致 已完成 > 总项数）
+      const safeTested = Math.min(tested, total);
+
       return {
         total,
-        tested,
+        tested: safeTested,
         compliant,
         na,
         complianceRate,
-        untested: Math.max(0, total - tested - na),
+        // untested = total - tested（tested 已包含 na，无需再减）
+        untested: Math.max(0, total - safeTested),
       };
     })
   );

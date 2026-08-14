@@ -91,7 +91,7 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
             extensionType:
               row.extensionTypes && row.extensionTypes.length > 0
                 ? row.extensionTypes.join(',')
-                : undefined,
+                : '',
             level: parseLevelFromCombo(row.levelCombo),
             status: row.status as any,
           });

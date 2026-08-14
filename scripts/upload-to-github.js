@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.1.8';
+const TAG = 'v2.1.9';
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,20 +57,19 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.1.8 更新内容
+    body: `## v2.1.9 更新内容
 
-- **系统构成页面新增三个分类**：安全相关人员、其他系统或设备、密码产品（默认不作为测评对象，仅用于信息登记）
-  - 安全相关人员：姓名、岗位/角色、联系方式、所属单位
-  - 其他系统或设备：设备名称、是否虚拟设备、系统及版本、设备类别/用途、重要程度、IP地址、备注
-  - 密码产品：产品/模块名称、生产厂商、证书编号、密码算法、用途、重要程度
-- **修复新增分类默认不作为测评对象的后端逻辑漏洞**：
-  - 统一新增分类判断函数，修复 asset:create 未传值时默认被设为测评对象的问题
-  - 修复 Excel 导入时三类分类的列配置缺失、sheet 名匹配缺失、默认值判断缺失
-  - 修复前端新增一行时默认值判断（只排除了 sys_doc，遗漏新增三类）
-- **UI 调整**：系统构成页面分类标签压缩左右 padding 和字号，缓解 13 个分类拥挤的问题
-- **修复安全相关人员字段显示问题**：移除不需要的 IP 地址通用列和重要程度列，调整所属单位字段位置到联系方式之后
-- **修复密码产品显示操作系统字段的问题**：通用操作系统列排除 crypto_product 分类
-- **修复其他系统或设备字段顺序**：IP地址和备注字段位置调换
+- **修复现场核查页面统计数据被脏数据影响的问题**：
+  - 总项数计算：补充新增分类（other_asset、crypto_product）的层面映射；security_personnel 为登记类信息，不参与总项数计算
+  - 已完成统计：增加 assetId 有效性过滤，排除指向已删除资产或已取消测评对象标记的孤儿记录
+  - 未测评计算：修正公式为 total - tested（tested 已包含 not_applicable，避免多减一次）
+  - 防御性限制：已完成不超过总项数，避免脏数据导致 已完成 > 总项数 异常
+- **修复项目列表页面扩展指标取消选中不生效的问题**：
+  - 根因：前端取消所有扩展类型后传 undefined，Drizzle ORM 跳过 undefined 字段，数据库旧值未被清空
+  - 修复：改为传空字符串 ''，确保 Drizzle 真正执行更新操作清空字段
+- **修复系统构成页面粘贴 Excel 数据时字段错位的问题**：
+  - business_app（业务应用系统）：EDITABLE_COLUMNS 移除 ip 字段（表格未渲染 IP 列）
+  - management_platform（系统管理平台）：EDITABLE_COLUMNS 中 ip 和 deviceUsage 顺序调换，与表格 DOM 顺序一致
     `,
     draft: false,
     prerelease: false,
