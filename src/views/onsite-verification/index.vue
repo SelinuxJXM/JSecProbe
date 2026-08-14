@@ -57,7 +57,7 @@
           <span class="stat-divider" />
           <span class="stat-item">
             <span class="stat-label">符合率</span>
-            <span class="stat-value rate">{{ progress.complianceRate }}%</span>
+            <span class="stat-value rate">{{ Number(progress.complianceRate).toFixed(2) }}%</span>
           </span>
         </div>
       </div>

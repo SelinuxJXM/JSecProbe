@@ -393,7 +393,9 @@ export function registerAssessmentHandlers(): void {
       const compliant = compliantRecords[0]?.value || 0;
       const na = naRecords[0]?.value || 0;
       const effectiveTested = Math.max(0, tested - na);
-      const complianceRate = effectiveTested > 0 ? Math.round((compliant / effectiveTested) * 100) : 0;
+      const complianceRate = effectiveTested > 0
+        ? Number(((compliant / effectiveTested) * 100).toFixed(2))
+        : 0;
 
       // 防御性限制：已完成不超过总项数（避免脏数据导致 已完成 > 总项数）
       const safeTested = Math.min(tested, total);

@@ -490,7 +490,9 @@ export function registerIssueHandlers(): void {
       const compliant = compliantRecords[0]?.value || 0;
       const na = naRecords[0]?.value || 0;
       const effectiveTested = Math.max(0, tested - na);
-      const complianceRate = effectiveTested > 0 ? Math.round((compliant / effectiveTested) * 100) : 0;
+      const complianceRate = effectiveTested > 0
+        ? Number(((compliant / effectiveTested) * 100).toFixed(2))
+        : 0;
 
       return {
         total,

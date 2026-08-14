@@ -851,14 +851,18 @@ onUnmounted(() => {
         .progress-cell {
           display: flex;
           align-items: center;
-          gap: 8px;
+          gap: 6px;
+          padding: 0 8px;
+          box-sizing: border-box;
+          width: 100%;
 
           .progress-bar {
-            flex: 1;
+            flex: 1 1 auto;
             height: 6px;
             background: var(--color-primary-light, #E8F0FE);
             border-radius: 3px;
-            min-width: 60px;
+            min-width: 40px;
+            max-width: 66px;
 
             .progress-fill {
               height: 100%;
@@ -868,9 +872,14 @@ onUnmounted(() => {
           }
 
           .progress-text {
+            flex-shrink: 0;
+            flex-grow: 0;
             font-size: 11px;
             font-weight: 500;
             white-space: nowrap;
+            min-width: 32px;
+            text-align: right;
+            line-height: 1;
 
             &.complete { color: #16A34A; }
             &.high, &.medium, &.low { color: var(--color-primary, #1B5FD9); }

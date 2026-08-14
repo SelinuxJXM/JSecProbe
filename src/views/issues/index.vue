@@ -79,7 +79,7 @@
           <el-icon :size="32"><CircleCheckFilled /></el-icon>
         </div>
         <div class="stat-info">
-          <el-statistic :value="complianceRateValue" suffix="%" />
+          <el-statistic :value="complianceRateValue" :precision="2" suffix="%" />
           <div class="stat-label">符合率</div>
         </div>
       </div>

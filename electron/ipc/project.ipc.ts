@@ -2,7 +2,7 @@ import { ipcMain, dialog, app } from 'electron';
 import log from 'electron-log';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, like, and, desc, count, sql, not } from 'drizzle-orm';
+import { eq, like, and, desc, count, sql, not, or, lte, inArray } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
@@ -20,22 +20,141 @@ async function calcProjectProgress(projectId: string): Promise<number> {
     });
     if (!project) return 0;
 
-    const totalResult = await db
-      .select({ value: count() })
-      .from(schema.assessmentItems)
-      .where(eq(schema.assessmentItems.standardId, project.standardId));
-    const total = totalResult[0]?.value || 1;
+    // 解析项目扩展类型（与 assessment.ipc.ts 保持一致）
+    const EXT_TYPE_MAP: Record<string, string> = {
+      '安全通用要求': 'general',
+      '云计算安全扩展要求': 'cloud',
+      '移动互联安全扩展要求': 'mobile',
+      '物联网安全扩展要求': 'iot',
+      '工业控制系统安全扩展要求': 'industrial',
+      '大数据安全扩展要求': 'bigdata',
+      '大数据安全扩展要求（国标附录）': 'bigdata',
+      '关键信息基础设施安全扩展要求': 'cii',
+    };
+    const projectExtCodes: string[] = [];
+    if (project.extensionType) {
+      for (const t of project.extensionType.split(',').filter(Boolean)) {
+        const code = EXT_TYPE_MAP[t.trim()] || t.trim();
+        if (!projectExtCodes.includes(code)) projectExtCodes.push(code);
+      }
+    }
 
-    const doneResult = await db
+    // 构建扩展类型过滤条件
+    const extOrConditions = [eq(schema.assessmentItems.extensionType, 'general')];
+    for (const ext of projectExtCodes) {
+      extOrConditions.push(eq(schema.assessmentItems.extensionType, ext));
+    }
+    const extOr = or(...extOrConditions);
+
+    // 获取项目所有测评对象
+    const allAssets = await db.query.assets.findMany({
+      where: and(
+        eq(schema.assets.projectId, projectId),
+        eq(schema.assets.isAssessmentTarget, 1),
+      ),
+    });
+    // security_personnel 是登记类信息，不参与统计
+    const assets = allAssets.filter(a => a.category !== 'security_personnel');
+
+    // 按层面统计资产数量
+    const CATEGORY_TO_DOMAIN: Record<string, string> = {
+      'server_storage': 'secure_computing',
+      'sys_doc': 'secure_computing',
+      'network_device': 'secure_computing',
+      'security_device': 'secure_computing',
+      'business_app': 'secure_computing',
+      'terminal': 'secure_computing',
+      'management_platform': 'secure_computing',
+      'machine_room': 'secure_physical',
+      'data_resource': 'secure_computing',
+      'network_boundary': 'secure_boundary',
+      'data_category': 'secure_computing',
+      'other_asset': 'secure_computing',
+      'crypto_product': 'secure_computing',
+    };
+    const domainAssetCounts: Record<string, number> = {};
+    for (const asset of assets) {
+      const domainId = CATEGORY_TO_DOMAIN[asset.category] || 'secure_computing';
+      domainAssetCounts[domainId] = (domainAssetCounts[domainId] || 0) + 1;
+    }
+
+    // 获取全局层面的测评项（assetId为空的项）
+    const standardId = project.standardId;
+    const globalItems = await db.query.assessmentItems.findMany({
+      where: and(
+        eq(schema.assessmentItems.standardId, standardId),
+        extOr,
+        ...(project.level ? [lte(schema.assessmentItems.minLevel, project.level)] : [])
+      ),
+      columns: { domain: true },
+    });
+
+    // 按层面统计测评项数量
+    const domainItemCounts: Record<string, number> = {};
+    for (const item of globalItems) {
+      domainItemCounts[item.domain] = (domainItemCounts[item.domain] || 0) + 1;
+    }
+
+    // 全局层面列表
+    const GLOBAL_DOMAINS = [
+      'secure_communication',
+      'secure_management',
+      'security_management',
+      'security_organization',
+      'security_personnel',
+      'security_construction',
+      'security_maintenance',
+    ];
+
+    // 总项数 = Σ(每个层面的资产数 × 该层面测评项数) + 全局层面测评项数
+    let total = 0;
+    for (const [domainId, assetCount] of Object.entries(domainAssetCounts)) {
+      const itemCount = domainItemCounts[domainId] || 0;
+      total += assetCount * itemCount;
+    }
+    for (const domainId of GLOBAL_DOMAINS) {
+      const itemCount = domainItemCounts[domainId] || 0;
+      if (itemCount > 0 && !domainAssetCounts[domainId]) {
+        total += itemCount;
+      }
+    }
+    if (total === 0) total = 1;
+
+    // 适用范围条件（用于子查询过滤itemId）
+    const applicableConditions = [
+      eq(schema.assessmentItems.standardId, standardId),
+      extOr,
+    ];
+    if (project.level) {
+      applicableConditions.push(lte(schema.assessmentItems.minLevel, project.level));
+    }
+    const itemIdsSubquery = db
+      .select({ id: schema.assessmentItems.id })
+      .from(schema.assessmentItems)
+      .where(and(...applicableConditions));
+
+    // 有效资产ID集合（防止孤儿记录影响统计）
+    const validAssetIds = new Set(assets.map(a => a.id));
+    const validAssetIdsArray = Array.from(validAssetIds);
+
+    // 已完成：有判定记录的行数（每个资产的每个测评项是一行）
+    const doneRecords = await db
       .select({ value: count() })
       .from(schema.assessmentRecords)
       .where(and(
         eq(schema.assessmentRecords.projectId, projectId),
-        sql`${schema.assessmentRecords.result} != 'untested'`
+        inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
+        sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'not_applicable')`,
+        validAssetIdsArray.length > 0
+          ? or(
+              sql`(asset_id IS NULL OR asset_id = '')`,
+              inArray(schema.assessmentRecords.assetId, validAssetIdsArray)
+            )
+          : sql`(asset_id IS NULL OR asset_id = '')`
       ));
-    const done = doneResult[0]?.value || 0;
+    const done = doneRecords[0]?.value || 0;
 
-    const progress = Math.round((done / total) * 100);
+    const progress = Math.min(100, Math.round((done / total) * 100));
     await db.update(schema.projects)
       .set({ progress })
       .where(eq(schema.projects.id, projectId));
@@ -81,8 +200,20 @@ export function registerProjectHandlers(): void {
         .limit(pageSize)
         .offset((page - 1) * pageSize);
 
+      for (const project of list) {
+        await calcProjectProgress(project.id);
+      }
+
+      const updatedList = await db
+        .select()
+        .from(schema.projects)
+        .where(whereClause)
+        .orderBy(desc(schema.projects.createdAt))
+        .limit(pageSize)
+        .offset((page - 1) * pageSize);
+
       return {
-        list: list.map((p) => ({
+        list: updatedList.map((p) => ({
           id: p.id,
           name: p.name,
           projectNo: p.projectNo || undefined,
