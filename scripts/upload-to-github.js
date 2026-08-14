@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.2.0';
+const TAG = 'v2.2.0'; // 版本号由 package.json 动态获取
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,20 +57,18 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.1.9 更新内容
+    body: `## v2.2.0 更新内容
 
-- **修复现场核查页面统计数据被脏数据影响的问题**：
-  - 总项数计算：补充新增分类（other_asset、crypto_product）的层面映射；security_personnel 为登记类信息，不参与总项数计算
-  - 已完成统计：增加 assetId 有效性过滤，排除指向已删除资产或已取消测评对象标记的孤儿记录
-  - 未测评计算：修正公式为 total - tested（tested 已包含 not_applicable，避免多减一次）
-  - 防御性限制：已完成不超过总项数，避免脏数据导致 已完成 > 总项数 异常
-- **修复项目列表页面扩展指标取消选中不生效的问题**：
-  - 根因：前端取消所有扩展类型后传 undefined，Drizzle ORM 跳过 undefined 字段，数据库旧值未被清空
-  - 修复：改为传空字符串 ''，确保 Drizzle 真正执行更新操作清空字段
-- **修复系统构成页面粘贴 Excel 数据时字段错位的问题**：
-  - business_app（业务应用系统）：EDITABLE_COLUMNS 移除 ip 字段（表格未渲染 IP 列）
-  - management_platform（系统管理平台）：EDITABLE_COLUMNS 中 ip 和 deviceUsage 顺序调换，与表格 DOM 顺序一致
-    `,
+- **修复项目列表进度计算与现场核查不一致的问题**：
+  - 根因：项目列表使用 COUNT(DISTINCT item_id) 统计总项数，未乘以资产数量，导致进度虚高
+  - 修复：采用与现场核查一致的资产展开计算逻辑，按层面统计资产数 × 测评项数
+- **修复项目进度统计受脏数据影响的问题**：
+  - 新增 security_personnel 过滤：该分类为登记类信息，不参与进度统计
+  - 新增 isAssessmentTarget 过滤：只统计测评对象资产
+  - 新增孤儿记录防护：排除已删除资产的历史记录
+- **符合率保留两位小数显示**：
+  - 现场核查页面和问题管理页面的后端计算和前端显示同步修改
+- **清理无用依赖**：运行 npm prune 清理未使用的包`
     draft: false,
     prerelease: false,
   });
