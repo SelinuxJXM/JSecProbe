@@ -948,7 +948,15 @@ export function registerAIHandlers(): void {
       const mode = config.mode || 'cloud';
 
       if (shouldValidateApiKey(config) && !config.apiKey && !config.activeModelId) {
-        throw new Error('API Key未配置');
+        // 自动（按优先级）模式下，任一启用的云端模型配置了 API Key 即视为已配置
+        const cloudRows = await db.select({ enabled: schema.aiCloudModels.enabled, apiKey: schema.aiCloudModels.apiKey })
+          .from(schema.aiCloudModels)
+          .where(eq(schema.aiCloudModels.configId, 'default'))
+          .all();
+        const hasUsableKey = cloudRows.some(m => m.enabled === 1 && !!m.apiKey);
+        if (!hasUsableKey) {
+          throw new Error('API Key未配置');
+        }
       }
 
       const temperature = params.temperature ?? config.temperature ?? 0.3;
