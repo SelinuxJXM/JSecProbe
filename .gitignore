@@ -53,5 +53,19 @@ JSecProbeData
 # Screenshots (optional, keep wechat-qrcode for README)
 screenshots/*.png
 !screenshots/wechat-qrcode.png
-.traineddata
+
+# Tesseract traineddata (OCR 语言包由 tesseract.js 运行时自动下载)
+*.traineddata
+
+# 临时调试脚本（根目录下 _ 开头的一次性检查脚本）
+_*.js
+_*.ts
+_*.ps1
+
+# 临时备份文件
 original_index.vue
+
+# 构建 / 缓存产物（不提交）
+*.tsbuildinfo
+dist-output/
+.tools/

@@ -128,10 +128,9 @@ function decodeBase64(str: string): string {
   }
 }
 
-// 加载保存的账号密码
-function loadSavedCredentials() {
+// 加载保存的账号密码（优先使用 safeStorage 加密存储，fallback 到 Base64）
+async function loadSavedCredentials() {
   const savedUsername = localStorage.getItem('jsecprobe_username');
-  const savedPassword = localStorage.getItem('jsecprobe_password');
   const savedRememberUsername = localStorage.getItem('jsecprobe_remember_username');
   const savedRememberPassword = localStorage.getItem('jsecprobe_remember_password');
 
@@ -144,14 +143,22 @@ function loadSavedCredentials() {
 
   if (savedRememberPassword === 'true') {
     rememberPassword.value = true;
-    if (savedPassword) {
-      form.password = decodeBase64(savedPassword);
+    // 仅通过 safeStorage 解密读取凭据；不再回退到可逆 Base64，避免明文密码被自动填充
+    const encrypted = localStorage.getItem('jsecprobe_password_enc');
+    if (encrypted) {
+      try {
+        const result = await window.api.auth.decryptCredential(encrypted);
+        if (result.success && result.data?.decrypted) {
+          form.password = result.data.decrypted;
+        }
+      } catch {
+        // 解密失败时留空，要求用户重新输入
+      }
     }
   }
 }
 
-// 保存账号密码
-function saveCredentials() {
+async function saveCredentials() {
   if (rememberUsername.value) {
     localStorage.setItem('jsecprobe_username', encodeBase64(form.username));
     localStorage.setItem('jsecprobe_remember_username', 'true');
@@ -161,10 +168,33 @@ function saveCredentials() {
   }
 
   if (rememberPassword.value) {
-    localStorage.setItem('jsecprobe_password', encodeBase64(form.password));
-    localStorage.setItem('jsecprobe_remember_password', 'true');
+    try {
+      const availResult = await window.api.auth.isEncryptionAvailable();
+      if (availResult.success && availResult.data?.available) {
+        const encResult = await window.api.auth.encryptCredential(form.password);
+        if (encResult.success && encResult.data?.encrypted) {
+          localStorage.setItem('jsecprobe_password_enc', encResult.data.encrypted);
+          localStorage.removeItem('jsecprobe_password');
+          localStorage.setItem('jsecprobe_remember_password', 'true');
+        } else {
+          // safeStorage 不可用或加密失败时不再以明文/可逆 Base64 持久化密码，仅保留用户名，强制用户重新输入
+          localStorage.removeItem('jsecprobe_password');
+          localStorage.removeItem('jsecprobe_password_enc');
+          localStorage.removeItem('jsecprobe_remember_password');
+        }
+      } else {
+        localStorage.removeItem('jsecprobe_password');
+        localStorage.removeItem('jsecprobe_password_enc');
+        localStorage.removeItem('jsecprobe_remember_password');
+      }
+    } catch {
+      localStorage.removeItem('jsecprobe_password');
+      localStorage.removeItem('jsecprobe_password_enc');
+      localStorage.removeItem('jsecprobe_remember_password');
+    }
   } else {
     localStorage.removeItem('jsecprobe_password');
+    localStorage.removeItem('jsecprobe_password_enc');
     localStorage.removeItem('jsecprobe_remember_password');
   }
 }
@@ -264,8 +294,8 @@ async function handleLogin() {
   }
 }
 
-onMounted(() => {
-  loadSavedCredentials();
+onMounted(async () => {
+  await loadSavedCredentials();
   initParticles();
   animateParticles();
 
@@ -280,7 +310,7 @@ onUnmounted(() => {
 
 <style lang="scss" scoped>
 .login-page {
-  height: 100vh;
+  height: calc(100vh - var(--titlebar-height, 40px));
   width: 100vw;
   background: linear-gradient(135deg, #1B5FD9 0%, #0F3D8F 50%, #1B5FD9 100%);
   background-size: 200% 200%;

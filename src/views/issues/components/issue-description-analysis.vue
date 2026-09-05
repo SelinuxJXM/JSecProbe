@@ -184,9 +184,13 @@
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount } from 'vue';
 import type { Issue } from '../../../../shared/types';
+import { ElMessage } from 'element-plus';
 
 const props = defineProps<{
   getIssueDomainId: (domainName: string) => string;
+  // Phase 4 行标上下文注入
+  projectId?: string;
+  standardId?: string;
 }>();
 
 const emit = defineEmits<{
@@ -266,6 +270,10 @@ async function analyzeIssueDescription(issue: Issue) {
       securityDomain: props.getIssueDomainId(issue.securityDomain || ''),
       controlPoint: issue.controlPoint || '',
       controlName: issue.controlName || '',
+      // Phase 4：注入标准上下文关联参数
+      standardId: props.standardId,
+      projectId: props.projectId,
+      itemId: (issue as any).itemId,
     };
     console.log('[issue-description-analysis.analyzeIssueDescription] 调用IPC, params:', JSON.stringify(params));
 
@@ -283,6 +291,7 @@ async function analyzeIssueDescription(issue: Issue) {
     } else {
       singleResult.value = null;
       console.error('[issue-description-analysis.analyzeIssueDescription] AI分析失败:', res.error);
+      ElMessage.error('AI分析失败：' + (res.error?.message || '未知错误'));
     }
   } catch (err: any) {
     console.error('[issue-description-analysis.analyzeIssueDescription] IPC调用异常:', err.message);
@@ -300,8 +309,12 @@ function applySingleResult() {
 }
 
 // ==================== 批量分析 ====================
+// 批量分析取消标志：组件卸载后置为 true，避免卸载后继续调用 AI 接口与更新已卸载组件状态
+let batchCancelled = false;
+
 async function batchAnalyzeIssueDescriptions(issues: Issue[]) {
   if (!window.api || issues.length === 0) return;
+  batchCancelled = false;
 
   console.log('[issue-description-analysis.batchAnalyzeIssueDescriptions] 开始批量分析, 问题总数:', issues.length);
   console.log('[issue-description-analysis.batchAnalyzeIssueDescriptions] 问题列表:', JSON.stringify(issues.map(i => ({
@@ -336,6 +349,7 @@ async function batchAnalyzeIssueDescriptions(issues: Issue[]) {
     const results: Array<{ issueId: string; description: string; success: boolean }> = [];
     
     for (let i = 0; i < issues.length; i++) {
+      if (batchCancelled) break;
       const issue = issues[i];
       try {
         batchProgress.value = { 
@@ -354,6 +368,10 @@ async function batchAnalyzeIssueDescriptions(issues: Issue[]) {
           securityDomain: props.getIssueDomainId(issue.securityDomain || ''),
           controlPoint: issue.controlPoint || '',
           controlName: issue.controlName || '',
+          // Phase 4：每条问题附带标准上下文关联
+          standardId: props.standardId,
+          projectId: props.projectId,
+          itemId: (issue as any).itemId,
         });
         
         if (res.success && res.data) {
@@ -398,6 +416,7 @@ async function batchAnalyzeIssueDescriptions(issues: Issue[]) {
 }
 
 onBeforeUnmount(() => {
+  batchCancelled = true;
   if (batchTimerInterval) {
     clearInterval(batchTimerInterval);
   }

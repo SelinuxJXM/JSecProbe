@@ -12,6 +12,15 @@ interface UseAiAnalysisOptions {
   saveAllRows: () => Promise<boolean>;
   /** 加载截图 DataURL 的方法 */
   loadScreenshotDataUrl: (row: any, filePath: string) => Promise<string | null>;
+  // Phase 4 行标上下文：用于注入 AI prompt
+  /** 当前项目 ID，用于从项目推导标准 */
+  projectId?: string | undefined;
+  /** 当前使用的测评标准 ID（行标/国标均可），用于条款上下文检索 */
+  standardId?: string | undefined;
+  /** 当前被测评的测评域 ID（secure_xxx 或行业扩展域） */
+  domainId?: string | undefined;
+  /** 当前选中的测评项 ID（用于从 DB 精准反推标准 + 条款） */
+  currentItemId?: string | undefined;
 }
 
 /**
@@ -19,7 +28,8 @@ interface UseAiAnalysisOptions {
  * 提取自 onsite-verification/index.vue 的 AI 分析相关逻辑
  */
 export function useAiAnalysis(options: UseAiAnalysisOptions) {
-  const { tableRows, saveAllRows } = options;
+  const { tableRows, saveAllRows, projectId: _projectId, standardId, domainId, currentItemId } = options;
+  // projectId 保留给后续扩展（如：批量 AI 分析时需要按项目级日志统计等），解构显式命名以消除 TS6133
 
   // AI配置（用于获取OCR预处理设置）
   const aiConfig = ref<any>(null);
@@ -176,6 +186,10 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
         result: (row.evidence || '') + docTextContent,
         screenshots: imageFiles,
         ocrPreprocess: Boolean(aiConfig.value?.ocrPreprocess),
+        // Phase 4：注入标准上下文关联参数
+        standardId: row.standardId || standardId,
+        itemId: row.itemId || currentItemId,
+        domain: row.domainId || domainId,
       };
 
       // 更新步骤提示
@@ -295,14 +309,31 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
     row.conclusion = result.conclusion || '';
 
     if (result.keyEvidencePoints && result.keyEvidencePoints.length > 0) {
-      const existingEvidence = row.evidence ? row.evidence + '\n' : '';
+      const normalize = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+      const existingLines = (row.evidence || '')
+        .split('\n')
+        .map((l: string) => l.trim())
+        .filter(Boolean)
+        .map(normalize);
+      const existingSet = new Set(existingLines);
       const newPoints = result.keyEvidencePoints
-        .filter((p: string) => !row.evidence?.split('\n').includes(p))
-        .join('\n');
-      if (newPoints) {
-        row.evidence = existingEvidence + newPoints;
+        .filter((p: string) => {
+          const np = normalize(p);
+          if (!np) return false;
+          if (existingSet.has(np)) return false;
+          for (const e of existingSet) {
+            if ((e as string).includes(np) || np.includes(e as string)) return false;
+          }
+          return true;
+        })
+        .map((p: string) => p.trim())
+        .filter(Boolean);
+      if (newPoints.length > 0) {
+        const existing = row.evidence && row.evidence.trim() ? row.evidence.trimEnd() + '\n' : '';
+        row.evidence = existing + newPoints.join('\n');
       }
     }
+
 
     try {
       const saveRes = await saveAllRows();

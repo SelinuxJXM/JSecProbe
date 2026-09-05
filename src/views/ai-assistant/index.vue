@@ -95,7 +95,31 @@
             </div>
             <div class="status-desc">
               <template v-if="aiSettings.mode === 'cloud'">
-                {{ isConfigured ? `云端服务 · ${aiSettings.model}` : '请先在设置中配置API密钥' }}
+                <el-select
+                  v-if="isConfigured && cloudModels.length > 0"
+                  v-model="activeModelSelectValue"
+                  size="small"
+                  style="width: 200px;"
+                >
+                  <el-option
+                    label="自动（按优先级）"
+                    value="auto"
+                  />
+                  <el-option
+                    v-for="m in cloudModels.filter(m => m.enabled)"
+                    :key="m.id"
+                    :label="`${m.name || m.model} (优先级${m.priority})`"
+                    :value="m.id"
+                  />
+                  <template #footer>
+                    <div style="padding: 4px 12px; color: #909399; font-size: 12px;">
+                      当前使用：{{ (cloudModels.find(m => m.id === activeModelId)?.name || cloudModels.find(m => m.id === activeModelId)?.model) || '自动' }}
+                      <el-button size="small" text @click="showModelManager = true; showSettings = true">管理模型</el-button>
+                    </div>
+                  </template>
+                </el-select>
+                <span v-else-if="isConfigured">云端服务已配置 · {{ cloudModels.length }} 个模型</span>
+                <span v-else>请先在设置中添加云端模型</span>
               </template>
               <template v-else>
                 {{ isConfigured ? `本地Ollama · ${aiSettings.ollamaModel}` : '请先在设置中选择本地模型' }}
@@ -222,53 +246,91 @@
 
         <!-- 云端模式配置 -->
         <template v-if="aiSettings.mode === 'cloud'">
-          <!-- API格式 -->
-          <div class="setting-item">
-            <label class="setting-label"><span class="required">*</span>API格式</label>
-            <el-select v-model="aiSettings.apiFormat" style="width: 100%">
-              <el-option label="OpenAI Chat Completions 格式" value="openai" />
-              <el-option label="Claude Messages 格式" value="claude" />
-              <el-option label="Gemini GenerateContent 格式" value="gemini" />
-            </el-select>
+          <div class="setting-hint" style="margin: 4px 0 8px;">
+            云端 AI 支持配置多个大模型，请在下方「云端模型列表」中添加模型并设置 API 信息。
+            当主用模型不可用时，系统会自动按优先级切换到下一个可用模型。
           </div>
+        </template>
 
-          <!-- 自定义请求地址 -->
+        <!-- 云端多模型管理 -->
+        <template v-if="aiSettings.mode === 'cloud'">
           <div class="setting-item">
             <div class="setting-label-row">
-              <label class="setting-label"><span class="required">*</span>自定义请求地址</label>
-              <el-switch v-model="aiSettings.fullUrl" size="small" :active-value="true" :inactive-value="false" />
+              <label class="setting-label">云端模型列表</label>
+              <div style="display: flex; gap: 8px;">
+                <el-button size="small" @click="showModelManager = !showModelManager">
+                  {{ showModelManager ? '收起' : '管理' }}
+                </el-button>
+                <el-button size="small" type="primary" @click="openAddModelForm">+ 添加模型</el-button>
+              </div>
             </div>
-            <el-input
-              v-model="aiSettings.baseUrl"
-              :placeholder="aiSettings.fullUrl ? 'e.g. https://api.openai.com/v1' : 'e.g. https://api.openai.com'"
-              :disabled="false"
-            />
+            <div class="setting-hint" style="margin-top: 4px;">
+              配置多个云端模型，当主模型不可用时自动切换。当前使用：{{ activeModelId ? (cloudModels.find(m => m.id === activeModelId)?.name || '未知') : '自动（按优先级）' }}
+            </div>
+
+            <!-- 模型列表 -->
+            <div v-if="showModelManager" class="model-list">
+              <div v-if="cloudModels.length === 0" class="model-empty">
+                暂无云端模型配置，点击「添加模型」开始配置
+              </div>
+              <div v-for="m in cloudModels" :key="m.id" class="model-card" :class="{ 'model-active': activeModelId === m.id }">
+                <div class="model-card-header">
+                  <span class="model-card-name">{{ m.name || m.model }}</span>
+                  <span class="model-card-priority">优先级 {{ m.priority }}</span>
+                  <el-switch v-model="m.enabled" size="small" @change="saveModel()" />
+                </div>
+                <div class="model-card-info">
+                  <span>{{ m.model }}</span>
+                  <span class="model-card-base">{{ m.apiBase }}</span>
+                </div>
+                <div class="model-card-actions">
+                  <el-button size="small" text @click="editModel(m)">编辑</el-button>
+                  <el-button size="small" text @click="setActiveModel(m.id)">设为当前</el-button>
+                  <el-button size="small" text :loading="modelTestLoading === m.id" @click="testModelConnection(m.id)">测试</el-button>
+                  <el-button size="small" text type="danger" @click="deleteModel(m.id)">删除</el-button>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <!-- 提示信息 -->
-          <div class="setting-hint">
-            系统会自动补充 /v1/chat/completions 路径。如需自定义完整路径，请开启「完整URL」开关。
-          </div>
-
-          <!-- 模型ID -->
-          <div class="setting-item">
-            <label class="setting-label"><span class="required">*</span>模型ID</label>
-            <el-input
-              v-model="aiSettings.model"
-              placeholder="输入模型ID，例如：gpt-4o"
-            />
-          </div>
-
-          <!-- API密钥 -->
-          <div class="setting-item">
-            <label class="setting-label"><span class="required">*</span>API密钥</label>
-            <el-input
-              v-model="aiSettings.apiKey"
-              type="password"
-              show-password
-              placeholder="输入 API 密钥"
-            />
-          </div>
+          <!-- 添加/编辑模型表单 -->
+          <el-dialog v-model="showModelForm" :title="editingModel?.id ? '编辑模型' : '添加模型'" width="500px" destroy-on-close>
+            <el-form v-if="editingModel" label-width="100px">
+              <el-form-item label="显示名称">
+                <el-input v-model="editingModel!.name" placeholder="如：OpenAI-GPT-4o" />
+              </el-form-item>
+              <el-form-item label="模型ID">
+                <el-input v-model="editingModel!.model" placeholder="如：gpt-4o" />
+              </el-form-item>
+              <el-form-item label="API格式">
+                <el-select v-model="editingModel!.apiFormat" style="width: 100%">
+                  <el-option label="OpenAI" value="openai" />
+                  <el-option label="Claude" value="claude" />
+                  <el-option label="Gemini" value="gemini" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="API地址">
+                <el-input v-model="editingModel!.apiBase" placeholder="https://api.openai.com" />
+                <div class="setting-hint" style="margin-top: 4px; line-height: 1.5;">
+                  系统会自动补全路径：地址含 <code>/v1</code> 时补 <code>/chat/completions</code>；否则补 <code>/v1/chat/completions</code>；若地址已以 <code>/chat/completions</code> 结尾则原样使用。
+                </div>
+              </el-form-item>
+              <el-form-item label="API密钥">
+                <el-input v-model="editingModel!.apiKey" type="password" show-password placeholder="输入 API 密钥（留空则保留原值）" />
+              </el-form-item>
+              <el-form-item label="优先级">
+                <el-input-number v-model="editingModel!.priority" :min="1" :max="99" />
+                <span class="setting-hint" style="margin-left: 8px;">数字越小优先级越高</span>
+              </el-form-item>
+              <el-form-item label="启用">
+                <el-switch v-model="editingModel!.enabled" />
+              </el-form-item>
+            </el-form>
+            <template #footer>
+              <el-button @click="showModelForm = false">取消</el-button>
+              <el-button type="primary" @click="saveModel">保存</el-button>
+            </template>
+          </el-dialog>
         </template>
 
         <!-- 本地Ollama模式配置 -->
@@ -541,26 +603,7 @@
           </div>
         </div>
 
-        <!-- 测试连接 -->
-        <div class="setting-item" v-if="aiSettings.mode === 'cloud'">
-          <el-button 
-            type="success" 
-            plain 
-            :loading="cloudTestLoading" 
-            @click="handleTestConnection"
-            style="width: 100%"
-          >
-            {{ cloudTestLoading ? '测试中...' : '🔌 测试连接' }}
-          </el-button>
-          <div v-if="cloudTestResult" class="test-result" :class="cloudTestResult.success ? 'test-success' : 'test-error'">
-            <div v-if="cloudTestResult.success">✅ 连接成功！回复：{{ cloudTestResult.data?.reply || cloudTestResult.data?.message || 'OK' }}</div>
-            <div v-else>
-              ❌ 失败 [{{ cloudTestResult.error?.code || 'ERROR' }}]：{{ cloudTestResult.error?.message || '未知错误' }}
-              <div v-if="cloudTestResult.error?.details" class="test-details">{{ cloudTestResult.error.details }}</div>
-            </div>
-          </div>
         </div>
-      </div>
 
       <template #footer>
         <el-button @click="showSettings = false">取消</el-button>
@@ -735,15 +778,37 @@ const aiSettings = reactive({
   ocrPreprocess: false,
 });
 
+// 云端多模型管理
+interface CloudModel {
+  id: string;
+  name: string;
+  apiBase: string;
+  model: string;
+  apiFormat: string;
+  enabled: boolean;
+  priority: number;
+}
+const cloudModels = ref<CloudModel[]>([]);
+const activeModelId = ref<string | null>(null);
+const showModelManager = ref(false);
+const editingModel = ref<{ id?: string; name: string; apiBase: string; apiKey?: string; model: string; apiFormat: string; enabled: boolean; priority: number } | null>(null);
+const showModelForm = ref(false);
+const modelTestLoading = ref<string | null>(null);
+
 const isConfigured = computed(() => {
   if (aiSettings.mode === 'cloud') {
-    return aiSettings.apiKey.length > 0;
+    return cloudModels.value.some(m => m.enabled === true);
   }
   return aiSettings.ollamaModel.length > 0;
 });
 
-const cloudTestLoading = ref(false);
-const cloudTestResult = ref<any>(null);
+const activeModelSelectValue = computed<string>({
+  get: () => activeModelId.value ?? 'auto',
+  set: (val) => {
+    setActiveModel(val === 'auto' ? null : val);
+  },
+});
+
 const localTestLoading = ref(false);
 const localTestResult = ref<any>(null);
 const settingsLoaded = ref(false);
@@ -834,27 +899,6 @@ function formatBytes(bytes?: number): string {
   if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB';
   if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
   return (bytes / 1024).toFixed(0) + ' KB';
-}
-
-async function handleTestConnection() {
-  if (!window.api) return;
-  cloudTestLoading.value = true;
-  cloudTestResult.value = null;
-  try {
-    let baseUrl = aiSettings.baseUrl.trim().replace(/\/+$/, '');
-    const res = await window.api.ai.testConnection({
-      apiBase: baseUrl,
-      apiKey: aiSettings.apiKey,
-      model: aiSettings.model,
-      mode: aiSettings.mode,
-      ollamaUrl: aiSettings.ollamaUrl,
-    });
-    cloudTestResult.value = res;
-  } catch (err: any) {
-    cloudTestResult.value = { success: false, error: { code: 'CLIENT_ERROR', message: err.message } };
-  } finally {
-    cloudTestLoading.value = false;
-  }
 }
 
 async function checkOllamaStatus() {
@@ -1066,12 +1110,6 @@ watch(() => aiSettings.mode, (mode) => {
   } else {
     stopHealthCheck();
   }
-  // 切换模式时清空对应的测试结果
-  if (mode === 'cloud') {
-    localTestResult.value = null;
-  } else {
-    cloudTestResult.value = null;
-  }
   // 恢复对应模式的配置
   restoreModeSettings(mode);
 });
@@ -1211,11 +1249,119 @@ async function loadSettings() {
       aiSettings.apiFormat = data.apiFormat || 'openai';
       // OCR预处理配置：云端模式默认关闭，本地模式默认开启
       aiSettings.ocrPreprocess = data.ocrPreprocess !== undefined ? Boolean(data.ocrPreprocess) : (data.mode === 'local');
+
+      // 加载云端模型列表
+      await loadCloudModels();
     }
   } catch (e) {
     console.error('Failed to load AI settings', e);
   } finally {
     settingsLoaded.value = true;
+  }
+}
+
+// 加载云端模型列表
+async function loadCloudModels() {
+  if (!window.api) return;
+  try {
+    const res = await window.api.ai.getModels();
+    if (res.success && res.data) {
+      cloudModels.value = res.data.models || [];
+      activeModelId.value = res.data.activeModelId || null;
+    }
+  } catch (e) {
+    console.error('加载云端模型列表失败:', e);
+  }
+}
+
+// 打开添加模型表单
+function openAddModelForm() {
+  editingModel.value = {
+    name: '',
+    apiBase: aiSettings.baseUrl,
+    model: aiSettings.model,
+    apiFormat: aiSettings.apiFormat,
+    enabled: true,
+    priority: cloudModels.value.length + 1,
+  };
+  showModelForm.value = true;
+}
+
+// 编辑模型
+function editModel(model: CloudModel) {
+  editingModel.value = { ...model };
+  showModelForm.value = true;
+}
+
+// 保存模型
+async function saveModel() {
+  if (!editingModel.value || !window.api) return;
+  // 展开为普通对象，避免 Vue 响应式 Proxy 无法被 Electron IPC structured-clone
+  const model = { ...editingModel.value };
+  try {
+    let res;
+    if (model.id) {
+      res = await window.api.ai.updateModel(model.id, model);
+    } else {
+      res = await window.api.ai.createModel(model);
+    }
+    if (res.success) {
+      ElMessage.success(model.id ? '模型已更新' : '模型已添加');
+      showModelForm.value = false;
+      editingModel.value = null;
+      await loadCloudModels();
+    } else {
+      ElMessage.error('保存失败：' + (res.error?.message || '未知错误'));
+    }
+  } catch (error: any) {
+    ElMessage.error('保存失败：' + error.message);
+  }
+}
+
+// 删除模型
+async function deleteModel(modelId: string) {
+  if (!window.api) return;
+  try {
+    const res = await window.api.ai.deleteModel(modelId);
+    if (res.success) {
+      ElMessage.success('模型已删除');
+      await loadCloudModels();
+    }
+  } catch (error: any) {
+    ElMessage.error('删除失败：' + error.message);
+  }
+}
+
+// 设为当前使用
+async function setActiveModel(modelId: string | null) {
+  if (!window.api) return;
+  try {
+    const res = await window.api.ai.setActiveModel(modelId);
+    if (res.success) {
+      activeModelId.value = modelId;
+      ElMessage.success(modelId ? '已切换到指定模型' : '已恢复自动切换');
+      await loadCloudModels();
+    }
+  } catch (error: any) {
+    ElMessage.error('操作失败：' + error.message);
+  }
+}
+
+// 测试模型连接
+async function testModelConnection(modelId: string) {
+  if (!window.api) return;
+  modelTestLoading.value = modelId;
+  try {
+    const res = await window.api.ai.testModelConnection(modelId);
+    if (res.success) {
+      ElMessage.success('连接测试成功');
+    } else {
+      ElMessage.error('连接失败：' + (res.error?.message || '未知错误'));
+    }
+  } catch (error: any) {
+    ElMessage.error('连接失败：' + error.message);
+  } finally {
+    modelTestLoading.value = null;
   }
 }
 
@@ -2594,5 +2740,84 @@ onActivated(() => {
       border-top-color: var(--color-border-base);
     }
   }
+}
+
+// 云端多模型管理样式
+.model-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.model-empty {
+  text-align: center;
+  padding: 24px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  background: var(--bg-hover);
+  border-radius: 6px;
+}
+
+.model-card {
+  padding: 12px 14px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  transition: all 0.2s;
+
+  &.model-active {
+    border-color: var(--primary-color);
+    background: rgba(64, 158, 255, 0.08);
+  }
+
+  &:hover {
+    border-color: var(--primary-color);
+  }
+}
+
+.model-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.model-card-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.model-card-priority {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 2px 8px;
+  background: var(--bg-primary);
+  border-radius: 4px;
+}
+
+.model-card-info {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+
+  .model-card-base {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 200px;
+  }
+}
+
+.model-card-actions {
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
 }
 </style>

@@ -62,7 +62,6 @@
               <th class="col-system">系统名称</th>
               <th class="col-unit">被测单位</th>
               <th class="col-standard">标准体系</th>
-              <th class="col-level">等级组合</th>
               <th class="col-ext">扩展类型</th>
               <th class="col-progress">项目进度</th>
               <th class="col-time">修改时间</th>
@@ -90,16 +89,14 @@
                 <span v-else class="text-secondary" :title="row.assessedUnit">{{ row.assessedUnit }}</span>
               </td>
               <td class="col-standard">
-                <select v-if="row.id < 0 || editedRows.includes(String(row.id))" v-model="row.standardSystem" class="cell-select">
-                  <option value="新国标-正式版">新国标-正式版</option>
-                  <option value="新国标-试行版">新国标-试行版</option>
-                  <option value="旧国标">旧国标</option>
+                <!-- 新建项目：动态标准选择器（默认从 systemSettings.defaultStandard 读取） -->
+                <select v-if="row.id < 0" v-model="row.standardId" class="cell-select" @change="onStandardChange(row)">
+                  <option v-for="std in standards" :key="std.id" :value="std.id">{{ std.name }}</option>
                 </select>
-                <span v-else class="text-secondary">{{ row.standardSystem }}</span>
-              </td>
-              <td class="col-level">
-                <input v-if="row.id < 0 || editedRows.includes(String(row.id))" v-model="row.levelCombo" class="cell-input level-input" placeholder="S3A3G3" />
-                <span v-else class="level-text">{{ row.levelCombo }}</span>
+                <!-- 已存在项目编辑：标准不可更改（standardId 不可变，避免 records 孤儿），仅展示实际标准名 -->
+                <span v-else-if="editedRows.includes(String(row.id))" class="text-secondary" :title="getStandardName(row.standardId) || row.standardSystem">{{ getStandardName(row.standardId) || row.standardSystem || '—' }}</span>
+                <!-- 显示模式：优先展示实际标准名，回退 standardSystem（兼容旧数据） -->
+                <span v-else class="text-secondary" :title="getStandardName(row.standardId) || row.standardSystem">{{ getStandardName(row.standardId) || row.standardSystem || '—' }}</span>
               </td>
               <td class="col-ext">
                 <div v-if="row.id < 0 || editedRows.includes(String(row.id))" class="ext-select-wrapper">
@@ -249,6 +246,52 @@ const projectList = ref<any[]>([]);
 const stats = reactive({ activeCount: 0, archivedCount: 0 });
 const currentRowIndex = ref(-1);
 
+// 标准库列表（新建项目时动态加载，替代硬编码 standardSystem 下拉框）
+const standards = ref<any[]>([]);
+const defaultStandardId = ref('');
+
+// 根据标准 ID 查询标准名（用于显示，及后端 standardSystem 字段同步）
+function getStandardName(standardId?: string): string {
+  if (!standardId) return '';
+  const std = standards.value.find(s => s.id === standardId);
+  return std?.name || '';
+}
+
+// 加载标准列表 + 设置默认标准 ID（优先 isDefault=true，回退第一个国标或第一项）
+async function loadStandards() {
+  if (!window.api) return;
+  try {
+    const res = await window.api.standard.list();
+    if (res.success && res.data) {
+      standards.value = res.data;
+      const defaultStd = res.data.find((s: any) => s.isDefault);
+      if (defaultStd) {
+        defaultStandardId.value = defaultStd.id;
+      } else {
+        // 回退：isDefault 缺失时取第一个国标，否则第一项
+        const firstNational = res.data.find((s: any) => s.standardType === 'national');
+        defaultStandardId.value = (firstNational || res.data[0])?.id || '';
+      }
+    }
+  } catch (err) {
+    console.error('加载标准列表失败:', err);
+  }
+}
+
+// 新建项目标准选择变更时，同步 standardSystem 字段（用于后端兼容与显示），
+// 并按所选标准的 grade 自动确定项目等级（标准已固定 S/A/G 等级组合，无需手动填写）
+function onStandardChange(row: any) {
+  row.standardSystem = getStandardName(row.standardId);
+  const std = standards.value.find((s: any) => s.id === row.standardId);
+  const grade = std?.level || 3;
+  row.level = grade;
+  row.levelCombo = `S${grade}A${grade}G${grade}`;
+  if (!editedRows.value.includes(String(row.id))) {
+    editedRows.value.push(String(row.id));
+  }
+  debounceAutoSave();
+}
+
 // 编辑状态追踪（用数组替代 Set，避免 ref 无法响应 Set 内部变化）
 const editedRows = ref<string[]>([]);
 const deletedIds = ref<string[]>([]);
@@ -259,7 +302,6 @@ const autoSave = useProjectAutoSave({
   projectList,
   editedRows,
   deletedIds,
-  parseLevelFromCombo,
   loadProjects,
 });
 const { saveStatus, lastSavedTime, debounceAutoSave, startPeriodicSave, formatSaveTime, cleanup } = autoSave;
@@ -313,6 +355,7 @@ function formatExtDisplay(extTypes: string[] | undefined): string {
 
 // 状态切换
 const statusDropdownTarget = ref<number | null>(null);
+const statusDropdownRef = ref<HTMLElement | null>(null);
 const statusDropdownRow = ref<any>(null);
 const statusDropdownRect = ref({ top: 0, left: 0 });
 
@@ -352,6 +395,14 @@ function changeStatus(row: any, newStatus: string) {
 
 function closeStatusDropdown() {
   statusDropdownTarget.value = null;
+}
+
+// 点击页面其它区域时关闭状态切换下拉，避免下拉常驻不消失
+function handleGlobalClick(e: MouseEvent) {
+  if (statusDropdownTarget.value === null) return;
+  const target = e.target as HTMLElement;
+  if (statusDropdownRef.value && statusDropdownRef.value.contains(target)) return;
+  closeStatusDropdown();
 }
 
 const pagination = reactive({
@@ -406,27 +457,20 @@ function toggleEdit(row: any) {
   debounceAutoSave();
 }
 
-function parseLevelFromCombo(levelCombo: string): number {
-  // 从等级组合字符串中提取等级数字，如 "S2A2G2" → 2, "S3A3G3" → 3
-  // 等保等级是统一的，取 S/A/G 中的数字（通常都相同）
-  const match = levelCombo?.match(/S(\d)A(\d)G(\d)/);
-  if (match) {
-    // 取三个数字中的最大值作为测评等级
-    return Math.max(parseInt(match[1]), parseInt(match[2]), parseInt(match[3]));
-  }
-  // 默认三级
-  return 3;
-}
-
 function addEmptyRow() {
+  // 新建项目默认使用 systemSettings.defaultStandard 对应的标准；等级组合由所选标准的 grade 自动确定
+  const defaultStd = standards.value.find((s: any) => s.id === defaultStandardId.value);
+  const defaultGrade = defaultStd?.level || 3;
   const newRow: any = {
     id: tempIdCounter--,
     projectNo: '',
     name: '',
     systemName: '',
     assessedUnit: '',
-    standardSystem: '新国标-正式版',
-    levelCombo: 'S3A3G3',
+    standardId: defaultStandardId.value || '',
+    standardSystem: getStandardName(defaultStandardId.value) || '新国标-正式版',
+    level: defaultGrade,
+    levelCombo: `S${defaultGrade}A${defaultGrade}G${defaultGrade}`,
     extensionTypes: [] as string[],
     progress: 0,
     status: 'draft',
@@ -554,12 +598,15 @@ async function handleExport() {
 }
 
 onMounted(() => {
+  loadStandards();
   loadProjects();
   startPeriodicSave();
+  document.addEventListener('click', handleGlobalClick);
 });
 
 onUnmounted(() => {
   cleanup();
+  document.removeEventListener('click', handleGlobalClick);
 });
 </script>
 
@@ -567,7 +614,7 @@ onUnmounted(() => {
 .page-container {
   padding: 24px;
   background: var(--color-bg-page, #F5F6FA);
-  min-height: calc(100vh - 52px);
+  min-height: calc(100vh - var(--titlebar-height, 40px) - 52px);
 }
 
 .project-card {
@@ -773,8 +820,7 @@ onUnmounted(() => {
         &.col-name { width: 240px; }
         &.col-system { width: 220px; }
         &.col-unit { width: 220px; }
-        &.col-standard { width: 120px; }
-        &.col-level { width: 100px; }
+        &.col-standard { width: 180px; }
         &.col-ext { width: 140px; }
         &.col-progress { width: 120px; }
         &.col-time { width: 140px; }
@@ -834,13 +880,6 @@ onUnmounted(() => {
 
       .col-standard {
         color: var(--color-text-secondary, #4B5563);
-      }
-
-      .col-level {
-        .level-text {
-          color: var(--color-primary, #1B5FD9);
-          font-weight: 500;
-        }
       }
 
       .col-ext {
@@ -1035,11 +1074,6 @@ onUnmounted(() => {
   .mono {
     font-family: var(--font-family-mono, monospace);
     font-size: 11px;
-  }
-
-  .level-input {
-    color: var(--color-primary, #1B5FD9);
-    font-weight: 500;
   }
 
   .text-secondary {

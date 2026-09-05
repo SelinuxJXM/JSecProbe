@@ -22,7 +22,7 @@ export function registerUserHandlers(): void {
         createdAt: u.createdAt,
         updatedAt: u.updatedAt,
       }));
-    }));
+    }, { moduleName: 'user', requireSession: true }));
 
   ipcMain.handle('user:create', wrap(async (_event, data: { username: string; password: string; realName: string; email?: string; phone?: string; role?: string }) => {
       if (!data.username || data.username.length < 3) throw new Error('用户名至少3个字符');
@@ -49,7 +49,7 @@ export function registerUserHandlers(): void {
         updatedAt: now,
       });
       return { id, username: data.username, realName: data.realName };
-    }));
+    }, { moduleName: 'user', requireSession: true }));
 
   ipcMain.handle('user:update', wrap(async (_event, id: string, data: { realName?: string; email?: string; phone?: string; role?: string; isActive?: boolean; password?: string }) => {
       const db = getDb();
@@ -64,10 +64,10 @@ export function registerUserHandlers(): void {
         updateData.passwordHash = bcrypt.hashSync(data.password, 12);
       }
       await db.update(schema.users).set(updateData).where(eq(schema.users.id, id));
-    }));
+    }, { moduleName: 'user', requireSession: true }));
 
   ipcMain.handle('user:delete', wrap(async (_event, id: string) => {
       const db = getDb();
       await db.delete(schema.users).where(eq(schema.users.id, id));
-    }));
+    }, { moduleName: 'user', requireSession: true }));
 }

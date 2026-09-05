@@ -30,12 +30,17 @@
   --color-bg-active: #E8F0FD;
   --color-bg-surface-hover: #F5F7FA;
 
-  --color-sidebar-bg: #1E2A3B;
-  --color-sidebar-bg-hover: #2A394F;
+  --color-sidebar-bg: #FFFFFF;
+  --color-sidebar-bg-hover: #F0F4F9;
   --color-sidebar-bg-active: #1B5FD9;
-  --color-sidebar-text: #A0AEC0;
+  --color-sidebar-text: #4A5568;
   --color-sidebar-text-active: #FFFFFF;
-  --color-sidebar-text-hover: #E2E8F0;
+  --color-sidebar-text-hover: #1A2332;
+  --color-sidebar-card-bg: #F5F7FA;
+  --color-sidebar-card-border: #EEF1F6;
+  --color-sidebar-btn-bg: #EEF1F6;
+  --color-sidebar-btn-bg-hover: #E2E6ED;
+  --color-sidebar-divider: #E2E6ED;
 
   --radius-xs: 2px;
   --radius-sm: 4px;
@@ -75,6 +80,7 @@
 
   --sidebar-width: 240px;
   --sidebar-width-collapsed: 64px;
+  --titlebar-height: 40px;
   --header-height: 56px;
   --control-height: 32px;
   --control-height-lg: 40px;
@@ -126,6 +132,11 @@ html[data-theme="dark"] {
   --color-sidebar-text: #94A3B8;
   --color-sidebar-text-active: #FFFFFF;
   --color-sidebar-text-hover: #E2E8F0;
+  --color-sidebar-card-bg: rgba(255, 255, 255, 0.04);
+  --color-sidebar-card-border: rgba(255, 255, 255, 0.06);
+  --color-sidebar-btn-bg: rgba(255, 255, 255, 0.06);
+  --color-sidebar-btn-bg-hover: rgba(255, 255, 255, 0.1);
+  --color-sidebar-divider: rgba(255, 255, 255, 0.08);
 
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
   --shadow-base: 0 1px 3px 0 rgba(0, 0, 0, 0.4), 0 1px 2px -1px rgba(0, 0, 0, 0.3);

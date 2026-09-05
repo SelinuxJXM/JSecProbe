@@ -3,7 +3,7 @@ import log from 'electron-log';
 import { logger } from '../utils/logger';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, and, desc, count, sql, inArray, lte, or } from 'drizzle-orm';
+import { eq, and, desc, count, sql, inArray, lte, or, isNull } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
@@ -14,6 +14,96 @@ import { styleCell, getRowMaxHeight } from '../utils/excel-helper';
 import { wrap } from '../utils/ipc-wrapper';
 import { validateUuid, validateNotEmpty, validateComplianceStatus, sanitizeInput } from '../utils/validation';
 import { resolvePath } from '../utils/path-resolver';
+
+// 国标 fallback：域 ID → sheet 名（用于测评 Excel 导出/导入）
+// 改造：行标项目通过 std.domainsMeta 中每个域的 name/sheetName 动态覆盖
+const FALLBACK_DOMAIN_SHEETS: Array<{ domain: string; sheetName: string }> = [
+  { domain: 'secure_physical', sheetName: '安全物理环境' },
+  { domain: 'secure_communication', sheetName: '安全通信网络' },
+  { domain: 'secure_boundary', sheetName: '安全区域边界' },
+  { domain: 'secure_computing', sheetName: '安全计算环境' },
+  { domain: 'secure_management', sheetName: '安全管理中心' },
+  { domain: 'security_management', sheetName: '安全管理制度' },
+  { domain: 'security_organization', sheetName: '安全管理机构' },
+  { domain: 'security_personnel', sheetName: '安全管理人员' },
+  { domain: 'security_construction', sheetName: '安全建设管理' },
+  { domain: 'security_maintenance', sheetName: '安全运维管理' },
+];
+
+// 按项目 standardId 加载域 sheet 映射，fallback 国标十域
+// 优先 domainsMeta（行标自定义域/域名），其次 fallback 国标十域
+async function loadProjectDomainSheets(projectId: string): Promise<Array<{ domain: string; sheetName: string }>> {
+  try {
+    const db = getDb();
+    const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
+    if (!project?.standardId) return [...FALLBACK_DOMAIN_SHEETS];
+    const [std] = await db.select().from(schema.standards).where(eq(schema.standards.id, project.standardId)).limit(1);
+    if (!std?.domainsMeta) return [...FALLBACK_DOMAIN_SHEETS];
+    const arr = JSON.parse(std.domainsMeta);
+    if (!Array.isArray(arr) || arr.length === 0) return [...FALLBACK_DOMAIN_SHEETS];
+    const result: Array<{ domain: string; sheetName: string }> = [];
+    for (const d of arr) {
+      if (!d?.id) continue;
+      result.push({ domain: d.id, sheetName: d.sheetName || d.name || d.id });
+    }
+    if (result.length === 0) return [...FALLBACK_DOMAIN_SHEETS];
+    return result;
+  } catch (err) {
+    log.warn('加载项目域 sheet 映射失败，使用国标 fallback:', err);
+    return [...FALLBACK_DOMAIN_SHEETS];
+  }
+}
+
+// 国标 fallback：资产 category → 等价域 ID 列表（一个 category 可能跨多个等价域）
+// 改造：行标项目通过 domainsMeta 中每个域的 assetCategories 字段动态覆盖
+const FALLBACK_CATEGORY_DOMAIN_MAP: Record<string, string[]> = {
+  server_storage: ['secure_computing'],
+  sys_doc: ['secure_computing'],
+  network_device: ['secure_computing'],
+  security_device: ['secure_computing'],
+  business_app: ['secure_computing'],
+  terminal: ['secure_computing'],
+  management_platform: ['secure_computing'],
+  machine_room: ['secure_physical'],
+  data_resource: ['secure_computing'],
+  network_boundary: ['secure_boundary'],
+};
+
+// 按项目 standardId 加载"资产 category → 等价域 ID 列表"映射
+// 优先 domainsMeta 中每个域的 assetCategories（行标自定义），fallback 国标硬编码
+// 返回的映射合并行标与 fallback，确保未在行标显式声明的 category 仍走国标默认
+async function loadCategoryDomainMap(standardId: string): Promise<Record<string, string[]>> {
+  // 默认返回 fallback 副本（避免修改常量）
+  const result: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(FALLBACK_CATEGORY_DOMAIN_MAP)) {
+    result[k] = [...v];
+  }
+  try {
+    const db = getDb();
+    const [std] = await db.select().from(schema.standards).where(eq(schema.standards.id, standardId)).limit(1);
+    if (!std?.domainsMeta) return result;
+    const arr = JSON.parse(std.domainsMeta);
+    if (!Array.isArray(arr)) return result;
+    // 行标覆盖：若 domainsMeta 中至少一个域声明了 assetCategories，则启用行标映射模式
+    // （清空 fallback 后重建，避免国标 secure_computing 残留污染行标等价域集合）
+    const hasIndustryAssetCats = arr.some((d: any) => Array.isArray(d?.assetCategories) && d.assetCategories.length > 0);
+    if (hasIndustryAssetCats) {
+      // 清空 fallback 后重建
+      for (const k of Object.keys(result)) delete result[k];
+    }
+    for (const d of arr) {
+      if (!d?.id) continue;
+      const cats: string[] = Array.isArray(d?.assetCategories) ? d.assetCategories : [];
+      for (const cat of cats) {
+        if (!result[cat]) result[cat] = [];
+        if (!result[cat].includes(d.id)) result[cat].push(d.id);
+      }
+    }
+  } catch (err) {
+    log.warn('加载 categoryDomainMap 失败，使用国标 fallback:', err);
+  }
+  return result;
+}
 
 export function registerAssessmentHandlers(): void {
   // 根据项目等级和扩展类型筛选测评项
@@ -88,6 +178,20 @@ export function registerAssessmentHandlers(): void {
     })
   );
 
+  // 获取项目级记录（assetId IS NULL），用于全局视图加载已保存的编辑
+  ipcMain.handle('assessment:getProjectRecords', wrap(async (_event, projectId: string) => {
+      const db = getDb();
+      const records = await db.query.assessmentRecords.findMany({
+        where: and(
+          eq(schema.assessmentRecords.projectId, projectId),
+          isNull(schema.assessmentRecords.assetId)
+        ),
+        orderBy: schema.assessmentRecords.createdAt,
+      });
+      return records;
+    })
+  );
+
   // 按资产ID和测评项ID获取单条记录
   ipcMain.handle('assessment:getRecordByAssetAndItem', wrap(async (_event, projectId: string, assetId: string, itemId: string) => {
       const db = getDb();
@@ -103,58 +207,6 @@ export function registerAssessmentHandlers(): void {
     })
   );
 
-  // 按层面获取全局测评记录（assetId为空的记录）
-  ipcMain.handle('assessment:getRecordsByDomain', wrap(async (_event, projectId: string, domain: string, projectLevel?: number, extensionType?: string | string[]) => {
-      logger.debug('[assessment:getRecordsByDomain] 调用参数', { module: 'assessment', projectId, domain, level: projectLevel, extension: extensionType });
-      const db = getDb();
-
-      // 从项目获取standardId
-      const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
-      const standardId = project?.standardId || 'gb-t-22239-2019-l3';
-
-      const conditions = [
-        eq(schema.assessmentItems.standardId, standardId),
-        eq(schema.assessmentItems.domain, domain)
-      ];
-      
-      if (projectLevel) {
-        conditions.push(lte(schema.assessmentItems.minLevel, projectLevel));
-      }
-      
-      // 按扩展类型筛选：只显示通用要求或匹配的扩展要求
-      const extTypes = extensionType
-        ? (Array.isArray(extensionType) ? extensionType : [extensionType])
-        : [];
-      const extConditions = [eq(schema.assessmentItems.extensionType, 'general')];
-      for (const ext of extTypes) {
-        extConditions.push(eq(schema.assessmentItems.extensionType, ext));
-      }
-      const extOr = or(...extConditions);
-      if (extOr) conditions.push(extOr);
-
-      // 先获取该层面的所有测评项ID
-      const items = await db.query.assessmentItems.findMany({
-        where: and(...conditions),
-        columns: { id: true },
-      });
-
-      logger.debug('[assessment:getRecordsByDomain] 找到测评项', { module: 'assessment', count: items.length });
-      const itemIds = items.map(i => i.id);
-      if (itemIds.length === 0) return [];
-
-      // 获取这些测评项的全局记录（assetId为空或null）
-      const records = await db.query.assessmentRecords.findMany({
-        where: and(
-          eq(schema.assessmentRecords.projectId, projectId),
-          inArray(schema.assessmentRecords.itemId, itemIds),
-          sql`(${schema.assessmentRecords.assetId} IS NULL OR ${schema.assessmentRecords.assetId} = '')`
-        ),
-      });
-
-      logger.debug('[assessment:getRecordsByDomain] 找到记录', { module: 'assessment', count: records.length });
-      return records;
-    })
-  );
 
   ipcMain.handle('assessment:saveRecord', wrap(async (_event, data: any) => {
       validateNotEmpty(data.projectId, '项目ID');
@@ -284,7 +336,7 @@ export function registerAssessmentHandlers(): void {
           extOr,
           ...(project.level ? [lte(schema.assessmentItems.minLevel, project.level)] : [])
         ),
-        columns: { domain: true },
+        columns: { id: true, domain: true },
       });
 
       // 按层面统计测评项数量
@@ -293,16 +345,10 @@ export function registerAssessmentHandlers(): void {
         domainItemCounts[item.domain] = (domainItemCounts[item.domain] || 0) + 1;
       }
 
-      // 全局层面列表（这些层面没有对应资产，但测评项需要计入总项数）
-      const GLOBAL_DOMAINS = [
-        'secure_communication',
-        'secure_management',
-        'security_management',
-        'security_organization',
-        'security_personnel',
-        'security_construction',
-        'security_maintenance',
-      ];
+      // 全局层面列表：动态推导（凡不属于资产映射层面的域均为全局层面），
+      // 兼容电力等行业标准的额外安全层面（如 domain-0「总体要求」）；与 report.service / 前端口径一致
+      const assetDomainIds = new Set(Object.values(CATEGORY_TO_DOMAIN));
+      const GLOBAL_DOMAINS = Object.keys(domainItemCounts).filter(d => !assetDomainIds.has(d));
 
       // 总项数 = 每个层面的（资产数 × 该层面测评项数）之和 + 全局层面的测评项数
       let total = 0;
@@ -334,13 +380,44 @@ export function registerAssessmentHandlers(): void {
         .from(schema.assessmentItems)
         .where(and(...applicableConditions));
 
-      // 项目当前有效的测评对象 assetId 集合（防止孤儿记录/已取消测评对象的资产记录影响统计）
-      const validAssetIds = new Set(assets.map(a => a.id));
-      const validAssetIdsArray = Array.from(validAssetIds);
+      // 格内清单：全局层面项（记录不绑资产）与各层面「资产 -> 项」配对清单
+      // - 全局层面（含电力等行业标准的额外安全层面，如 domain-0「总体要求」）：只有 assetId 为空的记录计入
+      // - 资产层面：只有「资产所属层面 === 测评项层面」的配对记录计入
+      const globalItemIds: string[] = [];
+      const domainItemIds: Record<string, string[]> = {};
+      for (const item of globalItems) {
+        if (GLOBAL_DOMAINS.includes(item.domain)) {
+          globalItemIds.push(item.id);
+        } else {
+          if (!domainItemIds[item.domain]) domainItemIds[item.domain] = [];
+          domainItemIds[item.domain].push(item.id);
+        }
+      }
+      const domainAssetIds: Record<string, string[]> = {};
+      for (const asset of assets) {
+        const domainId = CATEGORY_TO_DOMAIN[asset.category] || 'secure_computing';
+        if (!domainAssetIds[domainId]) domainAssetIds[domainId] = [];
+        domainAssetIds[domainId].push(asset.id);
+      }
+      const gridInConditions: any[] = [];
+      if (globalItemIds.length > 0) {
+        gridInConditions.push(and(
+          sql`(asset_id IS NULL OR asset_id = '')`,
+          inArray(schema.assessmentRecords.itemId, globalItemIds),
+        ));
+      }
+      for (const [domainId, assetIds] of Object.entries(domainAssetIds)) {
+        const itemIds = domainItemIds[domainId];
+        if (!itemIds || itemIds.length === 0) continue;
+        gridInConditions.push(and(
+          inArray(schema.assessmentRecords.assetId, assetIds),
+          inArray(schema.assessmentRecords.itemId, itemIds),
+        ));
+      }
+      // 只统计格内记录；无任何格内组合时计 0
+      const gridInFilter = gridInConditions.length > 0 ? or(...gridInConditions) : sql`1 = 0`;
 
-      // 已测评：有记录且结果为已判定（符合/部分符合/不符合/不适用）
-      // - itemId 必须在适用范围内
-      // - assetId 为空（全局层面记录）或指向当前项目的有效测评对象
+      // 已测评：有记录且结果为已判定（符合/部分符合/不符合/不适用），且在格内
       const testedRecords = await db
         .select({ value: count() })
         .from(schema.assessmentRecords)
@@ -348,13 +425,7 @@ export function registerAssessmentHandlers(): void {
           eq(schema.assessmentRecords.projectId, projectId),
           inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
           sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'not_applicable')`,
-          // assetId 为空（全局层面）或指向有效测评对象
-          validAssetIdsArray.length > 0
-            ? or(
-                sql`(asset_id IS NULL OR asset_id = '')`,
-                inArray(schema.assessmentRecords.assetId, validAssetIdsArray)
-              )
-            : sql`(asset_id IS NULL OR asset_id = '')`
+          gridInFilter
         ));
 
       // 符合：结果为符合（不包含部分符合）
@@ -365,12 +436,32 @@ export function registerAssessmentHandlers(): void {
           eq(schema.assessmentRecords.projectId, projectId),
           inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
           sql`result IN ('compliant', 'conform')`,
-          validAssetIdsArray.length > 0
-            ? or(
-                sql`(asset_id IS NULL OR asset_id = '')`,
-                inArray(schema.assessmentRecords.assetId, validAssetIdsArray)
-              )
-            : sql`(asset_id IS NULL OR asset_id = '')`
+          // 只统计格内记录
+          gridInFilter
+        ));
+
+      // 部分符合
+      const partialRecords = await db
+        .select({ value: count() })
+        .from(schema.assessmentRecords)
+        .where(and(
+          eq(schema.assessmentRecords.projectId, projectId),
+          inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
+          sql`result = 'partial'`,
+          // 只统计格内记录
+          gridInFilter
+        ));
+
+      // 不符合（覆盖新旧两种历史值写法）
+      const nonCompliantRecords = await db
+        .select({ value: count() })
+        .from(schema.assessmentRecords)
+        .where(and(
+          eq(schema.assessmentRecords.projectId, projectId),
+          inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
+          sql`result IN ('non_compliant', 'nonconform')`,
+          // 只统计格内记录
+          gridInFilter
         ));
 
       // 不适用
@@ -381,12 +472,8 @@ export function registerAssessmentHandlers(): void {
           eq(schema.assessmentRecords.projectId, projectId),
           inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
           sql`result = 'not_applicable'`,
-          validAssetIdsArray.length > 0
-            ? or(
-                sql`(asset_id IS NULL OR asset_id = '')`,
-                inArray(schema.assessmentRecords.assetId, validAssetIdsArray)
-              )
-            : sql`(asset_id IS NULL OR asset_id = '')`
+          // 只统计格内记录
+          gridInFilter
         ));
 
       const tested = testedRecords[0]?.value || 0;
@@ -404,6 +491,8 @@ export function registerAssessmentHandlers(): void {
         total,
         tested: safeTested,
         compliant,
+        partial: partialRecords[0]?.value || 0,
+        nonCompliant: nonCompliantRecords[0]?.value || 0,
         na,
         complianceRate,
         // untested = total - tested（tested 已包含 na，无需再减）
@@ -444,29 +533,40 @@ export function registerAssessmentHandlers(): void {
   ipcMain.handle('assessment:getItemsByCategory', wrap(async (_event, category: string, projectId?: string) => {
       const db = getDb();
 
-      // 从项目获取standardId
-      let standardId = 'gb-t-22239-2019-l3';
+      // 从项目获取 standardId（动态兜底：项目绑定 → 同 grade → isDefault → 首条标准，空标准库则 ''）
+      let standardId = '';
       if (projectId) {
         const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
-        standardId = project?.standardId || standardId;
+        if (project?.standardId && typeof project.standardId === 'string' && project.standardId.trim()) {
+          standardId = project.standardId.trim();
+        } else if (project) {
+          const level = Number(project.level) || 3;
+          const all = await db
+            .select({ id: schema.standards.id, grade: schema.standards.grade, isDefault: schema.standards.isDefault })
+            .from(schema.standards);
+          const sameGrade = all.find(s => Number(s.grade) === level);
+          const def = all.find(s => Number(s.isDefault) === 1);
+          standardId = (sameGrade || def || all[0])?.id || '';
+        }
       }
 
-      // 资产类别到安全域的映射
-      const categoryDomainMap: Record<string, string[]> = {
-        server_storage: ['secure_computing'],
-        sys_doc: ['secure_computing'],
-        network_device: ['secure_computing'],
-        security_device: ['secure_computing'],
-        business_app: ['secure_computing'],
-        terminal: ['secure_computing'],
-        management_platform: ['secure_computing'],
-        machine_room: ['secure_physical'],
-        data_resource: ['secure_computing'],
-        network_boundary: ['secure_boundary'],
-      };
+      // 改造：按 standardId 动态加载"资产 category → 等价域 ID 列表"映射，fallback 国标硬编码
+      // 行标项目通过 domainsMeta 中每个域的 assetCategories 字段声明等价域
+      const categoryDomainMap = await loadCategoryDomainMap(standardId);
 
-      const domains = categoryDomainMap[category] || ['secure_computing'];
+      let domains = categoryDomainMap[category] || [];
+      // 行标无等价映射：退回到标准实际存在的所有域（避免查 0 条），再兜底 secure_computing
+      if (domains.length === 0 && standardId) {
+        const actual = await db.selectDistinct({ domain: schema.assessmentItems.domain })
+          .from(schema.assessmentItems).where(eq(schema.assessmentItems.standardId, standardId));
+        if (actual.length > 0) domains = actual.map(r => r.domain).filter(Boolean);
+      }
+      if (domains.length === 0) domains = ['secure_computing'];
 
+      if (!standardId) {
+        // 无标准：返回空数组，不查询错标准
+        return [];
+      }
       const items = await db.query.assessmentItems.findMany({
         where: and(
           eq(schema.assessmentItems.standardId, standardId),
@@ -488,20 +588,27 @@ export function registerAssessmentHandlers(): void {
       const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
       if (!project) return { success: false, error: { message: '项目不存在' } };
 
-      const DOMAIN_SHEETS = [
-        { domain: 'secure_physical', sheetName: '安全物理环境' },
-        { domain: 'secure_communication', sheetName: '安全通信网络' },
-        { domain: 'secure_boundary', sheetName: '安全区域边界' },
-        { domain: 'secure_computing', sheetName: '安全计算环境' },
-        { domain: 'secure_management', sheetName: '安全管理中心' },
-        { domain: 'security_management', sheetName: '安全管理制度' },
-        { domain: 'security_organization', sheetName: '安全管理机构' },
-        { domain: 'security_personnel', sheetName: '安全管理人员' },
-        { domain: 'security_construction', sheetName: '安全建设管理' },
-        { domain: 'security_maintenance', sheetName: '安全运维管理' },
-      ];
+      // ====== 方案 8.13 / B2 修复：standardId 统一动态解析（彻底移除硬编码 gb-t-22239-2019-l3 fallback）======
+      // 项目绑定 → 同 grade → isDefault → 首条标准 → 空标准库则 ''；空串返回「未绑定标准库」空 Excel
+      let standardId = '';
+      if (typeof project.standardId === 'string' && project.standardId.trim()) {
+        standardId = project.standardId.trim();
+      } else {
+        const level = Number(project.level) || 3;
+        const all = await db
+          .select({ id: schema.standards.id, grade: schema.standards.grade, isDefault: schema.standards.isDefault })
+          .from(schema.standards);
+        const sameGrade = all.find(s => Number(s.grade) === level);
+        const def = all.find(s => Number(s.isDefault) === 1);
+        standardId = (sameGrade || def || all[0])?.id || '';
+      }
 
-      const EXTENSION_GROUPS = [
+      // 改造：按项目 standardId 动态加载域 sheet 映射，fallback 国标十域
+      // 传入 project.id（函数内部据此解析项目绑定的标准，再读取 domainsMeta 中的额外安全域）
+      const DOMAIN_SHEETS = await loadProjectDomainSheets(project.id);
+
+      // 扩展 groups：优先从标准 domainsMeta 中 domainType / extensionTypes 动态生成；缺省保留国标 7 组兼容
+      let EXTENSION_GROUPS = [
         { key: 'general', label: '安全通用要求' },
         { key: 'cloud', label: '云计算安全扩展要求' },
         { key: 'mobile', label: '移动互联安全扩展要求' },
@@ -510,28 +617,36 @@ export function registerAssessmentHandlers(): void {
         { key: 'bigdata', label: '大数据安全扩展要求（国标附录）' },
         { key: 'cii', label: '关键信息基础设施安全扩展要求' },
       ];
-
-      // 解析项目扩展类型
-      const EXT_TYPE_MAP: Record<string, string> = {
-        '安全通用要求': 'general',
-        '云计算安全扩展要求': 'cloud',
-        '移动互联安全扩展要求': 'mobile',
-        '物联网安全扩展要求': 'iot',
-        '工业控制系统安全扩展要求': 'industrial',
-        '大数据安全扩展要求': 'bigdata',
-        '大数据安全扩展要求（国标附录）': 'bigdata',
-        '关键信息基础设施安全扩展要求': 'cii',
-      };
-      const projectExtCodes1: string[] = [];
-      if (project.extensionType) {
-        for (const t of project.extensionType.split(',').filter(Boolean)) {
-          const code = EXT_TYPE_MAP[t.trim()] || t.trim();
-          if (!projectExtCodes1.includes(code)) projectExtCodes1.push(code);
+      try {
+        const [std] = await db
+          .select({ domainsMeta: schema.standards.domainsMeta })
+          .from(schema.standards)
+          .where(eq(schema.standards.id, standardId));
+        if (std?.domainsMeta) {
+          const arr: any[] = (() => {
+            try { return JSON.parse(std.domainsMeta); } catch { return []; }
+          })();
+        if (Array.isArray(arr) && arr.length > 0) {
+            const seen = new Set<string>(['general']);
+            const groups: Array<{ key: string; label: string }> = [{ key: 'general', label: '安全通用要求' }];
+            for (const d of arr) {
+              const key = typeof d?.extensionType === 'string' && d.extensionType
+                ? d.extensionType
+                : (typeof d?.domainType === 'string' && d.domainType !== 'national' ? d.domainType : '');
+              const label = typeof d?.extensionLabel === 'string' && d.extensionLabel
+                ? d.extensionLabel
+                : (typeof d?.name === 'string' ? d.name : key);
+              if (!key || seen.has(key)) continue;
+              groups.push({ key, label });
+              seen.add(key);
+            }
+            if (groups.length > 1) EXTENSION_GROUPS = groups;
+          }
         }
-      }
-      const activeExtGroups1 = EXTENSION_GROUPS.filter(g =>
-        g.key === 'general' || projectExtCodes1.includes(g.key)
-      );
+      } catch { /* domainsMeta 解析失败用国标 fallback groups */ }
+
+      // 使用标准全部扩展分组（含行业扩展），避免行标项目因 EXT_TYPE_MAP 无映射而漏掉 items
+      const activeExtGroups1 = EXTENSION_GROUPS;
 
       const resultMap: Record<string, string> = {
         compliant: '符合', conform: '符合', partial: '部分符合',
@@ -548,16 +663,18 @@ export function registerAssessmentHandlers(): void {
       const sheetsToExport = domain ? DOMAIN_SHEETS.filter(d => d.domain === domain) : DOMAIN_SHEETS;
 
       for (const { domain: domainKey, sheetName } of sheetsToExport) {
-        // 构建扩展类型过滤条件
+        // 构建扩展类型过滤条件：使用标准全部扩展分组（含行业扩展如 power/finance）
         const extOrConditions1 = [eq(schema.assessmentItems.extensionType, 'general')];
-        for (const ext of projectExtCodes1) {
-          extOrConditions1.push(eq(schema.assessmentItems.extensionType, ext));
+        for (const group of EXTENSION_GROUPS) {
+          if (group.key !== 'general') {
+            extOrConditions1.push(eq(schema.assessmentItems.extensionType, group.key));
+          }
         }
         const extOr = or(...extOrConditions1);
         const items = await db.query.assessmentItems.findMany({
           where: and(
             eq(schema.assessmentItems.domain, domainKey),
-            eq(schema.assessmentItems.standardId, project.standardId),
+            eq(schema.assessmentItems.standardId, standardId),
             ...(extOr ? [extOr] : [])
           ),
           orderBy: schema.assessmentItems.sortOrder,
@@ -791,33 +908,29 @@ export function registerAssessmentHandlers(): void {
         throw new Error('项目不存在');
       }
       
-      const DOMAIN_NAMES: Record<string, string> = {
-        'secure_physical': '安全物理环境',
-        'secure_communication': '安全通信网络',
-        'secure_boundary': '安全区域边界',
-        'secure_computing': '安全计算环境',
-        'secure_management': '安全管理中心',
-        'security_management': '安全管理制度',
-        'security_organization': '安全管理机构',
-        'security_personnel': '安全管理人员',
-        'security_construction': '安全建设管理',
-        'security_maintenance': '安全运维管理',
-      };
+      // ====== 与 exportExcel 保持一致：standardId 动态解析（移除 hardcoded 国标 fallback）======
+      let standardId = '';
+      if (typeof project.standardId === 'string' && project.standardId.trim()) {
+        standardId = project.standardId.trim();
+      } else {
+        const level = Number(project.level) || 3;
+        const all = await db
+          .select({ id: schema.standards.id, grade: schema.standards.grade, isDefault: schema.standards.isDefault })
+          .from(schema.standards);
+        const sameGrade = all.find(s => Number(s.grade) === level);
+        const def = all.find(s => Number(s.isDefault) === 1);
+        standardId = (sameGrade || def || all[0])?.id || '';
+      }
 
-      const DOMAIN_SHEETS = [
-        { domain: 'secure_physical', sheetName: '安全物理环境' },
-        { domain: 'secure_communication', sheetName: '安全通信网络' },
-        { domain: 'secure_boundary', sheetName: '安全区域边界' },
-        { domain: 'secure_computing', sheetName: '安全计算环境' },
-        { domain: 'secure_management', sheetName: '安全管理中心' },
-        { domain: 'security_management', sheetName: '安全管理制度' },
-        { domain: 'security_organization', sheetName: '安全管理机构' },
-        { domain: 'security_personnel', sheetName: '安全管理人员' },
-        { domain: 'security_construction', sheetName: '安全建设管理' },
-        { domain: 'security_maintenance', sheetName: '安全运维管理' },
-      ];
+      // 改造：按项目 standardId 动态加载域 sheet 映射 + 域 ID→名称映射，fallback 国标十域
+      // 传入 projectId（函数内部据此解析项目绑定的标准，再读取 domainsMeta 中的额外安全域）
+      const DOMAIN_SHEETS = await loadProjectDomainSheets(projectId);
+      const DOMAIN_NAMES: Record<string, string> = Object.fromEntries(
+        DOMAIN_SHEETS.map(d => [d.domain, d.sheetName])
+      );
 
-      const EXTENSION_GROUPS = [
+      // 扩展 groups：同 exportExcel 动态生成；fallback 国标 7 组
+      let EXTENSION_GROUPS = [
         { key: 'general', label: '安全通用要求' },
         { key: 'cloud', label: '云计算安全扩展要求' },
         { key: 'mobile', label: '移动互联安全扩展要求' },
@@ -826,29 +939,34 @@ export function registerAssessmentHandlers(): void {
         { key: 'bigdata', label: '大数据安全扩展要求（国标附录）' },
         { key: 'cii', label: '关键信息基础设施安全扩展要求' },
       ];
-      
-      // 解析项目扩展类型（中文逗号分隔字符串 -> 英文代码数组）
-      const EXT_TYPE_MAP: Record<string, string> = {
-        '安全通用要求': 'general',
-        '云计算安全扩展要求': 'cloud',
-        '移动互联安全扩展要求': 'mobile',
-        '物联网安全扩展要求': 'iot',
-        '工业控制系统安全扩展要求': 'industrial',
-        '大数据安全扩展要求': 'bigdata',
-        '大数据安全扩展要求（国标附录）': 'bigdata',
-        '关键信息基础设施安全扩展要求': 'cii',
-      };
-      const projectExtCodes: string[] = [];
-      if (project.extensionType) {
-        for (const t of project.extensionType.split(',').filter(Boolean)) {
-          const code = EXT_TYPE_MAP[t.trim()] || t.trim();
-          if (!projectExtCodes.includes(code)) projectExtCodes.push(code);
+      try {
+        const [std] = await db
+          .select({ domainsMeta: schema.standards.domainsMeta })
+          .from(schema.standards)
+          .where(eq(schema.standards.id, standardId));
+        if (std?.domainsMeta) {
+          const arr = JSON.parse(std.domainsMeta);
+          if (Array.isArray(arr) && arr.length > 0) {
+            const seen = new Set<string>(['general']);
+            const groups: Array<{ key: string; label: string }> = [{ key: 'general', label: '安全通用要求' }];
+            for (const d of arr) {
+              const key = typeof d?.extensionType === 'string' && d.extensionType
+                ? d.extensionType
+                : (typeof d?.domainType === 'string' && d.domainType !== 'national' ? d.domainType : '');
+              const label = typeof d?.extensionLabel === 'string' && d.extensionLabel
+                ? d.extensionLabel
+                : (typeof d?.name === 'string' ? d.name : key);
+              if (!key || seen.has(key)) continue;
+              groups.push({ key, label });
+              seen.add(key);
+            }
+            if (groups.length > 1) EXTENSION_GROUPS = groups;
+          }
         }
-      }
-      // 只导出项目选择的扩展分组
-      const activeExtGroups = EXTENSION_GROUPS.filter(g =>
-        g.key === 'general' || projectExtCodes.includes(g.key)
-      );
+      } catch { /* domainsMeta 解析失败用国标 fallback groups */ }
+      
+      // 使用标准全部扩展分组（含行业扩展），避免行标项目因 EXT_TYPE_MAP 无映射而漏掉 items
+      const activeExtGroups = EXTENSION_GROUPS;
       
       const resultMap: Record<string, string> = {
         'compliant': '符合',
@@ -896,18 +1014,25 @@ export function registerAssessmentHandlers(): void {
       
       // 生成单个sheet的辅助函数
       async function addSheet(sheetName: string, domainKey: string, recordMap: Map<string, any>) {
-        // 构建扩展类型过滤条件：通用要求 + 项目选择的扩展要求
+        // 构建扩展类型过滤条件：使用标准 EXTENSION_GROUPS 中全部类型（含行业扩展如 power/finance），
+        // 避免因 EXT_TYPE_MAP 无行业映射导致 projectExtCodes 匹配不到而查不到 items
         const extOrConditions = [eq(schema.assessmentItems.extensionType, 'general')];
-        for (const ext of projectExtCodes) {
-          extOrConditions.push(eq(schema.assessmentItems.extensionType, ext));
+        for (const group of EXTENSION_GROUPS) {
+          if (group.key !== 'general') {
+            extOrConditions.push(eq(schema.assessmentItems.extensionType, group.key));
+          }
         }
 
         const extOr = or(...extOrConditions);
-        const conditions = [
-          eq(schema.assessmentItems.standardId, project!.standardId || 'gb-t-22239-2019-l3'),
+        const conditions: any[] = [
+          eq(schema.assessmentItems.standardId, standardId),
           eq(schema.assessmentItems.domain, domainKey),
           ...(extOr ? [extOr] : []),
         ];
+        if (!standardId) {
+          // 无 standardId：直接返回空，不生成任何行（避免空集条件查所有标准的控制项）
+          conditions.push(sql`0 = 1`);
+        }
         // 按等级筛选：只显示项目等级范围内的测评项（与前端getItems保持一致）
         if (project!.level) {
           conditions.push(lte(schema.assessmentItems.minLevel, project!.level));
@@ -1251,18 +1376,11 @@ export function registerAssessmentHandlers(): void {
 
       const workbook = XLSX.readFile(filePath);
 
-      const DOMAIN_NAMES: Record<string, string> = {
-        '安全物理环境': 'secure_physical',
-        '安全通信网络': 'secure_communication',
-        '安全区域边界': 'secure_boundary',
-        '安全计算环境': 'secure_computing',
-        '安全管理中心': 'secure_management',
-        '安全管理制度': 'security_management',
-        '安全管理机构': 'security_organization',
-        '安全管理人员': 'security_personnel',
-        '安全建设管理': 'security_construction',
-        '安全运维管理': 'security_maintenance',
-      };
+      // 改造：按项目标准动态构建"sheet 名 → 域 ID"映射（含额外安全域），fallback 国标十域
+      const importDomainSheets = await loadProjectDomainSheets(projectId);
+      const DOMAIN_NAMES: Record<string, string> = Object.fromEntries(
+        importDomainSheets.map(d => [d.sheetName, d.domain])
+      );
 
       const resultMap: Record<string, string> = {
         '符合': 'compliant',
@@ -1366,7 +1484,7 @@ export function registerAssessmentHandlers(): void {
           const colF = row[5] ? String(row[5]).trim() : '';
 
           // 跳过扩展分组行（如"安全通用要求"、"云计算安全扩展要求"等）
-          const extGroupLabels = ['安全通用要求', '云计算安全扩展要求', '移动互联安全扩展要求', '物联网安全扩展要求', '工业控制系统安全扩展要求', '大数据安全扩展要求'];
+          const extGroupLabels = ['安全通用要求', '云计算安全扩展要求', '移动互联安全扩展要求', '物联网安全扩展要求', '工业控制系统安全扩展要求', '大数据安全扩展要求', '关键信息基础设施安全扩展要求'];
           if (colA && extGroupLabels.some(label => colA.includes(label))) {
             lastControlPoint = '';
             continue;
@@ -1400,18 +1518,8 @@ export function registerAssessmentHandlers(): void {
       }
 
       // 第二步：查询项目信息，建立扩展分组过滤
-      const DOMAIN_SHEETS = [
-        { domain: 'secure_physical', sheetName: '安全物理环境' },
-        { domain: 'secure_communication', sheetName: '安全通信网络' },
-        { domain: 'secure_boundary', sheetName: '安全区域边界' },
-        { domain: 'secure_computing', sheetName: '安全计算环境' },
-        { domain: 'secure_management', sheetName: '安全管理中心' },
-        { domain: 'security_management', sheetName: '安全管理制度' },
-        { domain: 'security_organization', sheetName: '安全管理机构' },
-        { domain: 'security_personnel', sheetName: '安全管理人员' },
-        { domain: 'security_construction', sheetName: '安全建设管理' },
-        { domain: 'security_maintenance', sheetName: '安全运维管理' },
-      ];
+      // 改造：遍历标准域名表（含额外安全域），与导出保持一致，避免额外域被跳过
+      const DOMAIN_SHEETS = importDomainSheets;
 
       const EXTENSION_GROUPS = [
         { key: 'general', label: '安全通用要求' },
@@ -1439,7 +1547,8 @@ export function registerAssessmentHandlers(): void {
           if (!projectExtCodes.includes(code)) projectExtCodes.push(code);
         }
       }
-      const activeExtGroups = EXTENSION_GROUPS.filter(g => g.key === 'general' || projectExtCodes.includes(g.key));
+      // 使用标准全部扩展分组（含行业扩展），避免行标项目因 EXT_TYPE_MAP 无映射而漏掉 items
+      const activeExtGroups = EXTENSION_GROUPS;
 
       // 第三步：确定需要遍历的层面
       // 如果有选中的资产，需要包含这些资产所在的层面

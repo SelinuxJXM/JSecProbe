@@ -523,11 +523,11 @@ async function handleExportCommand(command: string) {
   gap: 5px;
   padding: 6px 12px;
   font-size: 13px;
-  border: 1px solid var(--color-border, #d9d9d9);
-  background: #fff;
+  border: 1px solid var(--color-border-default, #E5E7EB);
+  background: var(--color-bg-card);
   border-radius: 6px;
   cursor: pointer;
-  color: var(--color-text-primary, #333);
+  color: var(--color-text-secondary, #4B5563);
   transition: all 0.15s;
 
   &:hover {

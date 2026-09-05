@@ -1,11 +1,16 @@
 <template>
-  <router-view />
+  <div class="app-root">
+    <AppTitleBar />
+    <router-view />
+  </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, onErrorCaptured } from 'vue';
 import { useUserStore } from '@/stores/user';
 import { ElNotification, ElMessage } from 'element-plus';
+import DOMPurify from 'dompurify';
+import AppTitleBar from '@/components/AppTitleBar/index.vue';
 
 const userStore = useUserStore();
 let removeStatusListener: (() => void) | null = null;
@@ -19,12 +24,12 @@ onErrorCaptured((err: Error, instance: any, info: string) => {
 });
 
 onMounted(() => {
-  userStore.clearSession();
+  userStore.restoreSession();
 
   if (window.api?.update) {
     removeStatusListener = window.api.update.onStatusChange((status: any) => {
       if (status.status === 'available') {
-        const releaseNotesHtml = status.releaseNotes ? `<br/><br/>更新内容：<br/>${status.releaseNotes}` : '';
+        const releaseNotesHtml = status.releaseNotes ? `<br/><br/>更新内容：<br/>${DOMPurify.sanitize(status.releaseNotes)}` : '';
         ElNotification({
           title: '发现新版本',
           message: `新版本 v${status.version} 已发布${releaseNotesHtml}`,
@@ -44,3 +49,12 @@ onUnmounted(() => {
   }
 });
 </script>
+
+<style scoped>
+.app-root {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+</style>

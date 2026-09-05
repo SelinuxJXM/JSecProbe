@@ -6,7 +6,7 @@
     </div>
     
     <el-row :gutter="16" class="stats-row">
-      <el-col :span="6">
+      <el-col :span="8">
         <div class="stat-card">
           <div class="stat-icon project">
             <el-icon><Folder /></el-icon>
@@ -17,7 +17,7 @@
           </div>
         </div>
       </el-col>
-      <el-col :span="6">
+      <el-col :span="8">
         <div class="stat-card">
           <div class="stat-icon inprogress">
             <el-icon><Loading /></el-icon>
@@ -28,7 +28,7 @@
           </div>
         </div>
       </el-col>
-      <el-col :span="6">
+      <el-col :span="8">
         <div class="stat-card">
           <div class="stat-icon completed">
             <el-icon><CircleCheck /></el-icon>
@@ -36,17 +36,6 @@
           <div class="stat-content">
             <div class="stat-value">{{ stats.completedCount }}</div>
             <div class="stat-label">已完成</div>
-          </div>
-        </div>
-      </el-col>
-      <el-col :span="6">
-        <div class="stat-card">
-          <div class="stat-icon asset">
-            <el-icon><Monitor /></el-icon>
-          </div>
-          <div class="stat-content">
-            <div class="stat-value">{{ stats.assetCount }}</div>
-            <div class="stat-label">资产总数</div>
           </div>
         </div>
       </el-col>
@@ -93,7 +82,44 @@
     </el-row>
 
     <el-row :gutter="16" class="content-row">
-      <el-col :span="12">
+      <el-col :span="16">
+        <div class="card p-md">
+          <div class="card-header">
+            <span class="card-title">项目创建趋势（近 6 个月）</span>
+          </div>
+          <v-chart v-if="hasTrendData" class="chart" :option="trendChartOption" autoresize />
+          <el-empty v-else description="暂无数据" :image-size="80" />
+        </div>
+      </el-col>
+      <el-col :span="8">
+        <div class="card p-md system-status-card" @click="$router.push('/settings')">
+          <div class="card-header">
+            <span class="card-title">系统状态</span>
+          </div>
+          <div class="status-list">
+            <div class="status-item">
+              <span class="status-label">当前版本</span>
+              <span class="status-value">{{ currentVersion || '-' }}</span>
+            </div>
+            <div class="status-item">
+              <span class="status-label">更新状态</span>
+              <span class="status-value">{{ updateStatusText }}</span>
+            </div>
+            <div class="status-item">
+              <span class="status-label">最近备份</span>
+              <span class="status-value">{{ lastBackupText }}</span>
+            </div>
+            <div class="status-item">
+              <span class="status-label">备份份数</span>
+              <span class="status-value">{{ backupCount }} 份</span>
+            </div>
+          </div>
+        </div>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="16" class="content-row">
+      <el-col :span="16">
         <div class="card p-md">
           <div class="card-header">
             <span class="card-title">项目等级分布</span>
@@ -101,7 +127,7 @@
           <v-chart class="chart" :option="levelChartOption" autoresize />
         </div>
       </el-col>
-      <el-col :span="12">
+      <el-col :span="8">
         <div class="card p-md">
           <div class="card-header">
             <span class="card-title">快捷操作</span>
@@ -131,12 +157,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, onUnmounted, computed } from 'vue';
 import {
   Folder,
   Loading,
   CircleCheck,
-  Monitor,
   FolderAdd,
   Reading,
   MagicStick,
@@ -144,11 +169,12 @@ import {
 } from '@element-plus/icons-vue';
 import VChart from 'vue-echarts';
 import { use } from 'echarts/core';
-import { PieChart, BarChart } from 'echarts/charts';
+import { PieChart, BarChart, LineChart } from 'echarts/charts';
 import { TitleComponent, TooltipComponent, LegendComponent, GridComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
+import type { UpdateStatus } from '../../../shared/types';
 
-use([PieChart, BarChart, TitleComponent, TooltipComponent, LegendComponent, GridComponent, CanvasRenderer]);
+use([PieChart, BarChart, LineChart, TitleComponent, TooltipComponent, LegendComponent, GridComponent, CanvasRenderer]);
 
 const loading = ref(false);
 const recentProjects = ref<any[]>([]);
@@ -165,6 +191,31 @@ const stats = ref({
   assetCount: 0,
 });
 
+const trendData = ref<{ months: string[]; created: number[]; cumulative: number[] }>({
+  months: [],
+  created: [],
+  cumulative: [],
+});
+const currentVersion = ref('');
+const updateStatus = ref<UpdateStatus | null>(null);
+const backups = ref<Array<{ name: string; path: string; size: number; timestamp: string }>>([]);
+
+const isDark = ref(document.documentElement.classList.contains('dark'));
+
+let themeObserver: MutationObserver | null = null;
+
+onMounted(() => {
+  themeObserver = new MutationObserver(() => {
+    isDark.value = document.documentElement.classList.contains('dark');
+  });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+});
+
+onUnmounted(() => {
+  themeObserver?.disconnect();
+  themeObserver = null;
+});
+
 const statusChartOption = computed(() => ({
   tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
   legend: { bottom: '0%', left: 'center' },
@@ -172,7 +223,7 @@ const statusChartOption = computed(() => ({
     type: 'pie',
     radius: ['40%', '70%'],
     avoidLabelOverlap: false,
-    itemStyle: { borderRadius: 8, borderColor: '#fff', borderWidth: 2 },
+    itemStyle: { borderRadius: 8, borderColor: isDark.value ? '#1E293B' : '#fff', borderWidth: 2 },
     label: { show: false },
     emphasis: {
       label: { show: true, fontSize: 14, fontWeight: 'bold' },
@@ -208,6 +259,67 @@ const levelChartOption = computed(() => {
   };
 });
 
+const trendChartOption = computed(() => ({
+  tooltip: { trigger: 'axis' },
+  legend: { bottom: '0%', left: 'center' },
+  grid: { left: 60, right: 60, bottom: 60, top: 20 },
+  xAxis: { type: 'category', data: trendData.value.months },
+  yAxis: [
+    { type: 'value', minInterval: 1, name: '新建' },
+    { type: 'value', minInterval: 1, name: '累计', splitLine: { show: false } },
+  ],
+  series: [
+    {
+      name: '每月新建',
+      type: 'bar',
+      data: trendData.value.created,
+      barWidth: '40%',
+      itemStyle: { color: '#1B5FD9', borderRadius: [4, 4, 0, 0] },
+    },
+    {
+      name: '累计项目',
+      type: 'line',
+      yAxisIndex: 1,
+      data: trendData.value.cumulative,
+      smooth: true,
+      itemStyle: { color: '#18A957' },
+    },
+  ],
+}));
+
+const hasTrendData = computed(() => trendData.value.cumulative.some((v) => v > 0));
+
+const updateStatusText = computed(() => {
+  const s = updateStatus.value;
+  if (!s) return '-';
+  switch (s.status) {
+    case 'checking':
+      return '检查中';
+    case 'downloading':
+      return `下载中 ${Math.round(s.downloadProgress || 0)}%`;
+    case 'available':
+      return s.version ? `有新版本 v${s.version}` : '有新版本';
+    case 'downloaded':
+      return '待安装';
+    case 'error':
+      return '更新异常';
+    case 'idle':
+    case 'notavailable':
+    default:
+      return '已是最新';
+  }
+});
+
+const lastBackupText = computed(() => {
+  const first = backups.value[0];
+  if (!first?.timestamp) return '暂无备份';
+  const d = new Date(first.timestamp);
+  if (Number.isNaN(d.getTime())) return '暂无备份';
+  return formatDate(first.timestamp);
+});
+
+const backupCount = computed(() => backups.value.length);
+
 function statusType(status: string) {
   const map: Record<string, string> = {
     draft: 'info',
@@ -241,9 +353,13 @@ async function loadData() {
       return;
     }
     
-    const [listRes, statsRes] = await Promise.all([
+    const [listRes, statsRes, trendRes, versionRes, statusRes, backupsRes] = await Promise.all([
       window.api.project.list({ page: 1, pageSize: 5 }),
       window.api.project.getStatistics(),
+      window.api.project.getTrend(),
+      window.api.update.getCurrentVersion(),
+      window.api.update.getStatus(),
+      window.api.system.listBackups(),
     ]);
 
     if (listRes.success && listRes.data) {
@@ -263,6 +379,22 @@ async function loadData() {
         otherLevelCount: statsRes.data.otherLevelCount,
         assetCount: statsRes.data.assetCount,
       };
+    }
+
+    if (trendRes.success && trendRes.data) {
+      trendData.value = trendRes.data;
+    }
+
+    if (versionRes.success && versionRes.data) {
+      currentVersion.value = versionRes.data;
+    }
+
+    if (statusRes.success && statusRes.data) {
+      updateStatus.value = statusRes.data;
+    }
+
+    if (backupsRes.success && backupsRes.data) {
+      backups.value = backupsRes.data;
     }
   } catch (err) {
     console.error('加载工作台数据失败:', err);
@@ -300,7 +432,6 @@ onMounted(loadData);
     &.project { background: var(--color-primary-light); color: var(--color-primary); }
     &.inprogress { background: var(--color-warning-light); color: var(--color-warning); }
     &.completed { background: var(--color-success-light); color: var(--color-success); }
-    &.asset { background: var(--color-primary-light); color: var(--color-primary); }
   }
   
   .stat-value {
@@ -318,16 +449,59 @@ onMounted(loadData);
 }
 
 .content-row {
+  margin-bottom: var(--spacing-lg);
+
+  .card {
+    height: 100%;
+  }
+
   .card-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-bottom: var(--spacing-md);
-    
+
     .card-title {
       font-size: var(--font-size-md);
       font-weight: var(--font-weight-semibold);
       color: var(--color-text-primary);
+    }
+  }
+}
+
+.content-row:last-child {
+  margin-bottom: 0;
+}
+
+.system-status-card {
+  cursor: pointer;
+  transition: all 0.2s;
+
+  &:hover {
+    border-color: var(--color-primary);
+    transform: translateY(-2px);
+  }
+}
+
+.status-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+
+  .status-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+
+    .status-label {
+      font-size: var(--font-size-sm);
+      color: var(--color-text-tertiary);
+    }
+
+    .status-value {
+      font-size: var(--font-size-sm);
+      color: var(--color-text-primary);
+      font-weight: var(--font-weight-semibold);
     }
   }
 }

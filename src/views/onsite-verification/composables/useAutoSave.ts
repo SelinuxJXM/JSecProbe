@@ -3,7 +3,6 @@ import type { RouteLocationNormalizedLoaded } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import type { AssessmentRecord } from '../../../../shared/types';
 
-// 表格行类型
 interface TableRow {
   id?: string;
   itemId: string;
@@ -15,7 +14,6 @@ interface TableRow {
   [key: string]: any;
 }
 
-// 自动保存配置选项
 interface AutoSaveOptions {
   currentAsset: Ref<any>;
   currentDomainId: Ref<string>;
@@ -23,13 +21,10 @@ interface AutoSaveOptions {
   route: RouteLocationNormalizedLoaded;
   updateAssetProgress: (assetId: string, rows: TableRow[]) => void;
   loadProgress: () => Promise<void>;
-  // 防抖延迟时间（毫秒），默认 1500
   debounceDelay?: number;
-  // 周期保存间隔（毫秒），默认 30000
   periodicInterval?: number;
 }
 
-// 保存状态类型
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'unsaved';
 
 export function useAutoSave(options: AutoSaveOptions) {
@@ -44,30 +39,32 @@ export function useAutoSave(options: AutoSaveOptions) {
     periodicInterval = 30000,
   } = options;
 
-  // 保存状态
   const saveStatus = ref<SaveStatus>('idle');
   const hasUnsavedChanges = ref(false);
   const lastSavedTime = ref<Date | null>(null);
 
-  // 定时器
   let autoSaveTimer: number | null = null;
   let periodicSaveTimer: number | null = null;
 
-  // 统一的保存逻辑：保存所有行
+  // 保存互斥锁：防止防抖/周期/手动保存并发执行导致同一记录被多个协程交错写入
+  let saveInProgress = false;
+
   async function saveAllRows(): Promise<boolean> {
+    if (saveInProgress) {
+      // 上一次保存仍在进行，跳过本次以避免并发写入同一条记录造成数据竞争
+      return false;
+    }
     if (!currentAsset.value && !currentDomainId.value) return false;
     if (tableRows.value.length === 0) return false;
 
+    saveInProgress = true;
     saveStatus.value = 'saving';
     let failedCount = 0;
     let hasError = false;
-    const totalCount = tableRows.value.length;
     try {
       const projectId = route.params.id as string;
       const assetId = currentAsset.value?.id || '';
 
-      // UI 内部值 → 数据库 AssessmentRecord.result 类型值
-      // 必须与 shared/types.ts 中 result 字段定义保持一致
       const complianceMap: Record<string, AssessmentRecord['result']> = {
         'conform': 'compliant',
         'partial': 'partial',
@@ -82,37 +79,40 @@ export function useAutoSave(options: AutoSaveOptions) {
         '测试': 'test',
       };
 
-      for (const row of tableRows.value) {
-        const saveData = {
-          id: row.id || undefined,
-          projectId,
-          assetId: assetId || undefined,
-          itemId: row.itemId,
-          result: complianceMap[row.compliance] || 'untested',
-          method: (methodMap[row.method] || 'check') as AssessmentRecord['method'],
-          commandOutput: row.evidence || '',
-          evidence: row.evidence || '',
-          findings: row.conclusion || '',
-          screenshotPaths: JSON.stringify(row.screenshots || []),
-        };
-        console.log(`[saveAllRows] 保存行: itemId=${row.itemId}, id=${row.id || 'new'}, compliance=${row.compliance}, evidence.length=${(row.evidence||'').length}, conclusion.length=${(row.conclusion||'').length}`);
+      // 并行保存所有行（各记录相互独立），大幅缩短大列表保存耗时
+      const results = await Promise.all(
+        tableRows.value.map(async (row) => {
+          const saveData = {
+            id: row.id || undefined,
+            projectId,
+            assetId: assetId || undefined,
+            itemId: row.itemId,
+            result: complianceMap[row.compliance] || 'untested',
+            method: (methodMap[row.method] || 'check') as AssessmentRecord['method'],
+            commandOutput: row.evidence || '',
+            evidence: row.evidence || '',
+            findings: row.conclusion || '',
+            screenshotPaths: JSON.stringify(row.screenshots || []),
+          };
 
-        const res = await window.api.assessment.saveRecord(saveData);
-        if (res.success && res.data) {
-          row.id = res.data.id;
-          console.log(`[saveAllRows] 保存成功: itemId=${row.itemId}, newId=${res.data.id}`);
-        } else {
-          failedCount++;
-          console.error(`[saveAllRows] 保存失败: itemId=${row.itemId}, res=`, JSON.stringify(res));
-        }
-      }
+          try {
+            const res = await window.api.assessment.saveRecord(saveData);
+            if (res.success && res.data) {
+              row.id = res.data.id;
+              return true;
+            }
+            return false;
+          } catch {
+            return false;
+          }
+        })
+      );
+      failedCount = results.filter(ok => !ok).length;
 
       if (assetId) {
         updateAssetProgress(assetId, tableRows.value);
       }
 
-      // 重新加载顶部项目级统计（总项数、已完成、符合、符合率）
-      // 异步触发，不阻塞保存流程
       loadProgress();
 
       return failedCount === 0;
@@ -121,11 +121,9 @@ export function useAutoSave(options: AutoSaveOptions) {
       hasError = true;
       return false;
     } finally {
+      saveInProgress = false;
       if (hasError || failedCount > 0) {
         saveStatus.value = 'error';
-        if (failedCount > 0) {
-          console.error(`[saveAllRows] ${failedCount}/${totalCount} 行保存失败`);
-        }
       } else {
         saveStatus.value = 'saved';
         hasUnsavedChanges.value = false;
@@ -134,7 +132,6 @@ export function useAutoSave(options: AutoSaveOptions) {
     }
   }
 
-  // 防抖自动保存（输入时触发）
   function debounceAutoSave(_row: TableRow) {
     hasUnsavedChanges.value = true;
     saveStatus.value = 'unsaved';
@@ -146,7 +143,6 @@ export function useAutoSave(options: AutoSaveOptions) {
     }, debounceDelay);
   }
 
-  // 启动周期性备份保存
   function startPeriodicSave() {
     stopPeriodicSave();
     periodicSaveTimer = window.setInterval(() => {
@@ -156,7 +152,6 @@ export function useAutoSave(options: AutoSaveOptions) {
     }, periodicInterval);
   }
 
-  // 停止周期性保存
   function stopPeriodicSave() {
     if (periodicSaveTimer) {
       clearInterval(periodicSaveTimer);
@@ -164,8 +159,11 @@ export function useAutoSave(options: AutoSaveOptions) {
     }
   }
 
-  // 手动保存
   async function triggerManualSave(): Promise<boolean> {
+    if (saveInProgress) {
+      ElMessage.warning('正在保存中，请稍候');
+      return false;
+    }
     const success = await saveAllRows();
     if (success) {
       ElMessage.success('保存成功');
@@ -175,7 +173,6 @@ export function useAutoSave(options: AutoSaveOptions) {
     return success;
   }
 
-  // 格式化保存时间
   function formatSaveTime(date: Date): string {
     const now = new Date();
     const diff = Math.floor((now.getTime() - date.getTime()) / 1000);
@@ -185,7 +182,6 @@ export function useAutoSave(options: AutoSaveOptions) {
     return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
   }
 
-  // 清理所有定时器（组件卸载时调用）
   function cleanup() {
     if (autoSaveTimer) {
       clearTimeout(autoSaveTimer);
@@ -195,11 +191,9 @@ export function useAutoSave(options: AutoSaveOptions) {
   }
 
   return {
-    // 状态
     saveStatus,
     hasUnsavedChanges,
     lastSavedTime,
-    // 方法
     saveAllRows,
     debounceAutoSave,
     startPeriodicSave,

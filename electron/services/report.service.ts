@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, desc, sql, and, or, lte, inArray, count } from 'drizzle-orm';
+import { eq, sql, and, or, lte, inArray, count } from 'drizzle-orm';
 import {
   Document,
   Paragraph,
@@ -192,6 +192,75 @@ interface ReportData {
   summary: any;
   assets: any[];
   assessmentStats: any;
+  // 动态域 ID→名称映射（按项目 standardId 加载，fallback 国标十域）
+  domainNameMap: Record<string, string>;
+  // 标准元信息（用于报告标题/概述/徽标，动态避免硬编码国标代号）
+  standard: {
+    id: string;
+    name: string;
+    code: string;                 // 标准代号：如 GB/T 22239-2019 / DL/T 36572-2018 / JR/T 0071-2020
+    standardType: 'national' | 'industry' | string;
+    industry?: string;            // 行业：电力/金融/医疗（standardType=industry 时填）
+    // 行业配色（用于报告行业徽标）
+    badgeColor: string;           // 十六进制
+    badgeLabel: string;           // 徽标短名：GB / 电力 / 金融
+    domainCount: number;          // 实际域数（行标含行业特色域，可能>10）
+    domainNamesIncluded: string;  // 列举域名，用于概述文本（逗号分隔）
+  };
+}
+
+// 行业色板（报告行业徽标配色），未知行业 fallback 通用灰色
+const INDUSTRY_COLORS: Record<string, { color: string; label: string }> = {
+  电力: { color: 'FF8A3D', label: '电力' },   // 电力橙
+  金融: { color: '1F5FB8', label: '金融' },   // 金融深蓝
+  医疗: { color: '12B6A3', label: '医疗' },   // 医疗青
+  电信: { color: '3A72F0', label: '电信' },   // 电信蓝
+  政务: { color: 'B83030', label: '政务' },   // 政务红
+};
+
+function getStandardBadge(std: any | undefined): { color: string; label: string } {
+  if (std?.standardType === 'industry' && std?.industry) {
+    const ind = String(std.industry);
+    if (INDUSTRY_COLORS[ind]) return INDUSTRY_COLORS[ind];
+    return { color: '6B7280', label: ind.slice(0, 4) || '行标' };
+  }
+  if (std?.code || std?.name) {
+    // 非行标（国标/地标/企标）但有元信息 → 国标绿
+    return { color: '16A34A', label: 'GB' };
+  }
+  // 标准被删除 / 老项目无 standardId → 灰色占位，避免误导显示 GB
+  return { color: '9CA3AF', label: '未绑定' };
+}
+
+// === 工具：为报告统一解析「有效」standardId（移除硬编码 gb-t-22239-2019-l3，兼容老项目/被删标准）===
+// 返回 { standardId: string; stdRow: any | null }
+//  1) project.standardId 合法且 DB 存在 → 直接用；
+//  2) project.standardId 存在但 DB 找不到（标准被删）→ 走兜底；
+//  3) 兜底优先级：同 grade（取项目 level）→ isDefault → 列表首条；
+//  4) 仍没 → 返回 standardId='', stdRow=null；后续流程按「未绑定标准」安全降级（counts=0）。
+async function resolveStandardForReport(db: ReturnType<typeof getDb>, project: any): Promise<{ standardId: string; stdRow: any | null }> {
+  const level = Number(project?.level) || 3;
+  const raw = typeof project?.standardId === 'string' ? project.standardId.trim() : '';
+  const all = await db
+    .select({
+      id: schema.standards.id,
+      grade: schema.standards.grade,
+      isDefault: schema.standards.isDefault,
+      name: schema.standards.name,
+      code: schema.standards.code,
+      standardType: schema.standards.standardType,
+      industry: schema.standards.industry,
+      domainsMeta: schema.standards.domainsMeta,
+    })
+    .from(schema.standards);
+  let chosen = raw ? all.find(s => s.id === raw) : undefined;
+  if (!chosen && all.length > 0) {
+    const sameGrade = all.find(s => Number(s.grade) === level);
+    const def = all.find(s => Number(s.isDefault) === 1);
+    chosen = sameGrade || def || all[0];
+  }
+  if (chosen) return { standardId: chosen.id, stdRow: chosen };
+  return { standardId: '', stdRow: null };
 }
 
 export class ReportService {
@@ -213,13 +282,77 @@ export class ReportService {
     }
   }
 
+  // 按项目 standardId 加载域 ID→名称映射
+  // 优先 standards.domains_meta，fallback 模块级 DOMAIN_ID_TO_NAME（国标十域）
+  private async loadDomainNameMap(standardId: string): Promise<Record<string, string>> {
+    const result: Record<string, string> = { ...DOMAIN_ID_TO_NAME };
+    try {
+      const db = getDb();
+      const [std] = await db.select().from(schema.standards).where(eq(schema.standards.id, standardId)).limit(1);
+      if (std?.domainsMeta) {
+        try {
+          const arr = JSON.parse(std.domainsMeta);
+          if (Array.isArray(arr)) {
+            for (const d of arr) {
+              if (d?.id) result[d.id] = d.name || d.id;
+            }
+          }
+        } catch { /* domainsMeta 解析失败用 fallback */ }
+      }
+    } catch { /* 查询失败用 fallback */ }
+    return result;
+  }
+
   private async gatherReportData(projectId: string): Promise<ReportData> {
     const db = getDb();
 
     const projectResult = await db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).limit(1);
     const project = projectResult[0];
 
-    const issues = await db.select().from(schema.issues).where(eq(schema.issues.projectId, projectId)).orderBy(desc(schema.issues.riskLevel));
+    // 统一按项目 & 当前 DB 解析 standard（老项目无 standardId / 标准被删 → 动态兜底；都没则空串安全降级）
+    const { standardId, stdRow } = project ? await resolveStandardForReport(db, project) : { standardId: '', stdRow: null };
+    const domainNameMap = await this.loadDomainNameMap(standardId);
+
+    // 改造：标准完整元信息优先使用 resolveStandardForReport 的 stdRow（减少一次重复查询）
+    const badge = getStandardBadge(stdRow || undefined);
+    // 域名列举（用于概述文本：行标可能>10域，顺序按 domainsMeta，不在映射中的则用 fallback 顺序）
+    const domainNameList = (() => {
+      const list: string[] = [];
+      // 优先 domainsMeta 中自然顺序
+      if (stdRow?.domainsMeta) {
+        try {
+          const arr = JSON.parse(stdRow.domainsMeta);
+          if (Array.isArray(arr)) {
+            for (const d of arr) if (d?.name) list.push(d.name);
+          }
+        } catch { /* ignore */ }
+      }
+      // fallback：从 domainNameMap 收集（若 domainsMeta 缺失）
+      if (list.length === 0) {
+        for (const name of Object.values(domainNameMap)) if (name) list.push(name);
+      }
+      return Array.from(new Set(list)); // 去重保序
+    })();
+
+    const standard = {
+      id: standardId,
+      // 无标准时不要硬编码 GB/T 22239 误导
+      name: stdRow?.name || (standardId ? '（标准元信息缺失）' : '（未绑定标准库）'),
+      code: stdRow?.code || (standardId ? 'N/A' : 'UNBOUND'),
+      standardType: (stdRow?.standardType as any) || (standardId ? 'national' : 'unknown'),
+      industry: stdRow?.industry || undefined,
+      badgeColor: badge.color,
+      badgeLabel: badge.label,
+      domainCount: Number(stdRow?.domainCount) || domainNameList.length || 0,
+      domainNamesIncluded: domainNameList.join('、'),
+    };
+
+    const issues = await db.select().from(schema.issues).where(eq(schema.issues.projectId, projectId));
+
+    // 风险等级为字符串枚举（high/medium/low），数据库按字典序排序会得到 medium > low > high，
+    // 导致高风险问题被排到列表底部。改为按风险权重在内存中降序排序，确保高风险置顶。
+    const RISK_WEIGHT: Record<string, number> = { high: 3, medium: 2, low: 1 };
+    issues.sort((a: any, b: any) => (RISK_WEIGHT[b.riskLevel] ?? 0) - (RISK_WEIGHT[a.riskLevel] ?? 0));
 
     const assets = await db.select().from(schema.assets).where(eq(schema.assets.projectId, projectId));
 
@@ -234,12 +367,12 @@ export class ReportService {
 
     const domainCounts: Record<string, number> = {};
     for (const issue of issues) {
-      const name = DOMAIN_ID_TO_NAME[issue.securityDomain] || issue.securityDomain;
+      const name = domainNameMap[issue.securityDomain] || issue.securityDomain;
       domainCounts[name] = (domainCounts[name] || 0) + 1;
     }
     const domainStats = Object.entries(domainCounts).map(([name, count]) => ({ name, count }));
 
-    const assessmentStats = await this.getAssessmentStats(projectId, project?.standardId || 'gb-t-22239-2019-l3');
+    const assessmentStats = await this.getAssessmentStats(projectId, standardId);
 
     return {
       project,
@@ -258,6 +391,8 @@ export class ReportService {
       },
       assets,
       assessmentStats,
+      domainNameMap,
+      standard,
     };
   }
 
@@ -277,6 +412,11 @@ export class ReportService {
 
     const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
     if (!project) {
+      return { total: 0, compliant: 0, nonCompliant: 0, partial: 0, notApplicable: 0, untested: 0, tested: 0 };
+    }
+
+    // 老项目/被删标准/空库 → standardId 空串；此时测评项集合为空，total=0 且按「未绑定标准」返回 0 计数，不报错
+    if (!standardId) {
       return { total: 0, compliant: 0, nonCompliant: 0, partial: 0, notApplicable: 0, untested: 0, tested: 0 };
     }
 
@@ -301,48 +441,108 @@ export class ReportService {
       ),
     });
 
-    const CATEGORY_TO_DOMAIN: Record<string, string> = {
-      'server_storage': 'secure_computing',
-      'sys_doc': 'secure_computing',
-      'network_device': 'secure_computing',
-      'security_device': 'secure_computing',
-      'business_app': 'secure_computing',
-      'terminal': 'secure_computing',
-      'management_platform': 'secure_computing',
-      'machine_room': 'secure_physical',
-      'data_resource': 'secure_computing',
-      'network_boundary': 'secure_boundary',
-      'data_category': 'secure_computing',
-    };
-    const domainAssetCounts: Record<string, number> = {};
-    for (const asset of assets) {
-      const domainId = CATEGORY_TO_DOMAIN[asset.category] || 'secure_computing';
-      domainAssetCounts[domainId] = (domainAssetCounts[domainId] || 0) + 1;
+    // === A4 修复：资产类别 → 域 ID 的动态映射（兼容行标缺少 secure_computing / secure_boundary 的情况）===
+    // 1. 从项目 standard 加载 domainsMeta 构建：别名关键词 → 真实 domainId
+    // 2. 若标准元信息缺失，fallback 原 CATEGORY_TO_DOMAIN（国标十域）
+    // 3. 若标准完全没有匹配域，则退化：映射到标准第一个存在的资产域（避免 assetCount × 0）
+    const [stdRow] = await db.select({ domainsMeta: schema.standards.domainsMeta })
+      .from(schema.standards).where(eq(schema.standards.id, standardId)).limit(1);
+    type DomainMetaLite = { id: string; name?: string; keywords?: Set<string> };
+    const metas: DomainMetaLite[] = [];
+    if (stdRow?.domainsMeta) {
+      try {
+        const arr = JSON.parse(stdRow.domainsMeta);
+        if (Array.isArray(arr)) {
+          for (const d of arr) {
+            if (!d?.id) continue;
+            const name = String(d.name || d.id || '');
+            const kw = new Set<string>();
+            // 加入关键词（大小写/空格不敏感）
+            [d.id, name].forEach((s: string) => {
+              const t = String(s || '').toLowerCase().replace(/[\s_-]/g, '');
+              if (t) kw.add(t);
+            });
+            // 中文名关键词别名（用于中英文匹配）
+            if (/物理/.test(name)) kw.add('secure_physical'.replace(/_/g, ''));
+            if (/通信|网络/.test(name)) kw.add('secure_communication'.replace(/_/g, ''));
+            if (/边界/.test(name)) kw.add('secure_boundary'.replace(/_/g, ''));
+            if (/计算/.test(name)) kw.add('secure_computing'.replace(/_/g, ''));
+            if (/管理中心/.test(name)) kw.add('secure_management'.replace(/_/g, ''));
+            if (/制度|策略/.test(name)) kw.add('security_management'.replace(/_/g, ''));
+            if (/机构|组织/.test(name)) kw.add('security_organization'.replace(/_/g, ''));
+            if (/人员/.test(name)) kw.add('security_personnel'.replace(/_/g, ''));
+            if (/建设/.test(name)) kw.add('security_construction'.replace(/_/g, ''));
+            if (/运维|维护/.test(name)) kw.add('security_maintenance'.replace(/_/g, ''));
+            metas.push({ id: String(d.id), name, keywords: kw });
+          }
+        }
+      } catch { /* domainsMeta 解析失败，metas 保持空，走 fallback */ }
     }
 
-    const globalItems = await db.query.assessmentItems.findMany({
+    const findDomainByKeyword = (defaultId: string, keywordList: string[]) => {
+      // 先用 defaultId（国标域）在标准元信息中做精确匹配：domain.id 或关键词命中
+      const defKey = defaultId.toLowerCase().replace(/_/g, '');
+      const kwKeys = keywordList.map(k => k.toLowerCase().replace(/[\s_-]/g, '')).filter(Boolean);
+      const hit = metas.find(m => {
+        if (m.keywords?.has(defKey)) return true;
+        return kwKeys.some(k => m.keywords?.has(k));
+      });
+      return hit ? hit.id : defaultId;
+    };
+
+    const BASE_CATEGORY_MAP: Record<string, { defaultId: string; keywords: string[] }> = {
+      'server_storage':        { defaultId: 'secure_computing', keywords: ['计算', '主机', '服务器', '存储'] },
+      'sys_doc':               { defaultId: 'secure_computing', keywords: ['计算', '文档', '管理'] },
+      'network_device':        { defaultId: 'secure_computing', keywords: ['计算', '网络', '交换机', '路由器'] },
+      'security_device':       { defaultId: 'secure_computing', keywords: ['边界', '安全', '防护'] },
+      'business_app':          { defaultId: 'secure_computing', keywords: ['计算', '应用', '业务'] },
+      'terminal':              { defaultId: 'secure_computing', keywords: ['计算', '终端', '客户端'] },
+      'management_platform':   { defaultId: 'secure_computing', keywords: ['管理中心', '平台', '集中'] },
+      'machine_room':          { defaultId: 'secure_physical', keywords: ['物理', '机房', '环境'] },
+      'data_resource':         { defaultId: 'secure_computing', keywords: ['计算', '数据', '数据资源'] },
+      'network_boundary':      { defaultId: 'secure_boundary',  keywords: ['边界', '分区', '访问控制'] },
+      'data_category':         { defaultId: 'secure_computing', keywords: ['计算', '数据', '分类'] },
+    };
+
+    // 构建当前标准真实可用的 domain→count 映射
+    const globalItemsPre = await db.query.assessmentItems.findMany({
       where: and(
         eq(schema.assessmentItems.standardId, standardId),
         extOr,
-        ...(project.level ? [lte(schema.assessmentItems.minLevel, project.level)] : [])
+        ...(project.level ? [lte(schema.assessmentItems.minLevel, project.level)] : []),
       ),
       columns: { domain: true },
     });
+    const presentDomains = new Set(globalItemsPre.map(i => i.domain));
+    // 兜底域：取当前标准出现最多的域（作为当类别无法映射到标准内域时的「总兜底」，避免 0 乘积）
+    const fallbackDomainCounts: Record<string, number> = {};
+    for (const d of presentDomains) fallbackDomainCounts[d] = (fallbackDomainCounts[d] || 0) + 1;
+    const fallbackDomain = Object.entries(fallbackDomainCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'secure_computing';
+
+    const CATEGORY_TO_DOMAIN: Record<string, string> = {};
+    for (const [cat, rule] of Object.entries(BASE_CATEGORY_MAP)) {
+      const candidate = findDomainByKeyword(rule.defaultId, rule.keywords);
+      // 若映射结果在当前标准真实存在，则用它；否则 fallbackDomain
+      CATEGORY_TO_DOMAIN[cat] = presentDomains.has(candidate) ? candidate : fallbackDomain;
+    }
+
+    const domainAssetCounts: Record<string, number> = {};
+    for (const asset of assets) {
+      const domainId = CATEGORY_TO_DOMAIN[asset.category] || fallbackDomain;
+      domainAssetCounts[domainId] = (domainAssetCounts[domainId] || 0) + 1;
+    }
+
+    const globalItems = globalItemsPre;
 
     const domainItemCounts: Record<string, number> = {};
     for (const item of globalItems) {
       domainItemCounts[item.domain] = (domainItemCounts[item.domain] || 0) + 1;
     }
 
-    const GLOBAL_DOMAINS = [
-      'secure_communication',
-      'secure_management',
-      'security_management',
-      'security_organization',
-      'security_personnel',
-      'security_construction',
-      'security_maintenance',
-    ];
+    // 全局层面：从 domainItemCounts 中取不在 CATEGORY_TO_DOMAIN 值集合中的域
+    // （动态推导，替代硬编码 GLOBAL_DOMAINS 列表，兼容行标）
+    const assetDomainIds = new Set(Object.values(CATEGORY_TO_DOMAIN));
+    const GLOBAL_DOMAINS = Object.keys(domainItemCounts).filter(d => !assetDomainIds.has(d));
 
     let total = 0;
     for (const [domainId, assetCount] of Object.entries(domainAssetCounts)) {
@@ -418,7 +618,11 @@ export class ReportService {
     const partial = partialRecords[0]?.value || 0;
     const nonCompliant = nonCompliantRecords[0]?.value || 0;
     const notApplicable = naRecords[0]?.value || 0;
-    const untested = Math.max(0, total - tested - notApplicable);
+    // 与 issue.ipc / assessment.ipc 口径对齐：tested 已含 'not_applicable'，
+    // 未测评 = 总数 - (已评测 - 不适用) = 总数 - 实际测评结果数，
+    // 若写成 total - tested - notApplicable 会对"不适用"重复扣减，导致未测评数偏小甚至被 clamp 到 0
+    const effectiveTested = Math.max(0, tested - notApplicable);
+    const untested = Math.max(0, total - effectiveTested);
 
     return {
       total,
@@ -617,7 +821,7 @@ export class ReportService {
 
   private buildWordContent(data: ReportData, template: string, timestamp: string): (Paragraph | Table)[] {
     const content: (Paragraph | Table)[] = [];
-    const { project, issues, summary, assets } = data;
+    const { project, issues, summary, assets, standard } = data;
 
     const isSimple = template === 'simple';
     const isDetailed = template === 'detailed';
@@ -639,6 +843,44 @@ export class ReportService {
             },
             size: 56,
             bold: true,
+          }),
+        ],
+      })
+    );
+
+    // 改造：行业徽标（标准徽章）—— 行标项目显示行业色徽章 + 标准代号，国标显示 GB 徽章
+    // 通过 docx TextRun 字号+加粗+色号组合，在封面上形成醒目的"标准标签"
+    content.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: isSimple ? 200 : 0 },
+        indent: { left: 0, right: 0 },
+        children: [
+          // 徽章边框字符（圆角矩形）作为视觉分隔
+          new TextRun({
+            text: `【${standard.badgeLabel}】`,
+            font: {
+              ascii: FONT_EN,
+              hAnsi: FONT_EN,
+              eastAsia: FONT_CN,
+              cs: FONT_EN,
+              hint: 'default',
+            },
+            size: 26,
+            bold: true,
+            color: standard.badgeColor,
+          }),
+          new TextRun({
+            text: `  ${standard.code}  ·  ${standard.name}`,
+            font: {
+              ascii: FONT_EN,
+              hAnsi: FONT_EN,
+              eastAsia: FONT_CN,
+              cs: FONT_EN,
+              hint: 'default',
+            },
+            size: 22,
+            color: '374151',
           }),
         ],
       })
@@ -763,9 +1005,16 @@ export class ReportService {
       })
     );
 
+    // 改造：概述文案按项目标准动态渲染：标准代号+名称，以及全部安全域列表（避免硬编码 GB/T 22239/十域）
+    //   行标项目自动带行业标注（如"电力行业标准 DL/T 36572-2018"）
+    const standardPrefix = standard.standardType === 'industry' && standard.industry
+      ? `${standard.industry}行业标准`
+      : '国家标准';
+    const overviewText = `本报告依据${standard.code}《${standard.name}》（${standardPrefix}）对${project?.systemName || '该系统'}进行等级保护测评。测评工作涵盖了${standard.domainNamesIncluded}等${standard.domainCount}个安全域。`;
+
     content.push(
       createBodyParagraph({
-        text: `本报告依据GB/T 22239-2019《信息安全技术 网络安全等级保护基本要求》对${project?.systemName || '该系统'}进行等级保护测评。测评工作涵盖了安全物理环境、安全通信网络、安全区域边界、安全计算环境、安全管理中心、安全管理制度、安全管理机构、安全管理人员、安全建设管理、安全运维管理等十个安全域。`,
+        text: overviewText,
         spacingAfter: 200,
       })
     );
@@ -794,7 +1043,7 @@ export class ReportService {
             this.createHeaderRow('序号', '风险等级', '安全域', '问题标题'),
             ...issues.map((issue: any, idx: number) => {
               const riskLabel = issue.riskLevel === 'high' ? '高' : issue.riskLevel === 'medium' ? '中' : '低';
-              const domain = DOMAIN_ID_TO_NAME[issue.securityDomain] || issue.securityDomain;
+              const domain = data.domainNameMap[issue.securityDomain] || issue.securityDomain;
               return new TableRow({
                 children: [
                   new TableCell({ children: [createTableParagraph(`${idx + 1}`, { alignment: AlignmentType.CENTER })] }),
@@ -847,7 +1096,7 @@ export class ReportService {
       rows: [
         this.createTableRow('项目名称', project?.name || '-', '项目编号', project?.projectNo || '-'),
         this.createTableRow('被测单位', project?.assessedUnit || '-', '系统名称', project?.systemName || '-'),
-        this.createTableRow('安全等级', `第 ${project?.level || '-'} 级`, '测评标准', project?.standardSystem || 'GB/T 22239-2019'),
+        this.createTableRow('安全等级', `第 ${project?.level || '-'} 级`, '测评标准', `${standard.code}（${standard.standardType === 'industry' ? `${standard.industry || '行业'}行标` : '国标'}）`),
         this.createTableRow('测评人员', project?.assessor || '-', '资产数量', `${assets.length} 台/套`),
       ],
     });
@@ -963,7 +1212,7 @@ export class ReportService {
           this.createHeaderRow('序号', '风险等级', '安全域', '控制点', '问题标题'),
           ...issues.map((issue: any, idx: number) => {
             const riskLabel = issue.riskLevel === 'high' ? '高' : issue.riskLevel === 'medium' ? '中' : '低';
-            const domain = DOMAIN_ID_TO_NAME[issue.securityDomain] || issue.securityDomain;
+            const domain = data.domainNameMap[issue.securityDomain] || issue.securityDomain;
             return new TableRow({
               children: [
                 new TableCell({ children: [createTableParagraph(`${idx + 1}`, { alignment: AlignmentType.CENTER })] }),
@@ -1343,7 +1592,7 @@ export class ReportService {
 
     const domainIssueMap: Record<string, number> = {};
     for (const issue of issues) {
-      const name = DOMAIN_ID_TO_NAME[issue.securityDomain] || issue.securityDomain;
+      const name = data.domainNameMap[issue.securityDomain] || issue.securityDomain;
       domainIssueMap[name] = (domainIssueMap[name] || 0) + 1;
     }
     const topDomains = Object.entries(domainIssueMap).sort((a, b) => b[1] - a[1]).slice(0, 3);
@@ -1683,22 +1932,27 @@ export class ReportService {
       },
     });
 
-    await hiddenWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
+    try {
+      await hiddenWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
 
-    await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
-    const pdfBuffer = await hiddenWindow.webContents.printToPDF({
-      marginsType: 1,
-      pageSize: 'A4',
-      printBackground: true,
-      printSelectionOnly: false,
-      landscape: false,
-    });
+      const pdfBuffer = await hiddenWindow.webContents.printToPDF({
+        marginsType: 1,
+        pageSize: 'A4',
+        printBackground: true,
+        printSelectionOnly: false,
+        landscape: false,
+      });
 
-    hiddenWindow.destroy();
-
-    fs.writeFileSync(savePath, pdfBuffer);
-    return savePath;
+      fs.writeFileSync(savePath, pdfBuffer);
+      return savePath;
+    } finally {
+      // 任何异常路径都必须销毁隐藏窗口，否则渲染进程会泄漏（用户反复触发报告生成会累积泄漏）
+      if (hiddenWindow && !hiddenWindow.isDestroyed()) {
+        hiddenWindow.destroy();
+      }
+    }
   }
 
   private generateHtmlContent(
@@ -1709,7 +1963,7 @@ export class ReportService {
     isSimple: boolean,
     isDetailed: boolean
   ): string {
-    const { project, issues, summary, assets } = data;
+    const { project, issues, summary, assets, standard } = data;
 
     const riskLabel = (level: string) => {
       const map: Record<string, string> = { high: '高', medium: '中', low: '低' };
@@ -1730,6 +1984,9 @@ export class ReportService {
     .cover { text-align: center; padding-top: 100px; }
     .cover h1 { font-size: 28px; margin-bottom: 50px; font-family: "STFangsong", "Times New Roman", serif; text-indent: 0; }
     .cover p { font-size: 16px; margin: 15px 0; font-family: "STFangsong", "Times New Roman", serif; text-indent: 0; }
+    /* 改造：行业标准徽章样式（彩色圆角标签） */
+    .standard-badge { display: inline-block; padding: 4px 14px; margin: 8px 0 18px 0; border-radius: 999px; color: #fff; font-weight: bold; font-size: 14px; font-family: "Microsoft YaHei", sans-serif; letter-spacing: 1px; }
+    .standard-code { font-size: 15px; color: #4B5563; margin-left: 12px; font-family: "Microsoft YaHei", sans-serif; }
     .toc { margin: 20px 0; }
     .toc-item { padding: 5px 0; border-bottom: 1px dotted #ccc; font-family: "STFangsong", "Times New Roman", serif; text-indent: 0; }
     table { width: 100%; border-collapse: collapse; margin: 15px 0; font-family: "STFangsong", "Times New Roman", serif; line-height: 1.5; }
@@ -1755,6 +2012,11 @@ export class ReportService {
       html += `
     <div class="cover">
       <h1>等级保护现场测评结果分析报告</h1>
+      <!-- 改造：行业标准徽章（彩色圆角标签 + 标准代号） -->
+      <div>
+        <span class="standard-badge" style="background:#${standard.badgeColor}">${standard.badgeLabel}</span>
+        <span class="standard-code">${standard.code} · ${standard.name}</span>
+      </div>
       <p>项目名称：${project?.name || '-'}</p>
       <p>被测单位：${project?.assessedUnit || '-'}</p>
       <p>系统名称：${project?.systemName || '-'}</p>
@@ -1781,11 +2043,17 @@ export class ReportService {
     <div class="page-break"></div>`;
     }
 
+    // 改造：概述文案按项目标准动态渲染（同 Word 版逻辑）
+    const _htmlStandardPrefix = standard.standardType === 'industry' && standard.industry
+      ? `${standard.industry}行业标准`
+      : '国家标准';
+    const _htmlOverviewClause = `本报告依据${standard.code}《${standard.name}》（${_htmlStandardPrefix}）对${project?.systemName || '该系统'}进行等级保护测评。测评工作涵盖了${standard.domainNamesIncluded}等${standard.domainCount}个安全域。`;
+
     // 概述
     if (options.includeSections.includes('overview')) {
       html += `
     <h2>一、报告概述</h2>
-    <p>本报告依据GB/T 22239-2019《信息安全技术 网络安全等级保护基本要求》对${project?.systemName || '该系统'}进行等级保护测评。测评工作涵盖了安全物理环境、安全通信网络、安全区域边界、安全计算环境、安全管理中心、安全管理制度、安全管理机构、安全管理人员、安全建设管理、安全运维管理等十个安全域。</p>
+    <p>${_htmlOverviewClause}</p>
     <p>本次测评共发现安全问题${summary.total}个，其中高风险问题${summary.highRisk}个、中风险问题${summary.mediumRisk}个、低风险问题${summary.lowRisk}个。</p>
     <div class="page-break"></div>`;
     }
@@ -1798,7 +2066,7 @@ export class ReportService {
       <tr><th width="25%">项目</th><th width="25%">内容</th><th width="25%">项目</th><th width="25%">内容</th></tr>
       <tr><td>项目名称</td><td>${project?.name || '-'}</td><td>项目编号</td><td>${project?.projectNo || '-'}</td></tr>
       <tr><td>被测单位</td><td>${project?.assessedUnit || '-'}</td><td>系统名称</td><td>${project?.systemName || '-'}</td></tr>
-      <tr><td>安全等级</td><td>第 ${project?.level || '-'} 级</td><td>测评标准</td><td>${project?.standardSystem || 'GB/T 22239-2019'}</td></tr>
+      <tr><td>安全等级</td><td>第 ${project?.level || '-'} 级</td><td>测评标准</td><td>${standard.code}（${standard.standardType === 'industry' ? `${standard.industry || '行业'}行标` : '国标'}）</td></tr>
       <tr><td>资产数量</td><td>${assets.length} 台/套</td><td>-</td><td>-</td></tr>
     </table>
     <div class="page-break"></div>`;
@@ -1863,7 +2131,7 @@ export class ReportService {
         for (let i = 0; i < issues.length; i++) {
           const issue = issues[i];
           const riskClass = issue.riskLevel === 'high' ? 'risk-high' : issue.riskLevel === 'medium' ? 'risk-medium' : 'risk-low';
-          const domain = DOMAIN_ID_TO_NAME[issue.securityDomain] || issue.securityDomain;
+          const domain = data.domainNameMap[issue.securityDomain] || issue.securityDomain;
           html += `<tr><td class="text-center">${i + 1}</td><td class="${riskClass}">${riskLabel(issue.riskLevel)}</td><td>${domain}</td><td>${issue.controlPoint || '-'}</td><td>${issue.issueTitle || '-'}</td></tr>`;
         }
         html += `</table>`;
@@ -1875,7 +2143,7 @@ export class ReportService {
             for (const issue of highRiskIssues) {
               html += `
       <div class="issue-item">
-        <div class="issue-title">【${issue.controlPoint || '-'}-${issue.controlName || '-'})】${issue.issueTitle || '-'}</div>
+        <div class="issue-title">【${issue.controlPoint || '-'}-${issue.controlName || '-'}】${issue.issueTitle || '-'}</div>
         <div class="issue-desc">问题描述：${issue.issueDescription || '-'}</div>
         <div class="issue-desc">整改建议：${issue.rectificationSuggestion || '-'}</div>
       </div>`;
@@ -1889,7 +2157,7 @@ export class ReportService {
               for (const issue of mediumRiskIssues) {
                 html += `
       <div class="issue-item">
-        <div class="issue-title">【${issue.controlPoint || '-'}-${issue.controlName || '-'})】${issue.issueTitle || '-'}</div>
+        <div class="issue-title">【${issue.controlPoint || '-'}-${issue.controlName || '-'}】${issue.issueTitle || '-'}</div>
         <div class="issue-desc">问题描述：${issue.issueDescription || '-'}</div>
         <div class="issue-desc">整改建议：${issue.rectificationSuggestion || '-'}</div>
       </div>`;
@@ -1902,7 +2170,7 @@ export class ReportService {
               for (const issue of lowRiskIssues) {
                 html += `
       <div class="issue-item">
-        <div class="issue-title">【${issue.controlPoint || '-'}-${issue.controlName || '-'})】${issue.issueTitle || '-'}</div>
+        <div class="issue-title">【${issue.controlPoint || '-'}-${issue.controlName || '-'}】${issue.issueTitle || '-'}</div>
         <div class="issue-desc">问题描述：${issue.issueDescription || '-'}</div>
         <div class="issue-desc">整改建议：${issue.rectificationSuggestion || '-'}</div>
       </div>`;

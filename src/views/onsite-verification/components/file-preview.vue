@@ -136,25 +136,15 @@ function handleOpenExternal() {
   }
 }
 
-// 监听 file 变化，自动加载文件
+// 合并为单一 watch，避免父组件同时设置 file 与 visible 时两个 watcher 各自触发导致重复加载预览
 watch(
-  () => props.file,
-  (newFile) => {
-    if (newFile && props.visible) {
+  [() => props.file, () => props.visible],
+  ([newFile, newVisible]) => {
+    if (newFile && newVisible) {
       openFilePreview(newFile);
     }
   },
   { immediate: true }
-);
-
-// 监听 visible 变化，当对话框打开时加载文件
-watch(
-  () => props.visible,
-  (newVisible) => {
-    if (newVisible && props.file) {
-      openFilePreview(props.file);
-    }
-  }
 );
 
 // 暴露方法给父组件

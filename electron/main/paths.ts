@@ -47,8 +47,25 @@ export function getAppDataPathSync(): string {
   return appDataPath;
 }
 
+const SUB_DATA_DIRS = ['data', 'attachments', 'standards', 'templates', 'logs', 'backup', 'screenshots', 'evidence', 'knowledge', 'temp', 'backups'];
+
+// 幂等确保数据子目录存在（含 data 等关键目录），无论 appDataPath 来自缓存、迁移回退还是配置
+function ensureDataDirs(basePath: string): void {
+  for (const dir of SUB_DATA_DIRS) {
+    const fullPath = join(basePath, dir);
+    if (!existsSync(fullPath)) {
+      mkdirSync(fullPath, { recursive: true });
+      log.info(`创建目录: ${fullPath}`);
+    }
+  }
+}
+
 export async function getAppDataPath(): Promise<string> {
-  if (appDataPath) return appDataPath;
+  if (appDataPath) {
+    // 缓存命中时也确保子目录存在（幂等），避免提前缓存导致 data 等目录缺失、数据库打不开
+    ensureDataDirs(appDataPath);
+    return appDataPath;
+  }
   
   const config = readConfig();
   let basePath = config.dataPath || getDefaultBasePath();
@@ -71,15 +88,7 @@ export async function getAppDataPath(): Promise<string> {
   }
   
   appDataPath = basePath;
-  
-  const subDirs = ['data', 'attachments', 'standards', 'templates', 'logs', 'backup', 'screenshots', 'evidence', 'knowledge', 'temp', 'backups'];
-  for (const dir of subDirs) {
-    const fullPath = join(basePath, dir);
-    if (!existsSync(fullPath)) {
-      mkdirSync(fullPath, { recursive: true });
-      log.info(`创建目录: ${fullPath}`);
-    }
-  }
+  ensureDataDirs(appDataPath);
   
   return appDataPath;
 }

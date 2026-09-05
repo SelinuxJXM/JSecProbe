@@ -78,3 +78,21 @@ export async function resolvePath(inputPath: string): Promise<string> {
 export async function resolvePaths(inputPaths: string[]): Promise<string[]> {
   return Promise.all(inputPaths.map(p => resolvePath(p)));
 }
+
+/**
+ * 安全解析路径（受管数据目录）：将输入解析为绝对路径，并强制其落在 appData 数据目录内。
+ * 用于读取/写入应用受管数据（知识库文档、截图、证据等），防止 `..` 路径穿越与越界绝对路径访问。
+ * - 相对路径：基于 appData 解析。
+ * - 绝对路径：若不在 appData 内则拒绝（避免读取/删除任意文件）。
+ */
+export async function validateDataPath(inputPath: string): Promise<string> {
+  if (!inputPath) {
+    throw new Error('路径不能为空');
+  }
+  const base = path.resolve(await getAppDataPath());
+  const resolved = path.resolve(base, inputPath); // 绝对 inputPath 会覆盖 base，再由下方校验拦截
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+    throw new Error('路径访问被拒绝：超出允许的数据目录范围');
+  }
+  return resolved;
+}

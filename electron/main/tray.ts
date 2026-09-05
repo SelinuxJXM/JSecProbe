@@ -58,7 +58,7 @@ function buildContextMenu(window: BrowserWindow): Menu {
     {
       label: '退出',
       click: () => {
-        app.exit(0);
+        app.quit();
       },
     },
   ]);

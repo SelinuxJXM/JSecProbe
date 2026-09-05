@@ -67,7 +67,7 @@ const formRef = ref<FormInstance>();
 const loading = ref(false);
 
 const form = reactive({
-  oldPassword: 'admin123',
+  oldPassword: '',
   newPassword: '',
   confirmPassword: '',
 });
@@ -129,7 +129,7 @@ async function handleSubmit() {
 
 <style lang="scss" scoped>
 .change-password-page {
-  height: 100vh;
+  height: calc(100vh - var(--titlebar-height, 40px));
   width: 100vw;
   background: linear-gradient(135deg, #1B5FD9 0%, #0F3D8F 100%);
   display: flex;

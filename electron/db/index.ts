@@ -1,13 +1,13 @@
 import Database from 'better-sqlite3';
 import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import * as fs from 'fs';
 import log from 'electron-log';
 import bcrypt from 'bcryptjs';
 import * as schema from './schema';
 import { getDbPath, getAppDataPath } from '../main/paths';
-import { eq, count, ne } from 'drizzle-orm';
+import { eq, count } from 'drizzle-orm';
 
 let db: BetterSQLite3Database<typeof schema> | null = null;
 let sqliteInstance: Database.Database | null = null;
@@ -18,6 +18,7 @@ export function getDb(): BetterSQLite3Database<typeof schema> {
   }
   return db;
 }
+
 
 export function closeDb(): void {
   if (sqliteInstance) {
@@ -48,6 +49,12 @@ export async function initDatabase(): Promise<void> {
     await getAppDataPath();
     const dbPath = getDbPath();
     log.info('初始化数据库:', dbPath);
+
+    // 兜底：确保数据库文件所在目录存在，避免 better-sqlite3 因父目录缺失而报 "directory does not exist"
+    const dbDir = dirname(dbPath);
+    if (!fs.existsSync(dbDir)) {
+      fs.mkdirSync(dbDir, { recursive: true });
+    }
 
     const sqlite = new Database(dbPath);
     sqliteInstance = sqlite;
@@ -199,6 +206,14 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
       domain_count INTEGER NOT NULL DEFAULT 0,
       item_count INTEGER NOT NULL DEFAULT 0,
       is_default INTEGER NOT NULL DEFAULT 0,
+      standard_type TEXT NOT NULL DEFAULT 'national',
+      industry TEXT,
+      level_combo TEXT,
+      source TEXT NOT NULL DEFAULT 'builtin',
+      preset_template TEXT,
+      domains_meta TEXT,
+      preset_method TEXT DEFAULT 'check',
+      column_map TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     );
 
@@ -362,6 +377,53 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
     );
   `);
 
+  // 兼容旧库：standards 表已存在但缺新字段时补齐（CREATE TABLE IF NOT EXISTS 不更新已存在表）
+  try {
+    const stdCols = sqlite.prepare("PRAGMA table_info(standards)").all() as Array<{ name: string }>;
+    const stdColNames = stdCols.map(c => c.name);
+    const newStdCols: Array<{ name: string; ddl: string }> = [
+      { name: 'standard_type', ddl: "ALTER TABLE standards ADD COLUMN standard_type TEXT NOT NULL DEFAULT 'national'" },
+      { name: 'industry', ddl: 'ALTER TABLE standards ADD COLUMN industry TEXT' },
+      { name: 'source', ddl: "ALTER TABLE standards ADD COLUMN source TEXT NOT NULL DEFAULT 'builtin'" },
+      { name: 'preset_template', ddl: 'ALTER TABLE standards ADD COLUMN preset_template TEXT' },
+      { name: 'domains_meta', ddl: 'ALTER TABLE standards ADD COLUMN domains_meta TEXT' },
+      { name: 'preset_method', ddl: "ALTER TABLE standards ADD COLUMN preset_method TEXT DEFAULT 'check'" },
+      { name: 'column_map', ddl: 'ALTER TABLE standards ADD COLUMN column_map TEXT' },
+    ];
+    for (const col of newStdCols) {
+      if (!stdColNames.includes(col.name)) {
+        sqlite.exec(col.ddl);
+        log.info(`已添加 ${col.name} 列到 standards 表`);
+      }
+    }
+  } catch (err) {
+    log.warn('standards 表字段迁移失败:', err);
+  }
+
+  // 兼容旧库：operation_logs 追加 detail_json（Phase 4 标准导入/导出审计）
+  try {
+    const logCols = sqlite.prepare("PRAGMA table_info(operation_logs)").all() as Array<{ name: string }>;
+    const logColNames = logCols.map(c => c.name);
+    if (!logColNames.includes('detail_json')) {
+      sqlite.exec('ALTER TABLE operation_logs ADD COLUMN detail_json TEXT');
+      log.info('已添加 detail_json 列到 operation_logs 表');
+    }
+  } catch (err) {
+    log.warn('operation_logs 表字段迁移失败:', err);
+  }
+
+  // 兼容旧库：knowledge_commands 追加 industry（Phase 4 命令库行业维度）
+  try {
+    const cols = sqlite.prepare("PRAGMA table_info(knowledge_commands)").all() as Array<{ name: string }>;
+    const names = cols.map(c => c.name);
+    if (!names.includes('industry')) {
+      sqlite.exec("ALTER TABLE knowledge_commands ADD COLUMN industry TEXT NOT NULL DEFAULT ''");
+      log.info('已添加 industry 列到 knowledge_commands 表');
+    }
+  } catch (err) {
+    log.warn('knowledge_commands 表 industry 迁移失败:', err);
+  }
+
   log.info('自动建表完成');
 }
 
@@ -385,6 +447,31 @@ function migrateAiConfigsTable(sqlite: Database.Database): void {
     if (!columnNames.includes('ocr_preprocess')) {
       sqlite.exec("ALTER TABLE ai_configs ADD COLUMN ocr_preprocess INTEGER NOT NULL DEFAULT 0");
       log.info('已添加 ocr_preprocess 列到 ai_configs 表');
+    }
+    if (!columnNames.includes('active_model_id')) {
+      sqlite.exec("ALTER TABLE ai_configs ADD COLUMN active_model_id TEXT");
+      log.info('已添加 active_model_id 列到 ai_configs 表');
+    }
+
+    // 创建云端模型表
+    const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ai_cloud_models'").all() as Array<{ name: string }>;
+    if (tables.length === 0) {
+      sqlite.exec(`
+        CREATE TABLE ai_cloud_models (
+          id TEXT PRIMARY KEY,
+          config_id TEXT NOT NULL DEFAULT 'default',
+          name TEXT NOT NULL,
+          api_base TEXT NOT NULL,
+          api_key TEXT,
+          model TEXT NOT NULL,
+          api_format TEXT NOT NULL DEFAULT 'openai',
+          enabled INTEGER NOT NULL DEFAULT 1,
+          priority INTEGER NOT NULL DEFAULT 99,
+          updated_at TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+      `);
+      log.info('已创建 ai_cloud_models 表');
     }
   } catch (err) {
     log.warn('迁移 ai_configs 表失败:', err);
@@ -433,7 +520,7 @@ async function initDefaultData(): Promise<void> {
       language: 'zh-CN',
       autoBackupEnabled: 1,
       autoBackupDays: 7,
-      defaultStandard: 'gb-t-22239-2019-l3',
+      defaultStandard: '',
       updatedAt: now,
     });
     log.info('初始化系统设置');
@@ -488,268 +575,151 @@ async function initStandardLibrary(): Promise<void> {
     log.warn('数据库备份失败，继续执行:', e);
   }
 
-  const STANDARD_DATA_VERSION = 7;
-
-  const standardCount = await dbInstance
-    .select()
-    .from(schema.standards)
-    .where(eq(schema.standards.code, 'GB/T 22239-2019-L3'))
-    .limit(1);
-
-  let itemCountResult = await dbInstance
-    .select({ count: count() })
-    .from(schema.assessmentItems);
-  let itemCount = itemCountResult[0]?.count || 0;
-  log.info(`测评项表当前数据量: ${itemCount} 条`);
-
-  let hasSectionField = false;
-  let hasMinLevelField = false;
-  let hasExtensionTypeField = false;
+  // 防御性迁移：为 assessment_items 补充新增的预置字段列（避免旧库 no such column）
   try {
-    if (!sqliteInstance) throw new Error('数据库未初始化');
     const tableInfo = sqliteInstance.prepare('PRAGMA table_info(assessment_items)').all() as Array<{ name: string }>;
-    log.info('assessment_items 表结构:', JSON.stringify(tableInfo.map(c => ({ name: c.name }))));
-    hasSectionField = tableInfo.some(c => c.name === 'section');
-    hasMinLevelField = tableInfo.some(c => c.name === 'min_level');
-    hasExtensionTypeField = tableInfo.some(c => c.name === 'extension_type');
+    if (!tableInfo.some(c => c.name === 'preset_result')) {
+      sqliteInstance.exec('ALTER TABLE assessment_items ADD COLUMN preset_result TEXT');
+      log.info('已为 assessment_items 添加 preset_result 列');
+    }
+    if (!tableInfo.some(c => c.name === 'preset_record')) {
+      sqliteInstance.exec('ALTER TABLE assessment_items ADD COLUMN preset_record TEXT');
+      log.info('已为 assessment_items 添加 preset_record 列');
+    }
+    if (!tableInfo.some(c => c.name === 'preset_by_type')) {
+      sqliteInstance.exec('ALTER TABLE assessment_items ADD COLUMN preset_by_type TEXT');
+      log.info('已为 assessment_items 添加 preset_by_type 列');
+    }
   } catch (e) {
-    log.warn('获取表结构失败:', e);
+    log.warn('补充预置字段列失败:', e);
   }
 
-  const needRebuild = hasSectionField || !hasMinLevelField || !hasExtensionTypeField;
-
-  let levelNotNull = false;
+  // 内置测评标准 seed 入驻：数据源来自用户在「标准库」中导入的标准，封装为内置 seed。
+  // 关键约束（满足用户需求）：
+  //  - 全新环境 / 版本升级时自动入驻；
+  //  - 按 code 幂等判重：若该 code 已存在（含用户覆盖导入的内置标准、或用户导入的其他标准），
+  //    绝不重复插入、绝不覆盖、也绝不删除用户的测评记录或既有测评项；
+  //  - 仅对「本次新入驻」的标准写入其测评项。
+  const STANDARD_DATA_VERSION = 8;
   try {
-    if (sqliteInstance) {
-      const colInfo = sqliteInstance.prepare("PRAGMA table_info(assessment_items)").all() as Array<{ name: string; notnull: number }>;
-      const levelCol = colInfo.find((c) => c.name === 'level');
-      if (levelCol && levelCol.notnull === 1) {
-        levelNotNull = true;
-      }
+    const { getStandardSeeds } = await import('./seeds/standards');
+    const seed = getStandardSeeds();
+    // code -> seed 等级组合与行业映射，用于内置标准强制同步（校正历史误填的非对角线组合/行业）
+    const seedComboByCode = new Map<string, { levelCombo: string; industry: string }>();
+    for (const s of seed.standards) {
+      if (s.code) seedComboByCode.set(s.code, { levelCombo: s.levelCombo || '', industry: s.industry || '' });
     }
-  } catch (e) {
-    log.warn('检查level列失败:', e);
-  }
-  if (needRebuild && itemCount > 0) {
-    log.info('检测到表结构不兼容，备份并重建assessment_items表...');
+
+    // 防御性迁移：为 standards 补充 level_combo 列，并回填/校正存量数据的等级组合与行业
+    //  - 内置 seed 标准：始终以 seed 的 levelCombo / industry 为准（校正历史误填，如电力 S2A3G3 / 行业）
+    //  - 用户导入/自定义标准：仅在 level_combo 为空时按 grade 回填对角线 S{grade}A{grade}G{grade}；行业不强制改动
     try {
-      sqliteInstance.exec('DROP TABLE IF EXISTS assessment_items_backup');
-      sqliteInstance.exec('CREATE TABLE assessment_items_backup AS SELECT * FROM assessment_items');
-      const backupCount = sqliteInstance.prepare('SELECT COUNT(*) as cnt FROM assessment_items_backup').get() as { cnt: number };
-      log.info(`已创建assessment_items_backup备份表 (${backupCount.cnt} 条记录)`);
-    } catch (e) {
-      log.warn('创建备份表失败:', e);
-    }
-  }
-
-  if (needRebuild || levelNotNull) {
-    try {
-      log.info('重建assessment_items表...');
-      await dbInstance.delete(schema.assessmentRecords);
-      log.info('已删除所有测评记录');
-      sqliteInstance.exec('DROP TABLE IF EXISTS assessment_items');
-      sqliteInstance.exec(`
-        CREATE TABLE IF NOT EXISTS assessment_items (
-          id TEXT PRIMARY KEY,
-          standard_id TEXT NOT NULL,
-          domain TEXT NOT NULL,
-          control_point TEXT NOT NULL,
-          control_name TEXT NOT NULL,
-          requirement TEXT NOT NULL,
-          min_level INTEGER NOT NULL DEFAULT 2,
-          max_level INTEGER NOT NULL DEFAULT 4,
-          extension_type TEXT NOT NULL DEFAULT 'general',
-          is_high_risk INTEGER NOT NULL DEFAULT 0,
-          sort_order INTEGER NOT NULL DEFAULT 0,
-          parent_id TEXT
-        )
-      `);
-      sqliteInstance.exec('CREATE INDEX IF NOT EXISTS idx_items_standard_domain ON assessment_items(standard_id, domain)');
-      sqliteInstance.exec('CREATE INDEX IF NOT EXISTS idx_items_level ON assessment_items(min_level)');
-      sqliteInstance.exec('CREATE INDEX IF NOT EXISTS idx_items_extension ON assessment_items(extension_type)');
-      log.info('assessment_items表重建完成');
-
-      itemCountResult = await dbInstance
-        .select({ count: count() })
-        .from(schema.assessmentItems);
-      itemCount = itemCountResult[0]?.count || 0;
-      log.info(`重建后测评项表数据量: ${itemCount} 条`);
-    } catch (e) {
-      log.error('重建assessment_items表失败:', e);
-    }
-  }
-
-  const itemsByStandard = await dbInstance
-    .select({
-      standardId: schema.assessmentItems.standardId,
-      count: count()
-    })
-    .from(schema.assessmentItems)
-    .groupBy(schema.assessmentItems.standardId);
-  log.info('按标准统计测评项:', JSON.stringify(itemsByStandard));
-
-  const oldStandardCount = await dbInstance
-    .select()
-    .from(schema.standards)
-    .where(eq(schema.standards.code, 'GB/T 22239-2019'))
-    .limit(1);
-
-  if (oldStandardCount.length > 0) {
-    log.info('检测到旧的三级标准库数据（GB/T 22239-2019），需要清理并重新导入...');
-    await dbInstance.delete(schema.assessmentRecords);
-    log.info('已删除所有测评记录');
-    await dbInstance.delete(schema.assessmentItems);
-    await dbInstance.delete(schema.standards).where(eq(schema.standards.code, 'GB/T 22239-2019'));
-    itemCount = 0;
-  }
-
-  if (standardCount.length > 0 && itemCount > 0) {
-    let needReimport = false;
-
-    if (hasExtensionTypeField) {
-      const extCountResult = await dbInstance
-        .select({ count: count() })
-        .from(schema.assessmentItems)
-        .where(ne(schema.assessmentItems.extensionType, 'general'));
-      const extCount = extCountResult[0]?.count || 0;
-
-      if (extCount < 20) {
-        log.info(`检测到扩展测评项数量不足(${extCount})，需重新导入标准库...`);
-        needReimport = true;
+      const stdTableInfo = sqliteInstance.prepare('PRAGMA table_info(standards)').all() as Array<{ name: string }>;
+      if (!stdTableInfo.some(c => c.name === 'level_combo')) {
+        sqliteInstance.exec('ALTER TABLE standards ADD COLUMN level_combo TEXT');
+        log.info('已为 standards 添加 level_combo 列');
       }
-    }
-
-    if (!needReimport) {
-      try {
-        const settingsResult = await dbInstance
-          .select()
-          .from(schema.systemSettings)
-          .where(eq(schema.systemSettings.id, 'default'))
-          .limit(1);
-        const currentVersion = settingsResult[0]?.standardDataVersion || 0;
-        if (currentVersion < STANDARD_DATA_VERSION) {
-          log.info(`检测到标准数据版本过低(${currentVersion} < ${STANDARD_DATA_VERSION})，重新导入标准库...`);
-          needReimport = true;
-        }
-      } catch (e) {
-        log.warn('检查标准数据版本失败:', e);
-      }
-    }
-
-    if (needReimport) {
-      await dbInstance.delete(schema.assessmentRecords);
-      log.info('已删除所有测评记录');
-      await dbInstance.delete(schema.assessmentItems);
-      itemCount = 0;
-    } else {
-      try {
-        const { getStandardSeedL2 } = await import('./seeds/standard-gbt22239-l2');
-        const seedL2 = getStandardSeedL2();
-
-        const l2Count = await dbInstance
-          .select({ count: count() })
-          .from(schema.assessmentItems)
-          .where(eq(schema.assessmentItems.standardId, 'gb-t-22239-2019-l2'));
-        const l2ItemCount = l2Count[0]?.count || 0;
-
-        if (l2ItemCount === 0 && seedL2.items.length > 0) {
-          log.info(`检测到二级标准库缺失，开始导入 ${seedL2.items.length} 条二级测评项...`);
-
-          const l2Standard = await dbInstance
-            .select()
-            .from(schema.standards)
-            .where(eq(schema.standards.code, 'GB/T 22239-2019-L2'))
-            .limit(1);
-
-          if (l2Standard.length === 0) {
-            await dbInstance.insert(schema.standards).values(seedL2.standard as typeof schema.standards.$inferInsert);
-            log.info('已插入二级标准记录');
+      const rows = sqliteInstance.prepare('SELECT id, code, grade, level_combo, industry FROM standards').all() as Array<{ id: string; code: string; grade: number; level_combo: string | null; industry: string | null }>;
+      let backfilled = 0;
+      let corrected = 0;
+      for (const row of rows) {
+        const seed = seedComboByCode.get(row.code);
+        if (seed) {
+          // 内置标准：强制同步到 seed 组合与行业（校正历史误填）
+          if (row.level_combo !== seed.levelCombo) {
+            sqliteInstance.prepare('UPDATE standards SET level_combo = ? WHERE id = ?').run(seed.levelCombo, row.id);
+            corrected++;
           }
-
-          const batchSize = 50;
-          for (let i = 0; i < seedL2.items.length; i += batchSize) {
-            const batch = seedL2.items.slice(i, i + batchSize);
-            await dbInstance.insert(schema.assessmentItems).values(batch as Array<typeof schema.assessmentItems.$inferInsert>);
+          if ((row.industry || '') !== seed.industry) {
+            sqliteInstance.prepare('UPDATE standards SET industry = ? WHERE id = ?').run(seed.industry, row.id);
+            corrected++;
           }
-          log.info(`已插入 ${seedL2.items.length} 条二级测评项`);
         } else {
-          log.info(`二级标准库已存在(${l2ItemCount}条)`);
+          // 用户标准：仅在 level_combo 为空时回填对角线
+          const combo = row.level_combo;
+          if (combo === null || combo === undefined || combo.trim() === '') {
+            const g = Number(row.grade) || 3;
+            sqliteInstance.prepare('UPDATE standards SET level_combo = ? WHERE id = ?').run(`S${g}A${g}G${g}`, row.id);
+            backfilled++;
+          }
         }
-      } catch (e) {
-        log.warn('检查/导入二级标准库失败:', e);
+      }
+      if (backfilled > 0) log.info(`已回填 ${backfilled} 条用户 standards 的 level_combo`);
+      if (corrected > 0) log.info(`已校正 ${corrected} 条内置 standards 的 level_combo / industry`);
+    } catch (e) {
+      log.warn('补充 level_combo 列/回填失败:', e);
+    }
+
+    const existingRows = await dbInstance
+      .select({ code: schema.standards.code })
+      .from(schema.standards);
+    const existingCodes = new Set(existingRows.map(r => r.code));
+
+    let added = 0;
+    for (const std of seed.standards) {
+      if (existingCodes.has(std.code)) {
+        log.info(`内置标准已存在(code=${std.code})，跳过入驻，不覆盖`);
+        continue;
       }
 
-      log.info('标准库已存在且数据完整，跳过初始化');
-      return;
+      await dbInstance.insert(schema.standards).values({
+        id: std.id,
+        name: std.name,
+        code: std.code,
+        version: std.version,
+        description: std.description,
+        grade: std.grade,
+        domainCount: std.domainCount,
+        itemCount: std.itemCount,
+        isDefault: std.isDefault,
+        standardType: std.standardType,
+        industry: std.industry,
+        source: std.source,
+        presetTemplate: std.presetTemplate,
+        domainsMeta: std.domainsMeta,
+        presetMethod: std.presetMethod,
+        columnMap: std.columnMap,
+        levelCombo: std.levelCombo,
+        createdAt: new Date().toISOString(),
+      });
+
+      const items = seed.items.filter(i => i.standardId === std.id);
+      if (items.length > 0) {
+        await dbInstance.insert(schema.assessmentItems).values(items.map(i => ({
+          id: i.id,
+          standardId: i.standardId,
+          domain: i.domain,
+          controlPoint: i.controlPoint,
+          controlName: i.controlName,
+          requirement: i.requirement,
+          minLevel: i.minLevel,
+          maxLevel: i.maxLevel,
+          extensionType: i.extensionType,
+          isHighRisk: i.isHighRisk,
+          sortOrder: i.sortOrder,
+          parentId: i.parentId,
+          presetResult: i.presetResult,
+          presetRecord: i.presetRecord,
+          presetByType: i.presetByType,
+        })));
+      }
+      added++;
+      log.info(`内置标准入驻成功: ${std.name}(code=${std.code})，测评项 ${items.length} 条`);
     }
+
+    log.info(`内置标准入驻完成：本次新增 ${added} 个（seed 共 ${seed.standards.length} 个）`);
+  } catch (e) {
+    log.error('内置标准入驻失败:', e);
   }
 
+  // 版本号更新（同步 system_settings.standardDataVersion，便于后续升级识别）
   try {
-    const { getStandardSeed } = await import('./seeds/standard-gbt22239');
-    const seed = getStandardSeed();
-
-    log.info('初始化三级标准库:', seed.standard.name);
-
-    if (standardCount.length === 0) {
-      await dbInstance.insert(schema.standards).values(seed.standard as typeof schema.standards.$inferInsert);
-      log.info('已插入三级标准记录');
-    }
-
-    if (itemCount === 0 && seed.items.length > 0) {
-      const batchSize = 50;
-      for (let i = 0; i < seed.items.length; i += batchSize) {
-        const batch = seed.items.slice(i, i + batchSize);
-        await dbInstance.insert(schema.assessmentItems).values(batch as Array<typeof schema.assessmentItems.$inferInsert>);
-      }
-      log.info(`已插入 ${seed.items.length} 条三级测评项`);
-    }
-
-    try {
-      const { getStandardSeedL2 } = await import('./seeds/standard-gbt22239-l2');
-      const seedL2 = getStandardSeedL2();
-
-      const l2Count = await dbInstance
-        .select({ count: count() })
-        .from(schema.assessmentItems)
-        .where(eq(schema.assessmentItems.standardId, 'gb-t-22239-2019-l2'));
-      const l2ItemCount = l2Count[0]?.count || 0;
-
-      const l2Standard = await dbInstance
-        .select()
-        .from(schema.standards)
-        .where(eq(schema.standards.code, 'GB/T 22239-2019-L2'))
-        .limit(1);
-
-      if (l2Standard.length === 0) {
-        await dbInstance.insert(schema.standards).values(seedL2.standard as typeof schema.standards.$inferInsert);
-        log.info('已插入二级标准记录');
-      }
-
-      if (l2ItemCount === 0 && seedL2.items.length > 0) {
-        const batchSize = 50;
-        for (let i = 0; i < seedL2.items.length; i += batchSize) {
-          const batch = seedL2.items.slice(i, i + batchSize);
-          await dbInstance.insert(schema.assessmentItems).values(batch as Array<typeof schema.assessmentItems.$inferInsert>);
-        }
-        log.info(`已插入 ${seedL2.items.length} 条二级测评项`);
-      } else {
-        log.info(`二级标准库已存在(${l2ItemCount}条)，跳过导入`);
-      }
-    } catch (e) {
-      log.warn('导入二级标准库失败:', e);
-    }
-
-    try {
-      await dbInstance.update(schema.systemSettings)
-        .set({ standardDataVersion: STANDARD_DATA_VERSION, updatedAt: new Date().toISOString() })
-        .where(eq(schema.systemSettings.id, 'default'));
-    } catch (e) {
-      log.warn('更新标准数据版本失败:', e);
-    }
-
-    log.info(`标准库初始化完成`);
-  } catch (error) {
-    log.error('标准库初始化失败:', error);
+    await dbInstance.update(schema.systemSettings)
+      .set({ standardDataVersion: STANDARD_DATA_VERSION, updatedAt: new Date().toISOString() })
+      .where(eq(schema.systemSettings.id, 'default'));
+    log.info(`标准库初始化完成（数据版本=${STANDARD_DATA_VERSION}）`);
+  } catch (e) {
+    log.warn('更新标准数据版本失败:', e);
   }
 }
 

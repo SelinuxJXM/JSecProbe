@@ -5,6 +5,9 @@
       :table-rows="tableRows"
       :save-all-rows="autoSave.saveAllRows"
       :load-screenshot-data-url="loadScreenshotDataUrl"
+      :project-id="String($route.params.id || '')"
+      :standard-id="standardInfo?.id"
+      :domain-id="currentDomainId"
       ref="aiAnalysisRef"
     />
 
@@ -14,6 +17,10 @@
         <span class="customer-name">{{ project?.name || '山西长治王庄煤业有限责任公司' }}</span>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
         <span class="current-page">现场核查</span>
+        <!-- 行业标识（仅行标项目显示） -->
+        <span v-if="standardInfo?.standardType === 'industry'" class="industry-badge" :title="`行业标准：${standardInfo?.industry || ''}`">
+          {{ standardInfo?.industry || '行业' }}
+        </span>
       </div>
     </div>
 
@@ -53,6 +60,21 @@
           <span class="stat-item">
             <span class="stat-label">符合</span>
             <span class="stat-value compliant">{{ progress.compliant }}</span>
+          </span>
+          <span class="stat-divider" />
+          <span class="stat-item">
+            <span class="stat-label">部分符合</span>
+            <span class="stat-value partial">{{ progress.partial }}</span>
+          </span>
+          <span class="stat-divider" />
+          <span class="stat-item">
+            <span class="stat-label">不符合</span>
+            <span class="stat-value nonCompliant">{{ progress.nonCompliant }}</span>
+          </span>
+          <span class="stat-divider" />
+          <span class="stat-item">
+            <span class="stat-label">不适用</span>
+            <span class="stat-value na">{{ progress.na }}</span>
           </span>
           <span class="stat-divider" />
           <span class="stat-item">
@@ -227,8 +249,8 @@
               <tr v-for="(row, index) in tableRows" :key="row.itemId || index" :class="{ active: currentRowIndex === index, 'extension-divider': isExtensionDivider(index) }" @click="currentRowIndex = index">
                 <td v-if="!row.controlPointHidden" class="cell-control" :rowspan="row.controlPointRowSpan || 1">{{ row.controlPoint }}</td>
                 <td class="cell-requirement">{{ row.requirement }}</td>
-                <td class="cell-conclusion" :class="{ selected: tableCellSelection.isCellSelected(index, 'conclusion'), 'selection-anchor': tableCellSelection.isSelectionAnchor(index, 'conclusion') }" @click="tableCellSelection.handleCellClick($event, index, 'conclusion')" @mousedown="tableCellSelection.handleCellMouseDown($event)">
-                  <textarea v-model="row.conclusion" class="cell-textarea conclusion-box" placeholder="填写测评结论..." @input="adjustConclusionHeight($event); autoSave.debounceAutoSave(row)" @paste="clipboardHandler.handleConclusionPaste($event, index)" @mousedown="tableCellSelection.handleCellMouseDown($event)" :class="{ 'cell-selected': tableCellSelection.isCellSelected(index, 'conclusion') }" />
+                <td class="cell-conclusion" :class="{ selected: tableCellSelection.isCellSelected(index, 'conclusion'), 'selection-anchor': tableCellSelection.isSelectionAnchor(index, 'conclusion') }" @click="tableCellSelection.handleCellClick($event, index, 'conclusion')" @mousedown="tableCellSelection.handleCellMouseDown($event)" @paste="clipboardHandler.handleConclusionPaste($event, index)">
+                  <textarea v-model="row.conclusion" class="cell-textarea conclusion-box" placeholder="填写测评结论..." @input="adjustConclusionHeight($event); autoSave.debounceAutoSave(row)" @mousedown="tableCellSelection.handleCellMouseDown($event)" :class="{ 'cell-selected': tableCellSelection.isCellSelected(index, 'conclusion') }" />
                 </td>
                 <td class="cell-compliance" :class="{ selected: tableCellSelection.isCellSelected(index, 'compliance'), 'selection-anchor': tableCellSelection.isSelectionAnchor(index, 'compliance') }" @click="tableCellSelection.handleCellClick($event, index, 'compliance')" @mousedown="tableCellSelection.handleCellMouseDown($event)">
                   <select v-model="row.compliance" class="compliance-select" :class="row.compliance" @change="autoSave.debounceAutoSave(row)" @paste="clipboardHandler.handleCompliancePaste($event, index)" @mousedown="tableCellSelection.handleCellMouseDown($event)">
@@ -272,6 +294,7 @@
         :table-rows="tableRows"
         :current-row-index="currentRowIndex"
         :collapsed="rightCollapsed"
+        :project-standard-id="projectStandardIdCache || undefined"
         @quote="handleQuoteCommand"
         @update:collapsed="rightCollapsed = $event"
       />
@@ -312,6 +335,17 @@ import KnowledgePanel from './components/knowledge-panel.vue';
 import ImportExport from './components/import-export.vue';
 import AiAnalysis from './components/ai-analysis.vue';
 
+// 安全解析截图路径：数据库存储的 JSON 可能因历史脏数据损坏，解析失败时降级为空数组，避免中断整段加载逻辑
+function safeParseScreenshots(raw?: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 // ==================== 路由和基础状态 ====================
 const route = useRoute();
 const router = useRouter();
@@ -325,6 +359,8 @@ const progress = ref({
   total: 0,
   tested: 0,
   compliant: 0,
+  partial: 0,
+  nonCompliant: 0,
   na: 0,
   complianceRate: 0,
   untested: 0,
@@ -337,16 +373,19 @@ const rightCollapsed = ref(false);
 // 测评项树
 const treeData = ref<any[]>([]);
 
+// Phase 4 · 任务 30：项目标准 ID（提供给 knowledge-panel 用于按行业过滤命令）
+const projectStandardIdCache = computed(() => project.value?.standardId || '');
+
 const filteredTreeData = computed(() => {
   if (!treeSearch.value) return treeData.value;
   const keyword = treeSearch.value.toLowerCase();
   return treeData.value.filter(domain => {
-    if (GLOBAL_DOMAINS.includes(domain.id)) {
+    if (GLOBAL_DOMAINS.value.includes(domain.id)) {
       return domain.label.toLowerCase().includes(keyword);
     }
     return domain.children?.some((item: any) => item.label.toLowerCase().includes(keyword));
   }).map(domain => {
-    if (GLOBAL_DOMAINS.includes(domain.id)) {
+    if (GLOBAL_DOMAINS.value.includes(domain.id)) {
       return domain;
     }
     return {
@@ -359,18 +398,39 @@ const filteredTreeData = computed(() => {
 });
 
 // 十大安全层面定义（ID与数据库一致）
-const TEN_DOMAINS = [
-  { id: 'secure_physical', name: '安全物理环境', icon: 'building' },
-  { id: 'secure_communication', name: '安全通信网络', icon: 'wifi' },
-  { id: 'secure_boundary', name: '安全区域边界', icon: 'layers' },
-  { id: 'secure_computing', name: '安全计算环境', icon: 'server' },
-  { id: 'secure_management', name: '安全管理中心', icon: 'settings' },
-  { id: 'security_management', name: '安全管理制度', icon: 'file-text' },
-  { id: 'security_organization', name: '安全管理机构', icon: 'users' },
-  { id: 'security_personnel', name: '安全管理人员', icon: 'user' },
-  { id: 'security_construction', name: '安全建设管理', icon: 'book' },
-  { id: 'security_maintenance', name: '安全运维管理', icon: 'shield' },
+// 改造：从 standard:getDomains 动态加载，fallback 为国标十域
+const FALLBACK_DOMAINS = [
+  { id: 'secure_physical', name: '安全物理环境', icon: 'building', domainType: 'national' },
+  { id: 'secure_communication', name: '安全通信网络', icon: 'wifi', domainType: 'national' },
+  { id: 'secure_boundary', name: '安全区域边界', icon: 'layers', domainType: 'national' },
+  { id: 'secure_computing', name: '安全计算环境', icon: 'server', domainType: 'national' },
+  { id: 'secure_management', name: '安全管理中心', icon: 'settings', domainType: 'national' },
+  { id: 'security_management', name: '安全管理制度', icon: 'file-text', domainType: 'national' },
+  { id: 'security_organization', name: '安全管理机构', icon: 'users', domainType: 'national' },
+  { id: 'security_personnel', name: '安全管理人员', icon: 'user', domainType: 'national' },
+  { id: 'security_construction', name: '安全建设管理', icon: 'book', domainType: 'national' },
+  { id: 'security_maintenance', name: '安全运维管理', icon: 'shield', domainType: 'national' },
 ];
+
+// 后端 Element Plus 图标名 → 前端模板 kebab-case 图标名映射
+const ICON_NAME_MAP: Record<string, string> = {
+  'OfficeBuilding': 'building',
+  'Connection': 'wifi',
+  'Grid': 'layers',
+  'Monitor': 'server',
+  'Setting': 'settings',
+  'Document': 'file-text',
+  'Briefcase': 'users',
+  'User': 'user',
+  'Tools': 'book',
+  'Box': 'shield',
+};
+
+// 动态域列表（由 standard:getDomains 加载，空时回退 FALLBACK_DOMAINS）
+const TEN_DOMAINS = ref<any[]>([...FALLBACK_DOMAINS]);
+
+// 标准信息（用于行业标识）
+const standardInfo = ref<any>(null);
 
 // 资产类别到安全层面的映射
 const CATEGORY_TO_DOMAIN: Record<string, string> = {
@@ -399,15 +459,13 @@ const CATEGORY_ORDER: Record<string, number> = {
 };
 
 // 全局层面（不需要对应资产，直接显示该层面所有测评项）
-const GLOBAL_DOMAINS = [
-  'secure_communication',
-  'secure_management',
-  'security_management',
-  'security_organization',
-  'security_personnel',
-  'security_construction',
-  'security_maintenance',
-];
+// 动态计算：不在 CATEGORY_TO_DOMAIN 值集合中的域即为全局层面
+const GLOBAL_DOMAINS = computed(() => {
+  const assetDomainIds = new Set(Object.values(CATEGORY_TO_DOMAIN));
+  return TEN_DOMAINS.value
+    .filter(d => !assetDomainIds.has(d.id))
+    .map(d => d.id);
+});
 
 // 当前选中
 const currentAsset = ref<any>(null);
@@ -415,11 +473,11 @@ const currentDomainId = ref('');
 const currentRowIndex = ref(0);
 const sectionTitle = computed(() => {
   if (currentAsset.value) {
-    const domain = TEN_DOMAINS.find(d => d.id === currentAsset.value.domainId);
+    const domain = TEN_DOMAINS.value.find(d => d.id === currentAsset.value.domainId);
     return `${domain?.name || ''} — ${currentAsset.value.label}`;
   }
   if (currentDomainId.value) {
-    const domain = TEN_DOMAINS.find(d => d.id === currentDomainId.value);
+    const domain = TEN_DOMAINS.value.find(d => d.id === currentDomainId.value);
     return domain?.name || '';
   }
   return '请选择测评对象';
@@ -630,6 +688,62 @@ function calculateControlPointRowSpans() {
   }
 }
 
+// 项目标准 ID 缓存（优先项目绑定 standardId，没有则从 DB 默认标准动态推断，彻底移除硬编码 gb-t-22239-2019-l3）
+// 设计：抽取统一 fallback，避免行标项目被硬编码国标 ID 错误处理；
+//       将来所有项目都会有 standardId（project:create 强制传入），届时可直接去掉 fallback
+const standardListCache = ref<any[] | null>(null);
+const projectStandardIdResolved = ref<string>('');
+async function ensureStandardListCache(): Promise<any[]> {
+  if (standardListCache.value) return standardListCache.value;
+  if (!window.api) return [];
+  const res = await window.api.standard.list();
+  standardListCache.value = res.success && Array.isArray(res.data) ? res.data : [];
+  return standardListCache.value;
+}
+function pickDefaultStandardId(list: any[]): string {
+  if (!list || list.length === 0) return '';
+  // ⚠️ 与后端 resolveStandardIdForProject 保持完全一致：同等级 → 默认标准 → 第一条
+  //    否则项目 standardId 为空时，前后端会解析到不同标准，导致预置 records 和 getItems 查询的标准错位，itemId 匹配不上
+  const projectLevel = Number(project.value?.level) || 3;
+  const sameGrade = list.find((s: any) => Number(s.grade) === projectLevel);
+  if (sameGrade?.id) return String(sameGrade.id);
+  const def = list.find((s: any) => Number(s.isDefault) === 1);
+  if (def?.id) return String(def.id);
+  return String(list[0]?.id || '');
+}
+async function resolveProjectStandardId(): Promise<string> {
+  // 1) 项目本身有值（非空字符串 / 非全空格）优先用它
+  const raw = typeof project.value?.standardId === 'string' ? project.value.standardId.trim() : '';
+  if (raw) {
+    projectStandardIdResolved.value = raw;
+    return raw;
+  }
+  // 2) 若项目无 standardId（老项目或标准被删除），从默认标准库列表解析，避免硬编码 gb-t-22239-2019-l3
+  const list = await ensureStandardListCache();
+  const fallbackId = pickDefaultStandardId(list);
+  if (!fallbackId) {
+    console.warn('[onsite-verification] 项目缺失 standardId 且数据库无任何可用标准，后续测评功能可能受限。');
+    projectStandardIdResolved.value = '';
+    return '';
+  }
+  console.warn(`[onsite-verification] 项目缺失 standardId，已回退到默认标准库 ${fallbackId}。建议进入系统设置重新关联标准。`);
+  projectStandardIdResolved.value = fallbackId;
+  return fallbackId;
+}
+// 兼容同步调用（resolve 未完成前先返回缓存；首帧用空串，后续 await 后再更新 load）
+async function getProjectStandardId(): Promise<string> {
+  try {
+    const projectId = route.params.id as string;
+    const res = await window.api.project.resolveStandardId(projectId);
+    if (res.success && res.data && typeof res.data === 'string' && res.data.length > 0) {
+      projectStandardIdResolved.value = res.data;
+      return res.data;
+    }
+  } catch (e) { /* fallback below */ }
+  const raw = typeof project.value?.standardId === 'string' ? project.value.standardId.trim() : '';
+  return raw || projectStandardIdResolved.value || '';
+}
+
 // 选择全局层面
 async function selectGlobalDomain(domainId: string) {
   currentAsset.value = null;
@@ -638,9 +752,8 @@ async function selectGlobalDomain(domainId: string) {
   if (!window.api) return;
 
   try {
-    const projectId = route.params.id as string;
     const projectLevel = project.value?.level || 3;
-    const projectStandardId = project.value?.standardId || 'gb-t-22239-2019-l3';
+    const projectStandardId = await getProjectStandardId();
     const extensionTypes = getExtensionTypeCodes(project.value?.extensionType);
 
     const itemsRes = await window.api.assessment.getItems(projectStandardId, domainId, projectLevel, extensionTypes);
@@ -651,12 +764,14 @@ async function selectGlobalDomain(domainId: string) {
 
     const items = itemsRes.data;
 
-    const recordsRes = await window.api.assessment.getRecordsByDomain(projectId, domainId, projectLevel, extensionTypes);
-    const existingRecords: any[] = recordsRes.success && recordsRes.data ? recordsRes.data : [];
-
-    const recordMap = new Map<string, any>();
-    for (const record of existingRecords) {
-      recordMap.set(record.itemId, record);
+    // 全局视图：以标准库默认预置（assessment_items.preset_*）为默认值，合并已保存的项目级记录（assetId=null）
+    const projectId = route.params.id as string;
+    const savedRes = await window.api.assessment.getProjectRecords(projectId);
+    const savedMap = new Map<string, any>();
+    if (savedRes.success && savedRes.data) {
+      for (const rec of savedRes.data) {
+        savedMap.set(rec.itemId, rec);
+      }
     }
 
     const complianceMap: Record<string, string> = {
@@ -671,33 +786,23 @@ async function selectGlobalDomain(domainId: string) {
       'untested': '',
     };
 
-    const methodMap: Record<string, string> = {
-      'check': '核查',
-      'interview': '访谈',
-      'test': '测试',
-    };
-
     tableRows.value = items.map((item: any, index: number) => {
-      const record = recordMap.get(item.id);
       const itemLabel = String.fromCharCode(97 + index) + ')';
 
-      let evidenceText = record?.evidence || '';
-      if (!evidenceText && record?.commandOutput) {
-        evidenceText = record.commandOutput;
-      }
-      if (!evidenceText && record?.command) {
-        evidenceText = `命令: ${record.command}`;
-      }
+      // 默认取标准库默认预置（assessment_items.preset_*），已保存的项目级记录则覆盖默认值
+      const saved = savedMap.get(item.id);
+      const presetResult = saved?.result || item.presetResult || '';
+      const presetRecord = saved?.findings ?? item.presetRecord ?? '';
 
-      const complianceValue = record ? (complianceMap[record.result] || '') : '';
-      let conclusionText = record?.findings || '';
+      const complianceValue = complianceMap[presetResult] || '';
+      let conclusionText = presetRecord;
 
       if (complianceValue === 'na' && !conclusionText) {
         conclusionText = '根据《测评要求》测评单元中测评对象适用性描述，此类对象针对此控制项不适用。';
       }
 
       return {
-        id: record?.id || '',
+        id: saved?.id || '',
         itemLabel,
         itemId: item.id,
         assetId: '',
@@ -705,11 +810,11 @@ async function selectGlobalDomain(domainId: string) {
         extensionType: item.extensionType || 'general',
         controlPoint: item.controlPoint || item.requirement,
         requirement: item.requirement,
-        method: record ? (methodMap[record.method] || '核查') : '核查',
+        method: saved?.method === 'test' ? '测试' : saved?.method === 'interview' ? '访谈' : '核查',
         compliance: complianceValue,
         conclusion: conclusionText,
-        evidence: evidenceText,
-        screenshots: record?.screenshotPaths ? JSON.parse(record.screenshotPaths) : [],
+        evidence: saved?.evidence ?? '',
+        screenshots: [],
       };
     });
 
@@ -738,7 +843,7 @@ async function selectAsset(asset: any) {
     const projectId = route.params.id as string;
     const domainId = asset.domainId;
     const projectLevel = project.value?.level || 3;
-    const projectStandardId = project.value?.standardId || 'gb-t-22239-2019-l3';
+    const projectStandardId = await getProjectStandardId();
     const extensionTypes = getExtensionTypeCodes(project.value?.extensionType);
 
     const itemsRes = await window.api.assessment.getItems(projectStandardId, domainId, projectLevel, extensionTypes);
@@ -815,7 +920,7 @@ async function selectAsset(asset: any) {
         compliance: initialCompliance,
         conclusion: initialConclusion,
         evidence: evidenceText,
-        screenshots: record?.screenshotPaths ? JSON.parse(record.screenshotPaths) : [],
+        screenshots: record?.screenshotPaths ? safeParseScreenshots(record.screenshotPaths) : [],
       };
     });
 
@@ -852,7 +957,7 @@ function updateAssetProgress(assetId: string, rows: any[]) {
 
 // 切换域展开/收起
 function toggleDomain(id: string) {
-  if (GLOBAL_DOMAINS.includes(id)) {
+  if (GLOBAL_DOMAINS.value.includes(id)) {
     selectGlobalDomain(id);
     return;
   }
@@ -956,7 +1061,7 @@ async function syncIssues() {
 async function loadProgress() {
   const projectId = route.params.id as string;
   if (!projectId || !window.api) return;
-  const res = await window.api.assessment.getProgress(projectId, project.value?.standardId || 'gb-t-22239-2019-l3');
+  const res = await window.api.assessment.getProgress(projectId, await getProjectStandardId());
   if (res.success && res.data) {
     progress.value = res.data;
   }
@@ -969,6 +1074,47 @@ async function loadProject() {
   const res = await window.api.project.get(projectId);
   if (res.success) {
     project.value = res.data;
+  }
+  // 兼容老项目：标准 ID 动态兜底（不再硬编码 gb-t-22239-2019-l3）
+  await resolveProjectStandardId();
+}
+
+// 加载标准域列表（动态渲染域树，替代硬编码 TEN_DOMAINS）
+async function loadStandardDomains() {
+  if (!window.api) return;
+  // 兼容老项目：standardId 缺失时先做一次解析（保证 synchronous fallback 有值）
+  await resolveProjectStandardId();
+  const standardId = await getProjectStandardId();
+  if (!standardId) {
+    // 双重兜底：无标准可用时用内置 fallback 十域占位，避免 UI 空
+    TEN_DOMAINS.value = [...FALLBACK_DOMAINS];
+    return;
+  }
+  try {
+    const [domainsRes, standardsRes] = await Promise.all([
+      window.api.standard.getDomains(standardId),
+      window.api.standard.list(),
+    ]);
+    // 加载域列表
+    if (domainsRes.success && domainsRes.data && domainsRes.data.length > 0) {
+      TEN_DOMAINS.value = domainsRes.data.map((d: any) => ({
+        id: d.id,
+        name: d.name,
+        // 图标名转换：后端 Element Plus PascalCase → 前端 kebab-case，未知则原样透传
+        icon: ICON_NAME_MAP[d.icon] || d.icon || 'shield',
+        domainType: d.domainType || 'national',
+      }));
+    } else {
+      // 标准 domains 为空时回退国标十域（兼容空标准库）
+      TEN_DOMAINS.value = [...FALLBACK_DOMAINS];
+    }
+    // 加载标准元信息（用于行业标识）
+    if (standardsRes.success && standardsRes.data) {
+      standardInfo.value = standardsRes.data.find((s: any) => s.id === standardId) || null;
+    }
+  } catch (err) {
+    console.error('加载标准域列表失败:', err);
+    TEN_DOMAINS.value = [...FALLBACK_DOMAINS];
   }
 }
 
@@ -1006,7 +1152,7 @@ async function loadAssetTree() {
         });
       }
 
-      treeData.value = TEN_DOMAINS.map(domain => {
+      treeData.value = TEN_DOMAINS.value.map(domain => {
         const children = (domainMap.get(domain.id) || []).sort((a: any, b: any) => {
           const orderA = CATEGORY_ORDER[a.category] || 999;
           const orderB = CATEGORY_ORDER[b.category] || 999;
@@ -1080,13 +1226,17 @@ const handleBeforeUnload = (e: BeforeUnloadEvent) => {
   }
 };
 
+// 保存 AI 进度订阅的退订函数，便于组件卸载时移除监听，避免泄漏
+let removeAnalysisProgress: (() => void) | undefined;
+
 onMounted(async () => {
   await loadProject();
+  await loadStandardDomains();
   await loadAssetTree();
   await loadProgress();
   clipboardHandler.setupGlobalPasteHandler();
 
-  window.api?.ai.onAnalysisProgress((data: any) => {
+  removeAnalysisProgress = window.api?.ai.onAnalysisProgress((data: any) => {
     if (aiAnalysisRef.value) {
       aiAnalysisRef.value.batchAiProgress.percent = data.percent || 0;
       aiAnalysisRef.value.batchAiProgress.message = data.message || '';
@@ -1132,6 +1282,10 @@ onBeforeUnmount(() => {
     clearInterval((window as any).__aiBatchPollTimer);
     (window as any).__aiBatchPollTimer = null;
   }
+  // 移除 AI 进度订阅与全局粘贴监听，避免组件卸载后监听器泄漏
+  removeAnalysisProgress?.();
+  removeAnalysisProgress = undefined;
+  clipboardHandler.removeGlobalPasteHandler();
 });
 
 onUpdated(() => {
@@ -1147,7 +1301,7 @@ onUpdated(() => {
 .page-container {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - var(--header-height, 52px));
+  height: calc(100vh - var(--titlebar-height, 40px) - var(--header-height, 52px));
   background: var(--color-bg-page, #F5F6FA);
 }
 
@@ -1174,6 +1328,19 @@ onUpdated(() => {
     .current-page {
       color: var(--color-text-primary, #111827);
       font-weight: 500;
+    }
+
+    // 行业标识徽章（仅行标项目显示）
+    .industry-badge {
+      margin-left: 6px;
+      padding: 1px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 500;
+      line-height: 18px;
+      background: rgba(217, 119, 6, 0.12);
+      color: #D97706;
+      border: 1px solid rgba(217, 119, 6, 0.3);
     }
   }
 }
@@ -1320,7 +1487,7 @@ onUpdated(() => {
   .progress-stats {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 10px;
 
     .stat-item {
       display: flex;
@@ -1329,12 +1496,12 @@ onUpdated(() => {
       gap: 2px;
 
       .stat-label {
-        font-size: 11px;
+        font-size: 10px;
         color: var(--color-text-tertiary, #9CA3AF);
       }
 
       .stat-value {
-        font-size: 14px;
+        font-size: 13px;
         font-weight: 600;
         color: var(--color-text-primary, #111827);
 
@@ -1344,6 +1511,18 @@ onUpdated(() => {
 
         &.compliant {
           color: #10B981;
+        }
+
+        &.partial {
+          color: #F59E0B;
+        }
+
+        &.nonCompliant {
+          color: #DC2626;
+        }
+
+        &.na {
+          color: #6B7280;
         }
 
         &.rate {
@@ -2062,6 +2241,15 @@ onUpdated(() => {
     &.compliant {
       color: #34D399;
     }
+    &.partial {
+      color: #FBBF24;
+    }
+    &.nonCompliant {
+      color: #F87171;
+    }
+    &.na {
+      color: #9CA3AF;
+    }
   }
 
   .toolbar-btn {
@@ -2114,6 +2302,8 @@ onUpdated(() => {
     }
 
     .compliance-select {
+      color-scheme: dark;
+
       &.conform {
         color: #fff;
         background: #16A34A;
@@ -2129,6 +2319,11 @@ onUpdated(() => {
       &.na {
         color: #fff;
         background: #6B7280;
+      }
+
+      option {
+        background: var(--color-bg-card);
+        color: var(--color-text-primary);
       }
     }
   }

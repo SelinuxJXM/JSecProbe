@@ -432,6 +432,7 @@ import {
   ArrowLeft,
 } from '@element-plus/icons-vue';
 import type { Asset, AssetCategory, AssetListResult } from '@shared/types';
+import { ASSET_CATEGORIES } from '@shared/asset-categories';
 import { useAssetAutoSave } from './composables/useAssetAutoSave';
 
 const route = useRoute();
@@ -493,22 +494,10 @@ const formData = reactive({
   isAssessmentTarget: true,
 });
 
-// 分类名称映射
-const CATEGORY_NAMES: Record<string, string> = {
-  machine_room: '管理机房',
-  network_boundary: '区域边界',
-  network_device: '网络设备',
-  security_device: '安全设备',
-  server_storage: '服务器/存储设备',
-  sys_doc: '系统管理文档',
-  management_platform: '系统管理平台',
-  business_app: '业务应用系统',
-  terminal: '业务终端/运维终端',
-  other_asset: '其他系统或设备',
-  data_resource: '数据资源',
-  crypto_product: '密码产品',
-  security_personnel: '安全相关人员',
-};
+// 分类名称映射（统一引用共享资产分类，避免与后端定义漂移）
+const CATEGORY_NAMES: Record<string, string> = Object.fromEntries(
+  ASSET_CATEGORIES.map((c) => [c.id, c.name]),
+);
 
 // 分类图标映射 (SVG innerHTML)
 const CATEGORY_ICONS: Record<string, string> = {

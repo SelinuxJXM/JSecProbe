@@ -134,7 +134,16 @@ export async function createFullBackup(customPath?: string): Promise<BackupResul
     if (fs.existsSync(dbPath)) {
       // 强制将 WAL 中的更改写入主数据库文件，保证备份数据的完整性
       walCheckpoint();
-      fs.copyFileSync(dbPath, path.join(tempBackupDir, 'mlps.db'));
+      const backupDbPath = path.join(tempBackupDir, 'mlps.db');
+      fs.copyFileSync(dbPath, backupDbPath);
+      // 验证备份文件头，确保备份有效
+      const fd = fs.openSync(backupDbPath, 'r');
+      const buffer = Buffer.alloc(16);
+      fs.readSync(fd, buffer, 0, 16, 0);
+      fs.closeSync(fd);
+      if (!buffer.toString('utf8').startsWith('SQLite format 3')) {
+        throw new Error('备份数据库文件头验证失败，备份可能不完整');
+      }
       manifest.contents.database = true;
     }
 
@@ -270,56 +279,144 @@ export async function restoreFromZipBackup(backupPath: string): Promise<BackupRe
       }
     }
 
-    const dbPath = await getDbPath();
-
-    if (fs.existsSync(dbPath)) {
-      closeDb();
+    // 预校验：清单声明的内容必须真实存在于备份中
+    // 否则恢复中途才发现缺失会导致"数据库已替换但目录缺失"或反向的数据不一致，甚至永久丢失线上数据
+    if (manifest.contents.database && !fs.existsSync(dbBackupPath)) {
+      fs.rmSync(tempExtractPath, { recursive: true, force: true });
+      return { success: false, error: '备份内容不完整：清单声明包含数据库但缺少 mlps.db，已取消恢复' };
     }
-
-    if (fs.existsSync(dbBackupPath)) {
-      const tempNewPath = dbPath + '.new';
-      fs.copyFileSync(dbBackupPath, tempNewPath);
-      if (fs.existsSync(dbPath)) {
-        const bakPath = dbPath + '.bak';
-        if (fs.existsSync(bakPath)) {
-          fs.unlinkSync(bakPath);
-        }
-        fs.renameSync(dbPath, bakPath);
-      }
-      fs.renameSync(tempNewPath, dbPath);
-    }
-
     for (const dirName of BACKUP_DIRS) {
-      if (!manifest.contents[dirName]) continue;
-
-      const srcDir = path.join(tempExtractPath, dirName);
-      const destDir = path.join(dataPath, dirName);
-
-      if (fs.existsSync(srcDir)) {
-        if (fs.existsSync(destDir)) {
-          fs.rmSync(destDir, { recursive: true, force: true });
-        }
-        fs.mkdirSync(destDir, { recursive: true });
-        const entries = fs.readdirSync(srcDir, { withFileTypes: true });
-        for (const entry of entries) {
-          const srcEntry = path.join(srcDir, entry.name);
-          const destEntry = path.join(destDir, entry.name);
-          if (entry.isDirectory()) {
-            fs.cpSync(srcEntry, destEntry, { recursive: true });
-          } else {
-            fs.copyFileSync(srcEntry, destEntry);
-          }
-        }
+      if (manifest.contents[dirName] && !fs.existsSync(path.join(tempExtractPath, dirName))) {
+        fs.rmSync(tempExtractPath, { recursive: true, force: true });
+        return { success: false, error: `备份内容不完整：缺少 ${dirName} 目录，已取消恢复` };
       }
     }
 
-    fs.rmSync(tempExtractPath, { recursive: true, force: true });
+    const dbPath = await getDbPath();
+    const rollbackDbPath = dbPath + '.rollback';
+    let dbReplaced = false;
+    let originalDbExisted = false;
+    let dbClosed = false;
+    // 目录回滚记录：original 为线上目录，backup 为换名保留的原目录（*.restore_bak）
+    // 声明在 try 之外，供 catch 回滚使用
+    const backedUpDirs: Array<{ original: string; backup: string }> = [];
+    // 已成功移入位的新目录，回滚时需先移除
+    const restoredDirs: string[] = [];
 
-    log.info(`[恢复] 完整恢复完成: ${backupPath}`);
+    try {
+      if (fs.existsSync(dbPath)) {
+        originalDbExisted = true;
+        closeDb();
+        dbClosed = true;
+        // 创建回滚点：将当前数据库复制到安全位置，恢复失败时可回滚
+        if (fs.existsSync(rollbackDbPath)) {
+          fs.unlinkSync(rollbackDbPath);
+        }
+        fs.copyFileSync(dbPath, rollbackDbPath);
+      }
 
-    await initDatabase();
+      if (fs.existsSync(dbBackupPath)) {
+        const tempNewPath = dbPath + '.new';
+        fs.copyFileSync(dbBackupPath, tempNewPath);
+        if (fs.existsSync(dbPath)) {
+          const bakPath = dbPath + '.bak';
+          if (fs.existsSync(bakPath)) {
+            fs.unlinkSync(bakPath);
+          }
+          fs.renameSync(dbPath, bakPath);
+        }
+        fs.renameSync(tempNewPath, dbPath);
+        dbReplaced = true;
+      }
 
-    return { success: true };
+      // 目录替换采用 rename 原子换位：先把线上目录改名保留为 *.restore_bak，再把备份目录整体移入位
+      // 任一环节失败都可按记录反向回滚，不会出现"已删除旧数据但新数据不完整"的窗口
+      for (const dirName of BACKUP_DIRS) {
+        if (!manifest.contents[dirName]) continue;
+
+        const srcDir = path.join(tempExtractPath, dirName);
+        const destDir = path.join(dataPath, dirName);
+
+        if (fs.existsSync(destDir)) {
+          const backupDirPath = destDir + '.restore_bak';
+          if (fs.existsSync(backupDirPath)) {
+            fs.rmSync(backupDirPath, { recursive: true, force: true });
+          }
+          fs.renameSync(destDir, backupDirPath);
+          backedUpDirs.push({ original: destDir, backup: backupDirPath });
+        }
+        fs.renameSync(srcDir, destDir);
+        restoredDirs.push(destDir);
+      }
+
+      // 恢复成功，清理回滚文件
+      if (fs.existsSync(rollbackDbPath)) {
+        fs.unlinkSync(rollbackDbPath);
+      }
+
+      fs.rmSync(tempExtractPath, { recursive: true, force: true });
+
+      log.info(`[恢复] 完整恢复完成: ${backupPath}`);
+
+      await initDatabase();
+
+      return { success: true };
+    } catch (restoreError: any) {
+      // 恢复失败，尝试回滚：先撤销目录换位，再回滚数据库，最后重新打开数据库连接
+      log.error(`[恢复] 恢复失败，尝试回滚: ${restoreError.message}`);
+
+      // 反向回滚目录：先移除已换入的新目录，再把 *.restore_bak 改名回原位
+      for (const restored of restoredDirs.slice().reverse()) {
+        try {
+          fs.rmSync(restored, { recursive: true, force: true });
+        } catch (rmErr: any) {
+          log.error(`[恢复] 回滚时移除新目录失败: ${restored}, ${rmErr.message}`);
+        }
+      }
+      for (const item of backedUpDirs.slice().reverse()) {
+        try {
+          if (fs.existsSync(item.original)) {
+            // 原位已被占用（极少见），先移除再回滚
+            fs.rmSync(item.original, { recursive: true, force: true });
+          }
+          if (fs.existsSync(item.backup)) {
+            fs.renameSync(item.backup, item.original);
+            log.info(`[恢复] 目录已回滚: ${item.original}`);
+          }
+        } catch (dirRollbackErr: any) {
+          log.error(`[恢复] 目录回滚失败: ${item.original}, ${dirRollbackErr.message}`);
+        }
+      }
+
+      if (dbReplaced && originalDbExisted && fs.existsSync(rollbackDbPath)) {
+        try {
+          if (fs.existsSync(dbPath)) {
+            fs.unlinkSync(dbPath);
+          }
+          fs.copyFileSync(rollbackDbPath, dbPath);
+          log.info('[恢复] 数据库已回滚到恢复前状态');
+        } catch (rollbackErr: any) {
+          log.error(`[恢复] 回滚失败: ${rollbackErr.message}`);
+        }
+      }
+
+      // 清理回滚文件
+      if (fs.existsSync(rollbackDbPath)) {
+        fs.unlinkSync(rollbackDbPath);
+      }
+
+      // 数据库连接已在此前 closeDb 时关闭，必须重新初始化，否则恢复失败后应用将无法访问数据库
+      if (dbClosed) {
+        try {
+          await initDatabase();
+          log.info('[恢复] 数据库连接已重新初始化');
+        } catch (initErr: any) {
+          log.error(`[恢复] 数据库重新初始化失败: ${initErr.message}`);
+        }
+      }
+
+      throw restoreError;
+    }
   } catch (error: any) {
     log.error('[恢复] 完整恢复失败:', error);
     return { success: false, error: error.message || '恢复失败' };
@@ -343,6 +440,7 @@ export async function restoreFromLegacyBackup(backupPath: string): Promise<Backu
 
     const dbPath = await getDbPath();
     const tempPath = dbPath + '.tmp';
+    const rollbackPath = dbPath + '.rollback';
     fs.copyFileSync(backupPath, tempPath);
 
     const fd = fs.openSync(tempPath, 'r');
@@ -354,11 +452,54 @@ export async function restoreFromLegacyBackup(backupPath: string): Promise<Backu
       return { success: false, error: '无效的备份文件：不是SQLite数据库格式' };
     }
 
-    closeDb();
-    fs.copyFileSync(tempPath, dbPath);
-    fs.unlinkSync(tempPath);
+    // 创建回滚点：替换前先保留当前数据库，失败时可恢复
+    if (fs.existsSync(rollbackPath)) {
+      fs.unlinkSync(rollbackPath);
+    }
+    if (fs.existsSync(dbPath)) {
+      fs.copyFileSync(dbPath, rollbackPath);
+    }
 
-    return { success: true };
+    closeDb();
+
+    try {
+      // tempPath 与 dbPath 同目录，直接原子换名替换，避免 copyFileSync 中途失败把原库覆盖成半成品
+      fs.renameSync(tempPath, dbPath);
+
+      if (fs.existsSync(rollbackPath)) {
+        fs.unlinkSync(rollbackPath);
+      }
+
+      await initDatabase();
+
+      return { success: true };
+    } catch (restoreError: any) {
+      log.error(`[恢复] 旧版恢复失败，尝试回滚: ${restoreError.message}`);
+
+      if (fs.existsSync(rollbackPath)) {
+        try {
+          if (fs.existsSync(dbPath)) {
+            fs.unlinkSync(dbPath);
+          }
+          fs.copyFileSync(rollbackPath, dbPath);
+          log.info('[恢复] 数据库已回滚到恢复前状态');
+        } catch (rollbackErr: any) {
+          log.error(`[恢复] 回滚失败: ${rollbackErr.message}`);
+        }
+        try { fs.unlinkSync(rollbackPath); } catch { /* 忽略 */ }
+      }
+
+      try { fs.unlinkSync(tempPath); } catch { /* 忽略 */ }
+
+      // closeDb 之后必须重新初始化数据库连接，否则应用后续所有数据库操作都会抛错
+      try {
+        await initDatabase();
+      } catch (initErr: any) {
+        log.error(`[恢复] 恢复失败后重新初始化数据库失败: ${initErr.message}`);
+      }
+
+      throw restoreError;
+    }
   } catch (error: any) {
     return { success: false, error: error.message || '恢复失败' };
   }
@@ -532,6 +673,9 @@ export async function restoreFromZipBackupIncremental(
   backupPath: string,
   projectIds?: string[]
 ): Promise<BackupResult> {
+  // 声明在函数作用域，供 try 与 catch 共用：恢复失败时 catch 需要清理临时目录并关闭备份库句柄
+  // （try 块内声明的变量在 catch 中不可见，因此回滚相关变量必须提升到函数作用域，与全量恢复一致）
+  let tempExtractPath = '';
   try {
     if (!fs.existsSync(backupPath)) {
       return { success: false, error: '备份文件不存在' };
@@ -542,7 +686,7 @@ export async function restoreFromZipBackupIncremental(
     }
 
     const dataPath = await getAppDataPath();
-    const tempExtractPath = path.join(dataPath, '.restore_temp');
+    tempExtractPath = path.join(dataPath, '.restore_temp');
 
     if (fs.existsSync(tempExtractPath)) {
       fs.rmSync(tempExtractPath, { recursive: true, force: true });
@@ -628,7 +772,8 @@ export async function restoreFromZipBackupIncremental(
         return { success: false, error: '无法打开备份数据库' };
       }
 
-      const db = getDb();
+      try {
+        const db = getDb();
 
       let projectsToRestore: any[];
       if (projectIds && projectIds.length > 0) {
@@ -862,8 +1007,10 @@ export async function restoreFromZipBackupIncremental(
           }
         }
       });
+      } finally {
+        backupDb.close();
+      }
 
-      backupDb.close();
       log.info(`[增量恢复] 数据库恢复完成，共恢复 ${restoredProjectIds.length} 个项目`);
     }
 
@@ -912,6 +1059,11 @@ export async function restoreFromZipBackupIncremental(
     return { success: true, mode: 'incremental', restoredProjectIds };
   } catch (error: any) {
     log.error('[增量恢复] 失败:', error);
+    // 清理解压临时目录，避免残留的 .restore_temp 污染数据目录
+    // （备份数据库句柄已在上方 try/finally 中关闭，无需在此处理）
+    if (fs.existsSync(tempExtractPath)) {
+      fs.rmSync(tempExtractPath, { recursive: true, force: true });
+    }
     return { success: false, error: error.message || '恢复失败' };
   }
 }

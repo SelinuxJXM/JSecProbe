@@ -6,11 +6,17 @@ import 'element-plus/theme-chalk/dark/css-vars.css';
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs';
 import App from './App.vue';
 import router from './router';
+import { restorePrimaryColor } from './utils/theme';
 import './styles/global.scss';
 
-// 应用启动时清除登录状态，强制重新登录
-localStorage.removeItem('token');
+// Global unhandled error/rejection guard (best-effort console + log to preload)
+window.addEventListener('error', (e) => {
+  console.error('[全局] 未捕获异常:', e.error || e.message);
+});
 
+window.addEventListener('unhandledrejection', (e: PromiseRejectionEvent) => {
+  console.error('[全局] 未处理的 Promise 拒绝:', e.reason);
+});
 function applyInitialTheme() {
   const savedTheme = localStorage.getItem('themeMode') || 'light';
   const html = document.documentElement;
@@ -32,6 +38,7 @@ function applyInitialTheme() {
   }
 }
 applyInitialTheme();
+restorePrimaryColor();
 
 const app = createApp(App);
 

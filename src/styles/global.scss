@@ -272,7 +272,7 @@ html.dark {
   }
 
   /* Element Plus button */
-  .el-button--primary {
+  .el-button.el-button--primary {
     --el-button-bg-color: var(--color-primary);
     --el-button-border-color: var(--color-primary);
     --el-button-hover-bg-color: var(--color-primary-hover);
@@ -281,17 +281,17 @@ html.dark {
     --el-button-active-border-color: var(--color-primary-active);
   }
 
-  .el-button--success {
+  .el-button.el-button--success {
     --el-button-bg-color: var(--color-success, #18A957);
     --el-button-border-color: var(--color-success, #18A957);
   }
 
-  .el-button--warning {
+  .el-button.el-button--warning {
     --el-button-bg-color: var(--color-warning, #D48806);
     --el-button-border-color: var(--color-warning, #D48806);
   }
 
-  .el-button--danger {
+  .el-button.el-button--danger {
     --el-button-bg-color: var(--color-danger, #E53935);
     --el-button-border-color: var(--color-danger, #E53935);
   }
@@ -673,10 +673,15 @@ html.dark {
     color: var(--color-text-primary);
   }
 
-  /* Element Plus table column show-overflow-tooltip */
+  /* Element Plus dark tooltip (collapsed menu / show-overflow-tooltip) */
   .el-popper.is-dark {
-    --el-popper-bg-color: var(--color-bg-hover, #334155);
-    color: var(--color-text-primary);
+    --el-popper-bg-color-dark: var(--color-bg-hover, #334155);
+    border-color: var(--color-bg-hover, #334155);
+    color: var(--color-text-primary, #E2E8F0);
+
+    > .el-popper__arrow::before {
+      border-color: var(--color-bg-hover, #334155);
+    }
   }
 
   /* Element Plus select */

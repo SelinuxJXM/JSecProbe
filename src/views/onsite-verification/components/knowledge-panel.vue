@@ -39,6 +39,10 @@
         class="search-input"
       />
     </div>
+    <!-- Phase 4 · 任务 30：项目级行业匹配提示 -->
+    <div v-if="knowledgeTab === 'command' && matchedIndustry" class="industry-hint" :title="`当前标准行业：${matchedIndustry}，命令列表已自动包含「行业专属」与「通用命令」`">
+      🎯 已按项目行业筛选：<b>{{ matchedIndustry }}</b>
+    </div>
     <div class="knowledge-list">
       <!-- 核查命令卡片 -->
       <div
@@ -51,6 +55,11 @@
         <div class="card-top">
           <span class="card-name">{{ cmd.title }}</span>
           <span v-if="cmd.target" class="card-badge">{{ cmd.target }}</span>
+        </div>
+        <div class="card-tags" v-if="cmd.os || cmd.industry">
+          <span v-if="cmd.industry" class="cmd-tag tag-industry">{{ cmd.industry }}</span>
+          <span v-else class="cmd-tag tag-universal">通用</span>
+          <span v-if="cmd.os" class="cmd-tag tag-os">{{ cmd.os }}</span>
         </div>
         <div class="card-code">{{ cmd.command }}</div>
         <div v-if="cmd.content" class="card-desc">{{ cmd.content }}</div>
@@ -123,6 +132,7 @@ interface CommandItem {
   brand: string;
   category: string;
   subCategory: string;
+  industry?: string;
 }
 
 interface DocumentItem {
@@ -141,6 +151,8 @@ interface Props {
   tableRows?: any[];
   currentRowIndex?: number;
   collapsed?: boolean;
+  // Phase 4 · 任务 30：项目所属标准 ID（行业维自动过滤命令）
+  projectStandardId?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -149,6 +161,7 @@ const props = withDefaults(defineProps<Props>(), {
   tableRows: () => [],
   currentRowIndex: 0,
   collapsed: false,
+  projectStandardId: '',
 });
 
 // Emits 定义
@@ -163,6 +176,7 @@ const knowledgeSearch = ref('');
 const commandList = ref<CommandItem[]>([]);
 const documentList = ref<DocumentItem[]>([]);
 const previewDialogRef = ref<InstanceType<typeof FilePreviewDialog>>();
+const matchedIndustry = ref<string>('');
 
 // 计算属性：过滤后的命令列表
 const filteredCommands = computed(() => {
@@ -197,8 +211,12 @@ async function loadKnowledgeBase() {
   if (!window.api) return;
   try {
     if (knowledgeTab.value === 'command') {
-      const res = await window.api.knowledge.listCommands({ page: 1, pageSize: 200 });
+      const params: any = { page: 1, pageSize: 200 };
+      // Phase 4 · 任务 30：按项目行业匹配命令库（行业专属 + 通用命令）
+      if (props.projectStandardId) params.projectStandardId = props.projectStandardId;
+      const res = await window.api.knowledge.listCommands(params);
       if (res.success && res.data) {
+        matchedIndustry.value = res.data.matchedIndustry || '';
         commandList.value = res.data.list.map((cmd: any) => ({
           id: cmd.id,
           title: cmd.name || '',
@@ -209,6 +227,7 @@ async function loadKnowledgeBase() {
           brand: cmd.brand || '',
           category: cmd.category || '',
           subCategory: cmd.subCategory || '',
+          industry: (cmd && typeof cmd.industry === 'string') ? cmd.industry : '',
         }));
       }
     } else {
@@ -438,6 +457,50 @@ loadKnowledgeBase();
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Phase 4 · 任务 30：行业提示 & 标签 */
+.industry-hint {
+  font-size: 11px;
+  color: var(--color-text-secondary, #374151);
+  background: linear-gradient(90deg, #ecfdf5 0%, #fef3c7 100%);
+  border: 1px solid #d1fae5;
+  padding: 4px 8px;
+  margin: 6px 16px 0;
+  border-radius: 4px;
+  line-height: 1.4;
+}
+.industry-hint b {
+  color: #92400e;
+  margin-left: 2px;
+}
+.command-card .card-tags {
+  display: flex;
+  gap: 4px;
+  margin: 2px 0 4px;
+  flex-wrap: wrap;
+}
+.cmd-tag {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  line-height: 1.4;
+}
+.cmd-tag.tag-industry {
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px solid #fed7aa;
+}
+.cmd-tag.tag-universal {
+  background: #f3f4f6;
+  color: #6b7280;
+  border: 1px solid #e5e7eb;
+}
+.cmd-tag.tag-os {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
 }
 
 .command-card .card-actions {

@@ -105,12 +105,49 @@ class AppLogger {
     }
   }
 
+  // 敏感字段脱敏：键名匹配 password/token/secret/hash/key/apiKey 等的字段一律替换为 ***
+  // 防止密码、会话令牌、API 凭证等敏感信息写入 electron-log 文件日志
+  private static readonly SENSITIVE_KEY_REGEX = /^(password|passwordHash|token|secret|apiKey|api_key|authorization|cookie|sessionId|refreshToken|privateKey)$/i;
+  private static readonly SENSITIVE_KEY_HINT_REGEX = /password|token|secret|hash|apiKey|api_key|authorization|privateKey/i;
+
+  private static maskValue(value: unknown): unknown {
+    if (typeof value === 'string') {
+      // 字符串值：保留前后 2 字符用于排查，中间脱敏（短串全脱敏）
+      if (value.length <= 6) return '***';
+      return `${value.slice(0, 2)}***${value.slice(-2)}`;
+    }
+    if (Array.isArray(value)) {
+      return value.map(v => AppLogger.maskValue(v));
+    }
+    if (value && typeof value === 'object') {
+      // 对象：递归脱敏
+      try {
+        const masked: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+          masked[k] = AppLogger.maskValue(v);
+        }
+        return masked;
+      } catch {
+        return '***';
+      }
+    }
+    return '***';
+  }
+
   private serializeContext(context: LogContext): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(context)) {
       if (key === 'stack') {
         result[key] = typeof value === 'string' ? value : String(value);
       } else if (typeof value !== 'function' && typeof value !== 'symbol') {
+        // 敏感字段脱敏：精确匹配 passwordHash/token 等或键名包含敏感词
+        if (
+          AppLogger.SENSITIVE_KEY_REGEX.test(key) ||
+          AppLogger.SENSITIVE_KEY_HINT_REGEX.test(key)
+        ) {
+          result[key] = AppLogger.maskValue(value);
+          continue;
+        }
         try {
           // 尝试序列化，避免循环引用
           JSON.stringify(value);

@@ -78,7 +78,7 @@
         <div class="section-title">
           <span class="section-icon">📑</span>
           <span>包含章节</span>
-          <span class="section-hint">已选 {{ config.includeSections.length }}/9</span>
+          <span class="section-hint">已选 {{ config.includeSections.length }}/10</span>
         </div>
         <el-checkbox-group v-model="config.includeSections" class="section-selector">
           <el-checkbox value="cover" class="section-option">

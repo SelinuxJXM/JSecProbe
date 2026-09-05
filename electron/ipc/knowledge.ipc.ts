@@ -3,11 +3,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, and, like, or } from 'drizzle-orm';
+import { eq, and, like, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { getAppDataPath } from '../main/paths';
 import { wrap } from '../utils/ipc-wrapper';
-import { toRelativePath, resolvePath } from '../utils/path-resolver';
+import { toRelativePath, validateDataPath } from '../utils/path-resolver';
 
 const MAX_EXCEL_SIZE = 50 * 1024 * 1024;
 const MAX_EXCEL_ROWS = 10000;
@@ -160,9 +160,17 @@ export function registerKnowledgeHandlers(): void {
       const db = getDb();
       const id = randomUUID();
       const now = new Date().toISOString();
+      // 仅写入白名单字段，防止前端传入额外字段篡改内部列
       await db.insert(schema.knowledgeDocuments).values({
-        ...data,
         id,
+        categoryId: data.categoryId,
+        title: data.title,
+        type: data.type,
+        filePath: data.filePath,
+        content: data.content,
+        description: data.description,
+        version: data.version,
+        tags: data.tags,
         uploadDate: now,
         createdAt: now,
         updatedAt: now,
@@ -173,8 +181,16 @@ export function registerKnowledgeHandlers(): void {
   ipcMain.handle('knowledge:updateDocument', wrap(async (_event, id: string, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
+      // 仅更新白名单字段，防止覆写 id/createdAt/referenceCount 等内部列
       await db.update(schema.knowledgeDocuments).set({
-        ...data,
+        categoryId: data.categoryId,
+        title: data.title,
+        type: data.type,
+        filePath: data.filePath,
+        content: data.content,
+        description: data.description,
+        version: data.version,
+        tags: data.tags,
         updatedAt: now,
       }).where(eq(schema.knowledgeDocuments.id, id));
     }));
@@ -191,11 +207,29 @@ export function registerKnowledgeHandlers(): void {
     deviceType?: string;
     category?: string;
     subCategory?: string;
+    // Phase 4 · 任务 30：行业维度筛选
+    industry?: string;         // 精确匹配 industry 列（空字符串=通用）
+    industryMode?: 'exact' | 'universal' | 'matchOrUniversal' | 'matchOrAll';  // exact=只 industry；universal=只通用；matchOrUniversal=industry + 通用（默认）；matchOrAll=industry + 所有其他
+    // 项目级行业匹配（内部使用）：直接传项目 standardId，自动取 standards.industry 再筛选
+    projectStandardId?: string;
     page?: number;
     pageSize?: number;
   }) => {
       const db = getDb();
-      const { keyword, os, brand, deviceType, category, subCategory, page = 1, pageSize = 20 } = params;
+      const {
+        keyword, os, brand, deviceType, category, subCategory, industry, industryMode = 'matchOrUniversal',
+        projectStandardId, page = 1, pageSize = 20,
+      } = params;
+
+      // 项目级行业：projectStandardId → standards.industry
+      let resolvedIndustry: string | undefined;
+      if (projectStandardId) {
+        try {
+          const [prow] = await db.select({ industry: schema.standards.industry })
+            .from(schema.standards).where(eq(schema.standards.id, projectStandardId)).limit(1);
+          if (prow?.industry) resolvedIndustry = prow.industry;
+        } catch { /* ignore */ }
+      }
 
       let query = db.select().from(schema.knowledgeCommands).$dynamic();
       const conditions: any[] = [];
@@ -210,20 +244,45 @@ export function registerKnowledgeHandlers(): void {
           )
         );
       }
-      if (os) {
-        conditions.push(like(schema.knowledgeCommands.os, `%${os}%`));
-      }
-      if (brand) {
-        conditions.push(eq(schema.knowledgeCommands.brand, brand));
-      }
-      if (deviceType) {
-        conditions.push(eq(schema.knowledgeCommands.deviceType, deviceType));
-      }
-      if (category) {
-        conditions.push(eq(schema.knowledgeCommands.category, category));
-      }
-      if (subCategory) {
-        conditions.push(eq(schema.knowledgeCommands.subCategory, subCategory));
+      if (os) conditions.push(like(schema.knowledgeCommands.os, `%${os}%`));
+      if (brand) conditions.push(eq(schema.knowledgeCommands.brand, brand));
+      if (deviceType) conditions.push(eq(schema.knowledgeCommands.deviceType, deviceType));
+      if (category) conditions.push(eq(schema.knowledgeCommands.category, category));
+      if (subCategory) conditions.push(eq(schema.knowledgeCommands.subCategory, subCategory));
+
+      // 行业筛选（industry 精确匹配 + 或组合通用/其他）
+      // 注意：前端 select 选中「仅通用」会传 industry="" + industryMode=universal，
+      // 这时 effectiveIndustry 是 ''，但我们需要根据「模式」来判空，不能只看 truthy。
+      const effectiveIndustry: string | undefined = (industry !== undefined && industry !== null)
+        ? String(industry)
+        : resolvedIndustry;
+      const hasIndustryFilter = industryMode === 'universal' || !!effectiveIndustry;
+
+      if (hasIndustryFilter) {
+        if (industryMode === 'exact') {
+          const target = effectiveIndustry ?? '';
+          conditions.push(eq(schema.knowledgeCommands.industry, target));
+        } else if (industryMode === 'universal') {
+          conditions.push(eq(schema.knowledgeCommands.industry, ''));
+        } else if (industryMode === 'matchOrAll') {
+          const target = effectiveIndustry ?? '';
+          if (target) {
+            conditions.push(or(
+              eq(schema.knowledgeCommands.industry, target),
+              eq(schema.knowledgeCommands.industry, ''),
+              like(schema.knowledgeCommands.industry, `%${target}%`),
+            ));
+          } else {
+            // 无行业则回落到「全部」（行业过滤条件不追加）
+          }
+        } else { // matchOrUniversal：行业专属 + 通用命令
+          const target = effectiveIndustry ?? '';
+          if (target) {
+            conditions.push(or(eq(schema.knowledgeCommands.industry, target), eq(schema.knowledgeCommands.industry, '')));
+          } else {
+            conditions.push(eq(schema.knowledgeCommands.industry, ''));
+          }
+        }
       }
 
       if (conditions.length > 0) {
@@ -232,40 +291,107 @@ export function registerKnowledgeHandlers(): void {
 
       const all = await query;
 
-      // 排序：常用命令优先
-      const sorted = [...all].sort((a, b) => {
-        if (a.isFavorite && !b.isFavorite) return -1;
-        if (!a.isFavorite && b.isFavorite) return 1;
-        return 0;
+      // 排序：行业匹配优先（和项目行业一致的排前面）> 收藏 > 引用数 > 名称
+      // 注意：即使 effectiveIndustry=空字符串（仅通用）也仍要保持排序行为一致，不能把所有行判成“匹配”
+      const priorityIndustry = effectiveIndustry ? String(effectiveIndustry) : '';
+      const sorted = [...all].sort((a: any, b: any) => {
+        const priority = (x: any) => {
+          const xi = typeof x.industry === 'string' ? x.industry : '';
+          // 匹配当前过滤行业（优先级 0） > 通用命令（1） > 其他行业（2）
+          if (priorityIndustry && xi === priorityIndustry) return 0;
+          if (xi === '') return 1;
+          return 2;
+        };
+        const aMatch = priority(a);
+        const bMatch = priority(b);
+        if (aMatch !== bMatch) return aMatch - bMatch;
+        const favA = Number(a.isFavorite) || 0;
+        const favB = Number(b.isFavorite) || 0;
+        if (favA !== favB) return favB - favA; // 收藏=1 在前
+        const refA = Number(a.referenceCount) || 0;
+        const refB = Number(b.referenceCount) || 0;
+        if (refA !== refB) return refB - refA;
+        return ((a.name || '') as string).localeCompare((b.name || '') as string, 'zh-Hans-CN');
       });
 
       const total = sorted.length;
-      const list = sorted.slice((page - 1) * pageSize, page * pageSize);
+      const safePage = Math.max(1, Number.isFinite(page) ? Number(page) : 1);
+      const safeSize = Math.max(1, Math.min(500, Number.isFinite(pageSize) ? Number(pageSize) : 20));
+      const start = (safePage - 1) * safeSize;
+      const list = sorted.slice(start, start + safeSize);
 
-      return { list, total };
+      // 兼容返回：
+      // - 当传的是 projectStandardId 但该标准无 industry 时，matchedIndustry 置空避免前端误显示
+      // - 当用户显式传 industry 但不存在任何通用/行业命令时，也保持返回
+      let displayMatched: string | null = null;
+      if (projectStandardId) {
+        displayMatched = resolvedIndustry && String(resolvedIndustry).trim() ? String(resolvedIndustry).trim() : null;
+      } else if (industry !== undefined && industry !== null) {
+        displayMatched = String(industry);
+      }
+      return { list, total, matchedIndustry: displayMatched };
     }));
+
+  // Phase 4 · 任务 30：列出命令库存在的行业值（去重，按命令数倒序），用于下拉筛选
+  ipcMain.handle('knowledge:listCommandIndustries', wrap(async () => {
+    const db = getDb();
+    const rows = await db
+      .select({ industry: schema.knowledgeCommands.industry, count: sql<number>`count(*)`.mapWith(Number).as('count') })
+      .from(schema.knowledgeCommands)
+      .groupBy(schema.knowledgeCommands.industry)
+      .orderBy(sql`count(*) desc`);
+    return rows.map((r: any) => ({
+      industry: (r && typeof r.industry === 'string') ? r.industry : '',
+      count: Number(r?.count) || 0,
+    }));
+  }));
 
   ipcMain.handle('knowledge:createCommand', wrap(async (_event, data: any) => {
       const db = getDb();
       const id = randomUUID();
       const now = new Date().toISOString();
-      await db.insert(schema.knowledgeCommands).values({
-        ...data,
+      const industry = typeof data?.industry === 'string' ? data.industry : '';
+      // 仅写入白名单字段，防止前端传入额外字段篡改内部列
+      const commandData = {
         id,
+        name: data.name,
+        target: data.target,
+        command: data.command,
+        description: data.description,
+        os: data.os,
+        brand: data.brand,
+        deviceType: data.deviceType,
+        category: data.category,
+        subCategory: data.subCategory,
+        industry,
         createdAt: now,
         updatedAt: now,
-      });
-      return { id, ...data };
+      };
+      await db.insert(schema.knowledgeCommands).values(commandData);
+      return commandData;
     }));
 
   ipcMain.handle('knowledge:updateCommand', wrap(async (_event, id: string, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
-      await db.update(schema.knowledgeCommands).set({
-        ...data,
+      const industry = typeof data?.industry === 'string' ? data.industry : '';
+      // 仅更新白名单字段，防止覆写 id/createdAt/referenceCount 等内部列
+      const patch = {
+        name: data.name,
+        target: data.target,
+        command: data.command,
+        description: data.description,
+        os: data.os,
+        brand: data.brand,
+        deviceType: data.deviceType,
+        category: data.category,
+        subCategory: data.subCategory,
+        industry,
+        isFavorite: data.isFavorite,
         updatedAt: now,
-      }).where(eq(schema.knowledgeCommands.id, id));
-      return { id, ...data };
+      };
+      await db.update(schema.knowledgeCommands).set(patch).where(eq(schema.knowledgeCommands.id, id));
+      return { id, ...patch };
     }));
 
   ipcMain.handle('knowledge:deleteCommand', wrap(async (_event, id: string) => {
@@ -282,21 +408,23 @@ export function registerKnowledgeHandlers(): void {
 
   // 导入 Excel
   ipcMain.handle('knowledge:importExcel', wrap(async (_event, filePath: string) => {
+      // 先校验路径，防止读取应用数据目录之外的任意文件
+      const resolvedPath = await validateDataPath(filePath);
       const errors: string[] = [];
       let imported = 0;
 
       try {
-        if (!fs.existsSync(filePath)) {
+        if (!fs.existsSync(resolvedPath)) {
           return { imported: 0, errors: ['文件不存在'] };
         }
 
-        const stats = fs.statSync(filePath);
+        const stats = fs.statSync(resolvedPath);
         if (stats.size > MAX_EXCEL_SIZE) {
           return { imported: 0, errors: [`文件大小超过限制 (${MAX_EXCEL_SIZE / 1024 / 1024}MB)`] };
         }
 
         const XLSX = require('xlsx');
-        const workbook = XLSX.readFile(filePath);
+        const workbook = XLSX.readFile(resolvedPath);
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         const rows: any[] = XLSX.utils.sheet_to_json(worksheet);
@@ -311,6 +439,7 @@ export function registerKnowledgeHandlers(): void {
           try {
             const id = randomUUID();
             const now = new Date().toISOString();
+            const industry = row['行业'] || row['industry'] || row['适用行业'] || '';
             await db.insert(schema.knowledgeCommands).values({
               id,
               name: row['名称'] || row['name'] || '',
@@ -322,6 +451,7 @@ export function registerKnowledgeHandlers(): void {
               deviceType: row['设备类型'] || row['deviceType'] || '',
               category: row['分类'] || row['category'] || '',
               subCategory: row['子分类'] || row['subCategory'] || '',
+              industry: typeof industry === 'string' ? industry : '',
               isFavorite: 0,
               createdAt: now,
               updatedAt: now,
@@ -346,7 +476,8 @@ export function registerKnowledgeHandlers(): void {
         fs.mkdirSync(uploadDir, { recursive: true });
       }
 
-      const fileName = `${Date.now()}_${fileInfo.name}`;
+      // 使用 path.basename 剥离文件名中的路径分隔符，防止前端传入含 '../' 的文件名导致写入 uploadDir 之外的任意位置
+      const fileName = `${Date.now()}_${path.basename(fileInfo.name)}`;
       const filePath = path.join(uploadDir, fileName);
       const buffer = Buffer.from(fileInfo.data);
       fs.writeFileSync(filePath, buffer);
@@ -406,18 +537,18 @@ export function registerKnowledgeHandlers(): void {
 
   // 读取文件内容
   ipcMain.handle('knowledge:readFile', wrap(async (_event, filePath: string) => {
-      const resolvedPath = await resolvePath(filePath);
+      const resolvedPath = await validateDataPath(filePath);
       const content = fs.readFileSync(resolvedPath, 'utf-8');
       return { content, fileName: path.basename(resolvedPath) };
-    }));
+    }, { moduleName: 'knowledge', requireSession: true }));
 
     // 删除上传的文件
     ipcMain.handle('knowledge:deleteFile', wrap(async (_event, filePath: string) => {
-        const resolvedPath = await resolvePath(filePath);
+        const resolvedPath = await validateDataPath(filePath);
         if (fs.existsSync(resolvedPath)) {
           fs.unlinkSync(resolvedPath);
         }
-      }));
+      }, { moduleName: 'knowledge', requireSession: true }));
 
   // 获取知识库统计
   ipcMain.handle('knowledge:getStats', wrap(async () => {
@@ -435,37 +566,59 @@ export function registerKnowledgeHandlers(): void {
 
   // 导入知识库（从JSON文件批量导入命令）
   ipcMain.handle('knowledge:importKnowledge', wrap(async (_event, filePath: string) => {
-      if (!fs.existsSync(filePath)) {
+      // 先校验路径，防止读取应用数据目录之外的任意文件
+      const resolvedPath = await validateDataPath(filePath);
+      if (!fs.existsSync(resolvedPath)) {
         throw new Error('文件不存在');
       }
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const data = JSON.parse(content);
+      const content = fs.readFileSync(resolvedPath, 'utf-8');
+      let data: any = null;
+      try {
+        data = JSON.parse(content);
+      } catch (e: any) {
+        throw new Error(`JSON 解析失败：${e?.message || '非法 JSON'}`);
+      }
+      if (!data || typeof data !== 'object') {
+        throw new Error('JSON 顶层必须是对象 { commands: [...] }');
+      }
       const db = getDb();
       const now = new Date().toISOString();
       let count = 0;
+      let skipped = 0;
 
       if (data.commands && Array.isArray(data.commands)) {
         for (const cmd of data.commands) {
+          // 兼容性：旧版本导出 JSON 可能缺 industry、缺失必选字段；缺必填则跳过，不中断整批
+          if (!cmd || typeof cmd !== 'object') { skipped++; continue; }
+          const name = typeof cmd.name === 'string' ? cmd.name.trim() : '';
+          const command = typeof cmd.command === 'string' ? cmd.command : '';
+          if (!name || !command) { skipped++; continue; }
           const id = randomUUID();
-          await db.insert(schema.knowledgeCommands).values({
-            id,
-            name: cmd.name || '',
-            target: cmd.target || '',
-            command: cmd.command || '',
-            description: cmd.description || '',
-            os: cmd.os || '',
-            brand: cmd.brand || '',
-            deviceType: cmd.deviceType || '',
-            category: cmd.category || '',
-            subCategory: cmd.subCategory || '',
-            isFavorite: 0,
-            createdAt: now,
-            updatedAt: now,
-          });
-          count++;
+          const industry = typeof cmd.industry === 'string' ? cmd.industry : '';
+          try {
+            await db.insert(schema.knowledgeCommands).values({
+              id,
+              name,
+              target: typeof cmd.target === 'string' ? cmd.target : '',
+              command,
+              description: typeof cmd.description === 'string' ? cmd.description : '',
+              os: typeof cmd.os === 'string' ? cmd.os : '',
+              brand: typeof cmd.brand === 'string' ? cmd.brand : '',
+              deviceType: typeof cmd.deviceType === 'string' ? cmd.deviceType : '',
+              category: typeof cmd.category === 'string' ? cmd.category : '',
+              subCategory: typeof cmd.subCategory === 'string' ? cmd.subCategory : '',
+              industry,
+              isFavorite: Number(cmd.isFavorite) === 1 ? 1 : 0,
+              createdAt: now,
+              updatedAt: now,
+            });
+            count++;
+          } catch (e) {
+            skipped++;
+          }
         }
       }
-      return { count };
+      return { count, skipped };
     }));
 
   // 导出知识库（导出命令到JSON文件）
@@ -487,7 +640,7 @@ export function registerKnowledgeHandlers(): void {
       if (!doc.filePath) {
         throw new Error('文档文件路径为空');
       }
-      const resolvedPath = await resolvePath(doc.filePath);
+      const resolvedPath = await validateDataPath(doc.filePath);
       if (!fs.existsSync(resolvedPath)) {
         throw new Error('文档文件不存在');
       }
@@ -506,7 +659,7 @@ export function registerKnowledgeHandlers(): void {
       if (!doc.filePath) {
         return { saved: false };
       }
-      const resolvedPath = await resolvePath(doc.filePath);
+      const resolvedPath = await validateDataPath(doc.filePath);
       if (!fs.existsSync(resolvedPath)) {
         return { saved: false };
       }
@@ -573,12 +726,14 @@ export function registerKnowledgeHandlers(): void {
 
   // 列出目录文件
   ipcMain.handle('knowledge:listDirectoryFiles', wrap(async (_event, dirPath: string) => {
-      if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+      // 先校验路径，防止列举应用数据目录之外的任意目录
+      const resolvedPath = await validateDataPath(dirPath);
+      if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isDirectory()) {
         throw new Error('目录不存在');
       }
-      const items = fs.readdirSync(dirPath);
+      const items = fs.readdirSync(resolvedPath);
       return items.map(name => {
-        const fullPath = path.join(dirPath, name);
+        const fullPath = path.join(resolvedPath, name);
         const stat = fs.statSync(fullPath);
         return {
           name,
@@ -593,7 +748,7 @@ export function registerKnowledgeHandlers(): void {
   ipcMain.handle('knowledge:readExcelFile', wrap(async (_event, filePath: string, sheetName?: string) => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const XLSX = require('xlsx');
-      const resolvedPath = await resolvePath(filePath);
+      const resolvedPath = await validateDataPath(filePath);
       const workbook = XLSX.readFile(resolvedPath);
       const sheets = workbook.SheetNames;
       const targetSheet = sheetName || sheets[0];
@@ -601,14 +756,14 @@ export function registerKnowledgeHandlers(): void {
       const data: any[] = XLSX.utils.sheet_to_json(worksheet);
       const columns = data.length > 0 ? Object.keys(data[0]) : [];
       return { sheetNames: sheets, columns, data };
-    }));
+    }, { moduleName: 'knowledge', requireSession: true }));
 
   // 读取 Word 文件
   ipcMain.handle('knowledge:readWordFile', wrap(async (_event, filePath: string) => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const mammoth = require('mammoth');
-      const resolvedPath = await resolvePath(filePath);
+      const resolvedPath = await validateDataPath(filePath);
       const result = await mammoth.convertToHtml({ path: resolvedPath });
       return { html: result.value };
-    }));
+    }, { moduleName: 'knowledge', requireSession: true }));
 }

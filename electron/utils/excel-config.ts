@@ -1,18 +1,10 @@
-export const ASSET_CATEGORY_NAMES: Record<string, string> = {
-  machine_room: '管理机房',
-  network_boundary: '区域边界',
-  network_device: '网络设备',
-  security_device: '安全设备',
-  server_storage: '服务器/存储设备',
-  sys_doc: '系统管理文档',
-  management_platform: '系统管理平台',
-  business_app: '业务应用系统',
-  terminal: '业务终端/运维终端',
-  other_asset: '其他系统或设备',
-  data_resource: '数据资源',
-  crypto_product: '密码产品',
-  security_personnel: '安全相关人员',
-};
+import { ASSET_CATEGORIES } from '../../shared/asset-categories';
+// 标准展示顺序统一由共享资产分类导出，避免与 ASSET_CATEGORIES 顺序漂移
+export { ASSET_CATEGORY_ORDER } from '../../shared/asset-categories';
+
+export const ASSET_CATEGORY_NAMES: Record<string, string> = Object.fromEntries(
+  ASSET_CATEGORIES.map((c) => [c.id, c.name]),
+);
 
 export const ASSET_IMPORTANCE_MAP: Record<string, string> = {
   high: '关键',
@@ -153,12 +145,6 @@ export const ASSET_COLUMNS_MAP: Record<string, { header: string; key: string; wi
   ],
 };
 
-export const ASSET_CATEGORY_ORDER = [
-  'machine_room', 'network_boundary', 'network_device', 'security_device',
-  'server_storage', 'management_platform', 'business_app',
-  'terminal', 'other_asset', 'data_resource', 'crypto_product',
-  'security_personnel', 'sys_doc',
-] as const;
 
 export const ASSET_EXAMPLE_DATA: Record<string, Record<string, any>[]> = {
   machine_room: [

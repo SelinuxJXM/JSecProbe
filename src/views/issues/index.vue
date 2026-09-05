@@ -380,14 +380,19 @@
     </el-dialog>
 
     <ReportConfigDialog ref="reportDialogRef" />
+    <!-- Phase 4：把项目/标准 ID 传入 AI 组件，用于按标准检索条款上下文（行标/国标均可） -->
     <IssueAiAnalysis
       ref="issueAiAnalysisRef"
       :get-issue-domain-id="getIssueDomainId"
+      :project-id="projectId"
+      :standard-id="project?.standardId"
       @apply-suggestion="handleApplySuggestion"
     />
     <IssueDescriptionAnalysis
       ref="issueDescriptionAnalysisRef"
       :get-issue-domain-id="getIssueDomainId"
+      :project-id="projectId"
+      :standard-id="project?.standardId"
       @apply-description="handleApplyDescription"
     />
   </div>
@@ -512,44 +517,84 @@ const batchStatusVisible = ref(false);
 const batchNewStatus = ref('');
 const batchNewRiskLevel = ref('');
 
-const domainList = computed(() => [
-  '安全物理环境',
-  '安全通信网络',
-  '安全区域边界',
-  '安全计算环境',
-  '安全管理中心',
-  '安全管理制度',
-  '安全管理机构',
-  '安全管理人员',
-  '安全建设管理',
-  '安全运维管理',
-]);
-
-// 安全域ID与中文名称映射
-const DOMAIN_ID_TO_NAME: Record<string, string> = {
-  'secure_physical': '安全物理环境',
-  'secure_communication': '安全通信网络',
-  'secure_boundary': '安全区域边界',
-  'secure_computing': '安全计算环境',
-  'secure_management': '安全管理中心',
-  'security_management': '安全管理制度',
-  'security_organization': '安全管理机构',
-  'security_personnel': '安全管理人员',
-  'security_construction': '安全建设管理',
-  'security_maintenance': '安全运维管理',
+// 改造：问题页安全域动态化（按项目标准加载；fallback 为国标十域）
+const FALLBACK_DOMAIN_ID_MAP: Record<string, { name: string; domainType?: string }> = {
+  'secure_physical': { name: '安全物理环境', domainType: 'national' },
+  'secure_communication': { name: '安全通信网络', domainType: 'national' },
+  'secure_boundary': { name: '安全区域边界', domainType: 'national' },
+  'secure_computing': { name: '安全计算环境', domainType: 'national' },
+  'secure_management': { name: '安全管理中心', domainType: 'national' },
+  'security_management': { name: '安全管理制度', domainType: 'national' },
+  'security_organization': { name: '安全管理机构', domainType: 'national' },
+  'security_personnel': { name: '安全管理人员', domainType: 'national' },
+  'security_construction': { name: '安全建设管理', domainType: 'national' },
+  'security_maintenance': { name: '安全运维管理', domainType: 'national' },
 };
 
-const DOMAIN_NAME_TO_ID: Record<string, string> = {};
-for (const [id, name] of Object.entries(DOMAIN_ID_TO_NAME)) {
-  DOMAIN_NAME_TO_ID[name] = id;
-}
+// 动态域元信息：id -> { name, domainType }（通过项目标准加载）
+const domainMetaMap = ref<Record<string, { name: string; domainType?: string }>>({ ...FALLBACK_DOMAIN_ID_MAP });
+
+// 安全域下拉列表（用于筛选）：名称列表，自动包含所有「项目已录入过问题的域」
+const domainList = computed<string[]>(() => {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  // 1. 先追加该标准声明的所有域
+  for (const meta of Object.values(domainMetaMap.value)) {
+    if (meta?.name && !seen.has(meta.name)) {
+      seen.add(meta.name);
+      names.push(meta.name);
+    }
+  }
+  // 2. 追加项目中已出现过的问题的域名称（确保历史数据可筛选）
+  for (const issue of issueList.value || []) {
+    if (!issue?.securityDomain) continue;
+    let n = issue.securityDomain;
+    if (domainMetaMap.value[n]?.name) n = domainMetaMap.value[n].name;
+    if (!seen.has(n)) { seen.add(n); names.push(n); }
+  }
+  return names;
+});
+
+// 按名称反查 ID（优先 exact match，其次基于 domainMetaMap）
+const DOMAIN_NAME_TO_ID = computed<Record<string, string>>(() => {
+  const rev: Record<string, string> = {};
+  for (const [id, meta] of Object.entries(domainMetaMap.value)) {
+    if (meta?.name) rev[meta.name] = id;
+  }
+  return rev;
+});
 
 function getIssueDomainId(domainName: string): string {
-  return DOMAIN_NAME_TO_ID[domainName] || domainName || '';
+  return DOMAIN_NAME_TO_ID.value[domainName as keyof typeof DOMAIN_NAME_TO_ID.value] || domainName || '';
 }
 
 function getSecurityDomainName(domainId: string): string {
-  return DOMAIN_ID_TO_NAME[domainId] || domainId || '-';
+  if (!domainId) return '-';
+  if (domainMetaMap.value[domainId]?.name) return domainMetaMap.value[domainId].name;
+  // 传入值本身就是中文名称（旧数据兼容）
+  if (Object.values(domainMetaMap.value).some(m => m?.name === domainId)) return domainId;
+  return domainId;
+}
+
+// 按项目标准动态加载域列表
+async function loadDomainsForProject() {
+  const pid = projectId.value;
+  if (!pid || !window.api) return;
+  try {
+    const projectResp = await window.api.project.get(pid);
+    const stdId = projectResp.success && projectResp.data?.standardId ? projectResp.data.standardId : undefined;
+    if (!stdId) return;
+    const resp = await window.api.standard.getDomains(stdId);
+    if (resp?.success && Array.isArray(resp.data)) {
+      const patch: Record<string, { name: string; domainType?: string }> = { ...FALLBACK_DOMAIN_ID_MAP };
+      for (const d of resp.data) {
+        if (d?.id) patch[d.id] = { name: d.name || d.id, domainType: d.domainType };
+      }
+      domainMetaMap.value = patch;
+    }
+  } catch (error) {
+    console.warn('加载问题页安全域失败，fallback 国标十域:', error);
+  }
 }
 
 const complianceRateValue = computed(() => {
@@ -602,7 +647,7 @@ async function loadIssues() {
       keyword: filterForm.keyword || undefined,
       riskLevel: filterForm.riskLevel || undefined,
       status: filterForm.status || undefined,
-      securityDomain: filterForm.securityDomain ? DOMAIN_NAME_TO_ID[filterForm.securityDomain] : undefined,
+      securityDomain: filterForm.securityDomain ? getIssueDomainId(filterForm.securityDomain) : undefined,
       sortProp: sortConfig.prop || undefined,
       sortOrder: sortConfig.order || undefined,
       page: pagination.page,
@@ -940,6 +985,7 @@ async function handleApplyDescription(issueId: string, description: string) {
 
 onMounted(() => {
   loadProject();
+  loadDomainsForProject();
   loadSummary();
   loadIssues();
 });
@@ -971,7 +1017,7 @@ onMounted(() => {
 }
 
 .page-container {
-  height: 100vh;
+  height: calc(100vh - var(--titlebar-height, 40px));
   display: flex;
   flex-direction: column;
   background: var(--color-bg-page);

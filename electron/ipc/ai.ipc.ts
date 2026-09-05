@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron';
+import { ipcMain, safeStorage } from 'electron';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
@@ -8,7 +8,9 @@ import * as path from 'path';
 import log from 'electron-log';
 import sharp from 'sharp';
 import { writeOperationLog } from '../utils/operation-log';
-import { resolvePath } from '../utils/path-resolver';
+import { resolvePath, validateDataPath } from '../utils/path-resolver';
+import { requireSession } from '../utils/auth-guard';
+import { wrap as globalWrap } from '../utils/ipc-wrapper';
 import {
   getOllamaStatus,
   listModels,
@@ -153,7 +155,7 @@ async function desensitizeImage(imagePath: string): Promise<string> {
     const width = meta.width || 0;
     const height = meta.height || 0;
 
-    const worker = await getSharedWorker('eng');
+    const worker = await getSharedWorker('chi_sim+eng');
     if (!worker) {
       log.warn(`[图片脱敏] OCR worker 不可用，发送原图`);
       return imageBuffer.toString('base64');
@@ -325,20 +327,43 @@ function desensitizeText(text: string, extraWords?: string[]): string {
   return result;
 }
 
-function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
-  return Promise.resolve()
-    .then(fn)
-    .then((data) => sanitize({ success: true, data }))
-    .catch((error) => {
-      log.error('AI IPC Error:', error);
-      return sanitize({
-        success: false,
-        error: {
-          code: error.code || 'INTERNAL_ERROR',
-          message: error.message || '操作失败',
-        },
-      });
-    });
+function wrap<T>(event: any, fn: () => T | Promise<T>): Promise<any> {
+  // 统一走全局 wrap：默认 requireAuth: true（受信来源校验），与全应用 IPC 鉴权契约一致，
+  // 拦截非受信来源（如被注入的恶意网页）调用 AI 通道；同时保留响应体脱敏（sanitize）。
+  const handler = globalWrap(async () => fn() as any, { moduleName: 'ai', requireAuth: true });
+  return handler(event).then(sanitize);
+}
+
+/**
+ * API Key 加解密：使用 safeStorage（Windows DPAPI）落库加密。
+ * - 加密值带 'enc:v1:' 前缀，未带前缀的视为旧版明文（兼容，下次保存时自动转加密）
+ * - safeStorage 不可用时降级为明文保存
+ */
+const API_KEY_ENC_PREFIX = 'enc:v1:';
+
+function encryptApiKey(plain: string): string {
+  if (!plain || plain.startsWith(API_KEY_ENC_PREFIX)) return plain;
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return plain;
+    return API_KEY_ENC_PREFIX + safeStorage.encryptString(plain).toString('base64');
+  } catch (e) {
+    log.warn('[AI] 加密 API Key 失败，将以明文保存:', e);
+    return plain;
+  }
+}
+
+function decryptApiKey(stored: string): string {
+  if (!stored || !stored.startsWith(API_KEY_ENC_PREFIX)) return stored;
+  try {
+    return safeStorage.decryptString(Buffer.from(stored.slice(API_KEY_ENC_PREFIX.length), 'base64'));
+  } catch (e) {
+    log.error('[AI] 解密 API Key 失败（密文可能损坏或系统凭据变更），请重新填写 API Key:', e);
+    return '';
+  }
+}
+
+function maskApiKey(key: string): string {
+  return key.length > 12 ? key.substring(0, 4) + '****' + key.substring(key.length - 4) : '****';
 }
 
 /**
@@ -347,6 +372,7 @@ function wrap<T>(fn: () => T | Promise<T>): Promise<any> {
  * - 数值字段强制为 number
  * - 字符串字段兜底空串
  * - privacyMode/ocrPreprocess 强制为 0/1
+ * - apiKey 解密（兼容旧明文）
  */
 function normalizeConfig(raw: any): any {
   if (!raw || typeof raw !== 'object') return raw;
@@ -360,7 +386,7 @@ function normalizeConfig(raw: any): any {
   return {
     ...raw,
     mode,
-    apiKey: toStr(raw.apiKey),
+    apiKey: decryptApiKey(toStr(raw.apiKey)),
     apiBase: toStr(raw.apiBase),
     model: toStr(raw.model, 'gpt-4o-mini'),
     provider: toStr(raw.provider, 'openai'),
@@ -376,27 +402,282 @@ function normalizeConfig(raw: any): any {
 
 
 export function registerAIHandlers(): void {
-  ipcMain.handle('ai:getConfig', async () =>
-    wrap(async () => {
+  /**
+   * 云端模型故障转移：按 priority 顺序依次尝试，全部失败才抛错。
+   * 返回 { success, modelId, modelName, content, error }
+   */
+  async function callWithFailover(params: {
+    messages: any[];
+    temperature?: number;
+    mode?: string;
+    config?: any;
+  }): Promise<{ success: boolean; modelId?: string; modelName?: string; content: string; error?: string }> {
+    const { messages, temperature = 0.3, mode = 'cloud', config } = params;
+    const db = getDb();
+
+    // 优先使用云端模型列表（mode === 'cloud'）
+    if (mode === 'cloud') {
+      const activeModelId = config?.activeModelId || null;
+      const cloudModels = await db.select().from(schema.aiCloudModels)
+        .where(eq(schema.aiCloudModels.configId, 'default'))
+        .orderBy(schema.aiCloudModels.priority)
+        .all();
+
+      if (cloudModels.length > 0) {
+        // 构建尝试队列：先 activeModelId（如果有效），然后按 priority 排序的所有启用模型
+        const enabledModels = cloudModels.filter(m => m.enabled === 1);
+        const attemptOrder = [...enabledModels];
+        // 确保 activeModelId 排在最前面（如果存在且启用）
+        if (activeModelId) {
+          const activeIdx = attemptOrder.findIndex(m => m.id === activeModelId);
+          if (activeIdx >= 0) {
+            const [active] = attemptOrder.splice(activeIdx, 1);
+            attemptOrder.unshift(active);
+          }
+        }
+
+        for (const model of attemptOrder) {
+          const apiKey = model.apiKey ? decryptApiKey(model.apiKey) : '';
+          if (!apiKey) {
+            log.warn(`[AI故障转移] 模型 ${model.name} 缺少 API Key，跳过`);
+            continue;
+          }
+          const apiUrl = ensureApiUrl(model.apiBase, mode);
+          if (!apiUrl) {
+            log.warn(`[AI故障转移] 模型 ${model.name} API 地址无效，跳过`);
+            continue;
+          }
+
+          try {
+            const requestBody = JSON.stringify({
+              model: model.model,
+              messages,
+              temperature,
+            });
+            const bodySizeKB = Buffer.byteLength(requestBody, 'utf8') / 1024;
+            log.info(`[AI故障转移] 尝试模型: ${model.name} (${model.model}), URL: ${apiUrl}, 请求体: ${bodySizeKB.toFixed(1)}KB`);
+
+            const response = await fetch(apiUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+              },
+              body: requestBody,
+            });
+
+            if (!response.ok) {
+              const errorBody = await response.text().catch(() => '');
+              throw new Error(`API请求失败(${response.status}): ${errorBody}`);
+            }
+
+            const data = await response.json();
+            const content = data.choices?.[0]?.message?.content || '';
+            log.info(`[AI故障转移] 模型 ${model.name} 调用成功, 返回内容长度: ${content.length}字符`);
+            return { success: true, modelId: model.id, modelName: model.name, content };
+          } catch (error: any) {
+            log.warn(`[AI故障转移] 模型 ${model.name} 失败: ${error.message}`);
+            continue; // 尝试下一个
+          }
+        }
+
+        // 所有云端模型都失败
+        throw new Error(`云端模型全部失败（共 ${attemptOrder.length} 个）。最近错误：${messages[messages.length - 1]?.content?.substring(0, 50)}...`);
+      }
+    }
+
+    // 本地模式或没有云端模型时，回退到原有逻辑
+    if (mode === 'local' && config) {
+      const model = config.ollamaModel || config.model || '';
+      const apiUrl = `${(config.ollamaUrl || 'http://localhost:11434').replace(/\/+$/, '')}/v1`;
+      const apiKey = 'ollama';
+
+      try {
+        const requestBody = JSON.stringify({
+          model,
+          messages,
+          temperature,
+        });
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: requestBody,
+        });
+
+        if (!response.ok) {
+          const errorBody = await response.text().catch(() => '');
+          throw new Error(`Ollama请求失败(${response.status}): ${errorBody}`);
+        }
+
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content || '';
+        return { success: true, modelName: model, content };
+      } catch (error: any) {
+        throw error;
+      }
+    }
+
+    // 兜底：使用 config 中的单一模型配置（向后兼容）
+    if (config) {
+      const model = mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
+      const apiUrl = ensureApiUrl(getEffectiveApiBase(config, mode), mode);
+      const apiKey = getApiKeyForMode(config);
+
+      const requestBody = JSON.stringify({
+        model,
+        messages,
+        temperature,
+      });
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: requestBody,
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        throw new Error(`API请求失败(${response.status}): ${errorBody}`);
+      }
+
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content || '';
+      return { success: true, modelName: model, content };
+    }
+
+    throw new Error('未配置任何可用的 AI 模型');
+  }
+
+  /**
+   * 解析云端可用的模型端点列表（供除 ai:chat 外的其它 AI 功能做故障转移）。
+   * 规则与 callWithFailover 保持一致：过滤禁用 → 激活模型优先 → 其余按 priority 升序。
+   * 本地模式或云端无可用模型时返回空数组（调用方走单端点兜底逻辑）。
+   */
+  async function resolveCloudEndpoints(config: any): Promise<Array<{ id: string; name: string; model: string; apiBase: string; apiKey: string }>> {
+    const db = getDb();
+    const activeModelId = config?.activeModelId || null;
+    const cloudModels = await db.select().from(schema.aiCloudModels)
+      .where(eq(schema.aiCloudModels.configId, 'default'))
+      .orderBy(schema.aiCloudModels.priority)
+      .all();
+    const enabled = cloudModels.filter(m => m.enabled === 1);
+    if (enabled.length === 0) return [];
+
+    const order = [...enabled];
+    if (activeModelId) {
+      const idx = order.findIndex(m => m.id === activeModelId);
+      if (idx >= 0) {
+        const [active] = order.splice(idx, 1);
+        order.unshift(active);
+      }
+    }
+
+    return order
+      .map(m => {
+        const apiKey = m.apiKey ? decryptApiKey(m.apiKey) : '';
+        const apiBase = m.apiBase || '';
+        return apiKey && apiBase
+          ? { id: m.id, name: m.name || m.model, model: m.model, apiBase, apiKey }
+          : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+  }
+
+  /**
+   * 通用故障转移执行器：对候选端点逐个尝试，失败自动切换到下一个。
+   * - 本地模式：使用 config 中的 Ollama 单端点（不参与故障转移）
+   * - 云端模式：遍历 resolveCloudEndpoints 的模型列表
+   * - 云端但未配置模型：明确报错，引导用户在「云端模型列表」中添加
+   * build 回调接收每个端点的 model/apiBase/apiKey，返回请求体。
+   */
+  async function runWithFailover(
+    config: any,
+    mode: string,
+    options: {
+      build: (ep: { model: string; apiBase: string; apiKey: string; name: string }) => {
+        body: string;
+        timeoutMs: number;
+      };
+    },
+  ): Promise<{ content: string; modelName?: string }> {
+    const { build } = options;
+
+    async function attempt(ep: { model: string; apiBase: string; apiKey: string; name: string }): Promise<{ content: string; modelName?: string }> {
+      const { body, timeoutMs } = build(ep);
+      const apiUrl = ensureApiUrl(ep.apiBase, 'cloud');
+      if (!apiUrl) throw new Error(`模型 ${ep.name} API 地址无效`);
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(new Error('请求超时')), timeoutMs || 30000);
+      try {
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ep.apiKey}` },
+          body,
+          signal: ac.signal,
+        });
+        if (!response.ok) {
+          const errorBody = await response.text().catch(() => '');
+          throw new Error(`API请求失败(${response.status}): ${errorBody}`);
+        }
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content || '';
+        if (!content) throw new Error('模型返回内容为空');
+        return { content, modelName: ep.name };
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // 本地模式：单端点（Ollama）
+    if (mode === 'local') {
+      const ep = {
+        model: config.ollamaModel || config.model || '',
+        apiBase: `${(config.ollamaUrl || 'http://localhost:11434').replace(/\/+$/, '')}/v1`,
+        apiKey: 'ollama',
+        name: config.ollamaModel || '本地模型',
+      };
+      return attempt(ep);
+    }
+
+    // 云端模式：遍历模型列表做故障转移
+    const endpoints = await resolveCloudEndpoints(config);
+    if (endpoints.length === 0) {
+      throw new Error('尚未配置云端模型，请在 AI 设置的「云端模型列表」中添加模型');
+    }
+    let lastErr: any = null;
+    for (const ep of endpoints) {
+      try {
+        return await attempt(ep);
+      } catch (e: any) {
+        lastErr = e;
+        log.warn(`[AI故障转移] 模型 ${ep.name} 失败: ${e.message}`);
+      }
+    }
+    throw new Error(`云端模型全部失败（共 ${endpoints.length} 个）。最近错误：${lastErr?.message || ''}`);
+  }
+
+  ipcMain.handle('ai:getConfig', async (event) =>
+    wrap(event, async () => {
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
       const config: any = configs[0] ? { ...configs[0] } : {};
-      // 返回前对 apiKey 脱敏，防止明文泄露到渲染层
+      // 返回前对 apiKey 解密并脱敏，防止明文泄露到渲染层
       // testConnection 等需要完整 apiKey 的场景通过 params.apiKey 单独传参
       if (config.apiKey) {
-        const key = config.apiKey;
-        if (key.length > 12) {
-          config.apiKey = key.substring(0, 4) + '****' + key.substring(key.length - 4);
-        } else {
-          config.apiKey = '****';
-        }
+        const key = decryptApiKey(String(config.apiKey));
+        config.apiKey = key ? maskApiKey(key) : '';
       }
       return config;
     })
   );
 
-  ipcMain.handle('ai:saveConfig', async (_event, config: any) =>
-    wrap(async () => {
+  ipcMain.handle('ai:saveConfig', async (event, config: any) =>
+    wrap(event, async () => {
       const db = getDb();
       const now = new Date().toISOString();
       const mode = config.mode || 'cloud';
@@ -438,7 +719,13 @@ export function registerAIHandlers(): void {
       } else {
         // 云端模式：保存云端配置，同时保留本地 Ollama 配置
         saveData.apiBase = apiBase;
-        saveData.apiKey = config.apiKey;
+        // apiKey 三态处理：
+        // - 非空且非掩码 → 用户输入了新 key，加密后保存
+        // - 空串或含 '****'（前端掩码不回填所致）→ 视为未修改，保留 DB 原值，避免清空真实 key
+        const incomingKey = typeof config.apiKey === 'string' ? config.apiKey.trim() : '';
+        saveData.apiKey = (incomingKey && !incomingKey.includes('****'))
+          ? encryptApiKey(incomingKey)
+          : (existing?.apiKey || '');
         saveData.model = config.model;
         saveData.provider = config.provider || 'openai';
         // 保留本地 Ollama 配置
@@ -468,14 +755,14 @@ export function registerAIHandlers(): void {
     })
   );
 
-  ipcMain.handle('ollama:getStatus', async (_event, url?: string) =>
-    wrap(async () => {
+  ipcMain.handle('ollama:getStatus', async (event, url?: string) =>
+    wrap(event, async () => {
       return await getOllamaStatus(url);
     })
   );
 
-  ipcMain.handle('ollama:listModels', async (_event, url?: string) =>
-    wrap(async () => {
+  ipcMain.handle('ollama:listModels', async (event, url?: string) =>
+    wrap(event, async () => {
       return await listModels(url);
     })
   );
@@ -515,6 +802,7 @@ export function registerAIHandlers(): void {
   });
 
   ipcMain.handle('ollama:start', async (_event, url?: string) => {
+    requireSession(_event);
     try {
       const result = await startOllama(url);
       return sanitize({ success: result.success, data: result });
@@ -523,13 +811,14 @@ export function registerAIHandlers(): void {
     }
   });
 
-  ipcMain.handle('ollama:getInstallGuide', async () =>
-    wrap(async () => {
+  ipcMain.handle('ollama:getInstallGuide', async (event) =>
+    wrap(event, async () => {
       return getInstallGuide();
     })
   );
 
   ipcMain.handle('ollama:testConnection', async (_event, url?: string) => {
+    requireSession(_event);
     try {
       const result = await testOllamaConnection(url);
       if (result.success) {
@@ -542,8 +831,8 @@ export function registerAIHandlers(): void {
     }
   });
 
-  ipcMain.handle('ollama:getRecommendedModels', async () =>
-    wrap(async () => {
+  ipcMain.handle('ollama:getRecommendedModels', async (event) =>
+    wrap(event, async () => {
       return RECOMMENDED_MODELS;
     })
   );
@@ -568,7 +857,10 @@ export function registerAIHandlers(): void {
       // 合并 params 到 config，使 getEffectiveApiBase 能根据 mode 选择正确的 API 地址
       const mergedConfig = { ...config, ...params };
       const apiBase = getEffectiveApiBase(mergedConfig, mode);
-      const apiKey = getApiKeyForMode({ ...config, mode, apiKey: params?.apiKey || config.apiKey });
+      // params.apiKey 为掩码回传（含 '****'）时不可用于请求，回退到已解密的 config.apiKey
+      const paramKey = typeof params?.apiKey === 'string' ? params.apiKey.trim() : '';
+      const effectiveKey = (paramKey && !paramKey.includes('****')) ? paramKey : config.apiKey;
+      const apiKey = getApiKeyForMode({ ...config, mode, apiKey: effectiveKey });
       const model = getEffectiveModel(params, { ...config, mode });
 
       if (shouldValidateApiKey({ ...config, mode }) && !apiKey) {
@@ -655,76 +947,25 @@ export function registerAIHandlers(): void {
       const config = normalizeConfig(sanitize(configs[0]));
       const mode = config.mode || 'cloud';
 
-      if (shouldValidateApiKey(config) && !config.apiKey) {
+      if (shouldValidateApiKey(config) && !config.apiKey && !config.activeModelId) {
         throw new Error('API Key未配置');
       }
 
-      const model = getEffectiveModel(params, config);
       const temperature = params.temperature ?? config.temperature ?? 0.3;
-      const apiUrl = ensureApiUrl(getEffectiveApiBase(config, mode), mode);
-      const apiKey = getApiKeyForMode(config);
-
-      if (!apiUrl) throw new Error('API地址未配置');
-
       const messages: any[] = [];
       if (params.context) {
         messages.push({ role: 'system', content: params.context });
       }
       messages.push(...params.messages);
 
-      const requestBody = JSON.stringify({
-        model,
-        messages,
-        temperature,
-      });
-      const bodySizeKB = Buffer.byteLength(requestBody, 'utf8') / 1024;
-      log.info(`[AI对话] 模式: ${mode}, URL: ${apiUrl}, 模型: ${model}, 消息数: ${messages.length}, 请求体: ${bodySizeKB.toFixed(1)}KB`);
-
-      // 添加超时机制
-      const dynamicTimeout = calculateTimeout(1, 0, bodySizeKB, false);
-      const abortController = new AbortController();
-      const timeout = setTimeout(() => {
-        log.warn(`[AI对话] 请求超时(${dynamicTimeout}ms)，终止请求`);
-        abortController.abort(new Error('请求超时'));
-      }, dynamicTimeout);
-
-      let response;
-      try {
-        const fetchStartTime = Date.now();
-        response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          body: requestBody,
-          signal: abortController.signal,
-        });
-        const elapsed = Date.now() - fetchStartTime;
-        log.info(`[AI对话] fetch收到响应，耗时: ${elapsed}ms, 状态: ${response.status}`);
-      } catch (fetchError: any) {
-        if (fetchError.name === 'AbortError' || fetchError.message.includes('请求超时')) {
-          throw new Error('AI对话超时，请检查网络连接或稍后重试');
-        }
-        throw fetchError;
-      } finally {
-        clearTimeout(timeout);
-      }
-
-      if (!response.ok) {
-        const errorBody = await response.text().catch(() => '');
-        throw new Error(`API请求失败(${response.status}): ${apiUrl} - ${errorBody}`);
-      }
-
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content || '';
-      log.info(`[AI对话] 响应内容长度: ${content.length}字符`);
+      // 使用故障转移机制
+      const result = await callWithFailover({ messages, temperature, mode, config });
 
       try {
         writeOperationLog({
           action: 'ai_chat',
           module: 'ai',
-          description: `AI对话: 模式=${mode}, 模型=${model}, 消息数=${params.messages.length}, 上下文=${params.context ? '是' : '否'}`,
+          description: `AI对话: 模式=${mode}, 模型=${result.modelName || params.model || '未知'}, 消息数=${params.messages.length}, 上下文=${params.context ? '是' : '否'}, 故障转移=${result.modelName !== (config.model || params.model) ? '是' : '否'}`,
         });
       } catch (logErr: any) {
         log.error('[操作日志] 写入AI对话日志失败:', logErr.message);
@@ -733,7 +974,9 @@ export function registerAIHandlers(): void {
       return sanitize({
         success: true,
         data: {
-          content,
+          content: result.content,
+          modelName: result.modelName,
+          switched: result.modelName !== config.model,
           suggestions: [
             '是否需要进一步详细分析？',
             '将结果保存到核查记录',
@@ -769,16 +1012,7 @@ export function registerAIHandlers(): void {
       const config = normalizeConfig(sanitize(configs[0]));
       const mode = config.mode || 'cloud';
 
-      if (shouldValidateApiKey(config) && !config.apiKey) {
-        throw new Error('API Key未配置');
-      }
-
-      const model = mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
-      const apiUrl = ensureApiUrl(getEffectiveApiBase(config, mode), mode);
-      const apiKey = getApiKeyForMode(config);
-
-      if (!apiUrl) throw new Error('API地址未配置');
 
       const privacyMode = config.privacyMode === 1;
       const ocrPreprocess = params.ocrPreprocess === true;
@@ -891,14 +1125,6 @@ export function registerAIHandlers(): void {
         { role: 'user', content: userContent },
       ];
 
-      const requestBody = JSON.stringify({
-          model,
-          messages,
-          temperature,
-        });
-      const bodySizeKB = Buffer.byteLength(requestBody, 'utf8') / 1024;
-      log.info(`[单条AI分析] 请求体大小: ${bodySizeKB.toFixed(1)} KB, 截图数: ${screenshotCount}`);
-
       // 计算动态超时
       let totalImageSizeKB = 0;
       if (hasScreenshots && params.screenshots) {
@@ -911,42 +1137,14 @@ export function registerAIHandlers(): void {
       }
       const dynamicTimeout = calculateTimeout(1, screenshotCount, totalImageSizeKB, privacyMode);
 
-      const abortController = new AbortController();
-      const timeout = setTimeout(() => {
-        log.warn(`[单条AI分析] 请求超时(${dynamicTimeout}ms)，终止请求`);
-        abortController.abort(new Error('请求超时'));
-      }, dynamicTimeout);
-
-      let response;
-      try {
-        const fetchStartTime = Date.now();
-        response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: requestBody,
-        signal: abortController.signal,
+      // 使用云端模型列表做故障转移（失败自动切换下一模型）
+      const runResult = await runWithFailover(config, mode, {
+        build: (ep) => ({
+          body: JSON.stringify({ model: ep.model, messages, temperature }),
+          timeoutMs: dynamicTimeout,
+        }),
       });
-        const elapsed = Date.now() - fetchStartTime;
-        log.info(`[单条AI分析] fetch收到响应，耗时: ${elapsed}ms, 状态: ${response.status}`);
-      } catch (fetchError: any) {
-        if (fetchError.name === 'AbortError' || fetchError.message.includes('请求超时')) {
-          throw new Error('AI分析超时，请检查网络连接或稍后重试');
-        }
-        throw fetchError;
-      } finally {
-        clearTimeout(timeout);
-      }
-
-      if (!response.ok) {
-        const errorBody = await response.text().catch(() => '');
-        throw new Error(`API请求失败(${response.status}): ${apiUrl} - ${errorBody}`);
-      }
-
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content || '';
+      const content = runResult.content;
 
       try {
         writeOperationLog({
@@ -1013,16 +1211,7 @@ export function registerAIHandlers(): void {
       const config = normalizeConfig(sanitize(configs[0]));
       const mode = config.mode || 'cloud';
 
-      if (shouldValidateApiKey(config) && !config.apiKey) {
-        throw new Error('API Key未配置');
-      }
-
-      const model = mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
-      const apiUrl = ensureApiUrl(getEffectiveApiBase(config, mode), mode);
-      const apiKey = getApiKeyForMode(config);
-
-      if (!apiUrl) throw new Error('API地址未配置');
 
       const privacyMode = config.privacyMode === 1;
       const extraWords = config.sensitiveWords
@@ -1051,7 +1240,7 @@ export function registerAIHandlers(): void {
         log.info('[隐私模式] 批量分析截图将脱敏处理（OCR遮盖IP）后发送');
       }
 
-      log.info(`批量AI分析 请求URL: ${apiUrl}, 模型: ${model}, 图片数: ${hasImages ? params.screenshots.length : 0}, 隐私模式: ${privacyMode}`);
+      log.info(`批量AI分析 图片数: ${hasImages ? params.screenshots.length : 0}, 隐私模式: ${privacyMode}（模型由云端模型列表提供）`);
 
       const userContent: any[] = [];
       const imageFileNames: string[] = [];
@@ -1201,74 +1390,23 @@ ${itemsJson}
         { role: 'user', content: userContent },
       ];
 
-      const batchRequestBody = JSON.stringify({
-          model,
-          messages,
-          temperature,
-        });
-
-      const bodySizeKB = Buffer.byteLength(batchRequestBody, 'utf8') / 1024;
-      const hasApiKey = !!getApiKeyForMode(config);
-      log.info(`[批量AI分析] 请求体大小: ${bodySizeKB.toFixed(1)} KB, 用户内容项数: ${userContent.length}, 动态超时: ${dynamicTimeout}ms, API Key: ${hasApiKey ? '已配置' : '未配置'}`);
-
       sendProgress({ stage: 'sending', message: '正在提交给AI分析...', percent: 60 });
-
-      log.info(`[批量AI分析] 开始发送fetch请求... URL: ${apiUrl}`);
-      const fetchStartTime = Date.now();
 
       startHeartbeat(61, 90);
 
-      const abortController = new AbortController();
-      const timeout = setTimeout(() => {
-        log.warn(`[批量AI分析] 请求超时(${dynamicTimeout}ms)，终止请求`);
-        abortController.abort(new Error('请求超时'));
-      }, dynamicTimeout);
-
-      let response;
+      // 使用云端模型列表做故障转移（失败自动切换下一模型）
+      let runResult: any;
       try {
-        response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          body: batchRequestBody,
-          signal: abortController.signal,
+        runResult = await runWithFailover(config, mode, {
+          build: (ep) => ({
+            body: JSON.stringify({ model: ep.model, messages, temperature }),
+            timeoutMs: dynamicTimeout,
+          }),
         });
-        const elapsed = Date.now() - fetchStartTime;
-        log.info(`[批量AI分析] fetch收到响应，耗时: ${elapsed}ms, 状态: ${response.status}`);
-      } catch (fetchError: any) {
-        const elapsed = Date.now() - fetchStartTime;
-        log.error(`[批量AI分析] fetch请求失败，耗时: ${elapsed}ms, 错误: ${fetchError.name}: ${fetchError.message}`);
-        stopHeartbeat();
-        throw fetchError;
       } finally {
-        clearTimeout(timeout);
+        stopHeartbeat();
       }
-
-      stopHeartbeat();
-      sendProgress({ stage: 'receiving', message: 'AI正在分析中...', percent: 90 });
-      log.info(`[批量AI分析] 开始读取响应体...`);
-      const responseText = await response.text();
-      log.info(`[批量AI分析] 响应体大小: ${Buffer.byteLength(responseText, 'utf8') / 1024} KB`);
-      
-      sendProgress({ stage: 'parsing', message: '正在解析AI结果...', percent: 95 });
-
-      if (!response.ok) {
-        log.error(`[批量AI分析] API返回错误状态: ${response.status}, 响应: ${responseText.substring(0, 500)}`);
-        throw new Error(`API请求失败(${response.status}): ${apiUrl} - ${responseText}`);
-      }
-
-      let data;
-      try {
-        data = JSON.parse(responseText);
-      } catch (parseError: any) {
-        log.error(`[批量AI分析] JSON解析失败: ${parseError?.message || parseError}, 响应: ${responseText.substring(0, 500)}`);
-        throw new Error('AI返回数据格式错误');
-      }
-      sendProgress({ stage: 'parsing', message: '正在解析AI结果...', percent: 95 });
-
-      const content = data.choices?.[0]?.message?.content || '';
+      const content = runResult.content;
 
       sendProgress({ stage: 'done', message: '分析完成', percent: 100 });
 
@@ -1318,18 +1456,9 @@ ${itemsJson}
       const config = normalizeConfig(sanitize(configs[0]));
       const mode = config.mode || 'cloud';
 
-      if (shouldValidateApiKey(config) && !config.apiKey) {
-        throw new Error('API Key未配置');
-      }
-
-      const model = config.mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
-      const apiUrl = ensureApiUrl(getEffectiveApiBase(config), mode);
-      const apiKey = getApiKeyForMode(config);
-      if (!apiUrl) throw new Error('API地址未配置');
 
       log.info('[ai:analyzeIssue] AI配置:', JSON.stringify({
-        model,
         temperature,
         mode,
         privacyMode: config.privacyMode === 1,
@@ -1365,50 +1494,21 @@ ${itemsJson}
 
 请以纯文本形式返回整改建议（不需要JSON格式）。`;
 
-      const requestBody = JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: '你是一名专业的等级保护测评师，擅长撰写连贯的安全整改建议描述。请以纯文本段落形式返回整改建议，不需要JSON格式。' },
-          { role: 'user', content: systemPrompt },
-        ],
-        temperature,
+      // 使用云端模型列表做故障转移（失败自动切换下一模型）
+      const runResult = await runWithFailover(config, mode, {
+        build: (ep) => ({
+          body: JSON.stringify({
+            model: ep.model,
+            messages: [
+              { role: 'system', content: '你是一名专业的等级保护测评师，擅长撰写连贯的安全整改建议描述。请以纯文本段落形式返回整改建议，不需要JSON格式。' },
+              { role: 'user', content: systemPrompt },
+            ],
+            temperature,
+          }),
+          timeoutMs: 60000,
+        }),
       });
-
-      log.info('[ai:analyzeIssue] 发送API请求, 请求体大小:', Buffer.byteLength(requestBody, 'utf8'), 'bytes');
-
-      const abortController = new AbortController();
-      const timeout = setTimeout(() => {
-        log.warn('[ai:analyzeIssue] 请求超时(60s)，终止请求');
-        abortController.abort(new Error('请求超时'));
-      }, 60000);
-
-      let response;
-      try {
-        response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          body: requestBody,
-          signal: abortController.signal,
-        });
-      } catch (fetchError: any) {
-        if (fetchError.name === 'AbortError') throw new Error('AI分析超时');
-        throw fetchError;
-      } finally {
-        clearTimeout(timeout);
-      }
-
-      log.info('[ai:analyzeIssue] API响应状态:', response.status);
-
-      if (!response.ok) {
-        const errorBody = await response.text().catch(() => '');
-        throw new Error(`API请求失败(${response.status}): ${errorBody}`);
-      }
-
-      const data = await response.json();
-      let content = data.choices?.[0]?.message?.content || '';
+      let content = runResult.content;
       // 移除所有前导换行符和回车符
       content = content.replace(/^[\r\n]+/, '').trim();
 
@@ -1458,18 +1558,9 @@ ${itemsJson}
       const config = normalizeConfig(sanitize(configs[0]));
       const mode = config.mode || 'cloud';
 
-      if (shouldValidateApiKey(config) && !config.apiKey) {
-        throw new Error('API Key未配置');
-      }
-
-      const model = config.mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
-      const apiUrl = ensureApiUrl(getEffectiveApiBase(config), mode);
-      const apiKey = getApiKeyForMode(config);
-      if (!apiUrl) throw new Error('API地址未配置');
 
       log.info('[ai:analyzeIssueDescription] AI配置:', JSON.stringify({
-        model,
         temperature,
         mode,
         privacyMode: config.privacyMode === 1,
@@ -1508,50 +1599,21 @@ ${itemsJson}
 
 请直接返回问题描述文本，不要JSON格式，不要解释。`;
 
-      const requestBody = JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: '你是一名专业的等级保护测评师，擅长从问题信息中提炼核心安全问题和风险描述。' },
-          { role: 'user', content: systemPrompt },
-        ],
-        temperature,
+      // 使用云端模型列表做故障转移（失败自动切换下一模型）
+      const runResult = await runWithFailover(config, mode, {
+        build: (ep) => ({
+          body: JSON.stringify({
+            model: ep.model,
+            messages: [
+              { role: 'system', content: '你是一名专业的等级保护测评师，擅长从问题信息中提炼核心安全问题和风险描述。' },
+              { role: 'user', content: systemPrompt },
+            ],
+            temperature,
+          }),
+          timeoutMs: 60000,
+        }),
       });
-
-      log.info('[ai:analyzeIssueDescription] 发送API请求, 请求体大小:', Buffer.byteLength(requestBody, 'utf8'), 'bytes');
-
-      const abortController = new AbortController();
-      const timeout = setTimeout(() => {
-        log.warn('[ai:analyzeIssueDescription] 请求超时(60s)，终止请求');
-        abortController.abort(new Error('请求超时'));
-      }, 60000);
-
-      let response;
-      try {
-        response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          body: requestBody,
-          signal: abortController.signal,
-        });
-      } catch (fetchError: any) {
-        if (fetchError.name === 'AbortError') throw new Error('AI分析超时');
-        throw fetchError;
-      } finally {
-        clearTimeout(timeout);
-      }
-
-      log.info('[ai:analyzeIssueDescription] API响应状态:', response.status);
-
-      if (!response.ok) {
-        const errorBody = await response.text().catch(() => '');
-        throw new Error(`API请求失败(${response.status}): ${errorBody}`);
-      }
-
-      const data = await response.json();
-      let content = data.choices?.[0]?.message?.content || '';
+      let content = runResult.content;
       // 移除所有前导换行符和回车符
       content = content.replace(/^[\r\n]+/, '').trim().replace(/^["'"']|["'"']$/g, '');
 
@@ -1611,18 +1673,9 @@ ${itemsJson}
       const config = normalizeConfig(sanitize(configs[0]));
       const mode = config.mode || 'cloud';
 
-      if (shouldValidateApiKey(config) && !config.apiKey) {
-        throw new Error('API Key未配置');
-      }
-
-      const model = config.mode === 'local' ? (config.ollamaModel || config.model || '') : (config.model || '');
       const temperature = config.temperature ?? 0.3;
-      const apiUrl = ensureApiUrl(getEffectiveApiBase(config), mode);
-      const apiKey = getApiKeyForMode(config);
-      if (!apiUrl) throw new Error('API地址未配置');
 
       log.info('[ai:batchAnalyzeIssues] AI配置:', JSON.stringify({
-        model,
         temperature,
         mode,
         privacyMode: config.privacyMode === 1,
@@ -1674,44 +1727,22 @@ ${itemsJson}
 
 请以纯文本形式返回整改建议（不需要JSON格式）。`;
 
-          const requestBody = JSON.stringify({
-            model,
-            messages: [
-              { role: 'system', content: '你是一名专业的等级保护测评师，擅长撰写连贯的安全整改建议描述。请以纯文本段落形式返回整改建议，不需要JSON格式。' },
-              { role: 'user', content: systemPrompt },
-            ],
-            temperature,
+          // 使用云端模型列表做故障转移（失败自动切换下一模型）
+          const runResult = await runWithFailover(config, mode, {
+            build: (ep) => ({
+              body: JSON.stringify({
+                model: ep.model,
+                messages: [
+                  { role: 'system', content: '你是一名专业的等级保护测评师，擅长撰写连贯的安全整改建议描述。请以纯文本段落形式返回整改建议，不需要JSON格式。' },
+                  { role: 'user', content: systemPrompt },
+                ],
+                temperature,
+              }),
+              timeoutMs: 60000,
+            }),
           });
-
-          const abortController = new AbortController();
-          const timeout = setTimeout(() => abortController.abort(new Error('请求超时')), 60000);
-
-          let response;
-          try {
-            response = await fetch(apiUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`,
-              },
-              body: requestBody,
-              signal: abortController.signal,
-            });
-          } catch (fetchError: any) {
-            if (fetchError.name === 'AbortError') throw new Error('AI分析超时');
-            throw fetchError;
-          } finally {
-            clearTimeout(timeout);
-          }
-
-          if (!response.ok) {
-            const errorBody = await response.text().catch(() => '');
-            throw new Error(`API请求失败(${response.status}): ${errorBody}`);
-          }
-
-          const data = await response.json();
           // 移除所有前导换行符和回车符
-          const content = (data.choices?.[0]?.message?.content || '').replace(/^[\r\n]+/, '').trim();
+          const content = runResult.content.replace(/^[\r\n]+/, '').trim();
           results.push({ issueId: issue.issueId, suggestion: content, success: true });
           successCount++;
           log.info(`[ai:batchAnalyzeIssues] [${i + 1}/${total}] 分析成功, 返回内容长度: ${content.length}`);
@@ -1750,8 +1781,10 @@ ${itemsJson}
 
   // OCR 相关 IPC 处理器
   ipcMain.handle('ocr:extractText', async (_event, imagePath: string, options?: any) => {
+    requireSession(_event);
     try {
-      const result = await extractTextFromImage(imagePath, options);
+      const safePath = await validateDataPath(imagePath);
+      const result = await extractTextFromImage(safePath, options);
       return sanitize({ success: true, data: result });
     } catch (err: any) {
       log.error('[OCR] 提取文本失败:', err.message);
@@ -1760,8 +1793,10 @@ ${itemsJson}
   });
 
   ipcMain.handle('ocr:extractTextFromMultiple', async (_event, imagePaths: string[], options?: any) => {
+    requireSession(_event);
     try {
-      const results = await extractTextFromMultipleImages(imagePaths, options);
+      const safePaths = await Promise.all(imagePaths.map((p: string) => validateDataPath(p)));
+      const results = await extractTextFromMultipleImages(safePaths, options);
       return sanitize({ success: true, data: results });
     } catch (err: any) {
       log.error('[OCR] 批量提取文本失败:', err.message);
@@ -1769,7 +1804,136 @@ ${itemsJson}
     }
   });
 
-  ipcMain.handle('ocr:isEnabled', async () => {
+  ipcMain.handle('ocr:isEnabled', async (_event) => {
+    requireSession(_event);
     return sanitize({ success: true, data: isOCREnabled() });
   });
+
+  // 获取云端模型列表
+  ipcMain.handle('ai:getModels', async (event) =>
+    wrap(event, async () => {
+      const db = getDb();
+      const models = await db.select().from(schema.aiCloudModels).orderBy(schema.aiCloudModels.priority).all();
+      const configs = await db.select().from(schema.aiConfigs).limit(1);
+      const activeModelId = configs[0]?.activeModelId || null;
+      // 与 getConfig 保持一致：交互平铺数据，外层 envelope 由 wrap 统一处理
+      return {
+        models: models.map(m => ({
+          id: m.id,
+          name: m.name,
+          apiBase: m.apiBase,
+          model: m.model,
+          apiFormat: m.apiFormat,
+          enabled: m.enabled === 1,
+          priority: m.priority,
+        })),
+        activeModelId,
+      };
+    })
+  );
+
+  // 创建云端模型
+  ipcMain.handle('ai:createModel', async (_event, data: any) =>
+    wrap(_event, async () => {
+      const db = getDb();
+      const now = new Date().toISOString();
+      const id = `model-${Date.now()}`;
+      await db.insert(schema.aiCloudModels).values({
+        id,
+        configId: 'default',
+        name: data.name,
+        apiBase: data.apiBase || '',
+        apiKey: data.apiKey ? encryptApiKey(data.apiKey) : '',
+        model: data.model || '',
+        apiFormat: data.apiFormat || 'openai',
+        enabled: data.enabled !== false ? 1 : 0,
+        priority: data.priority || 99,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return sanitize({ success: true, data: { id } });
+    })
+  );
+
+  // 更新云端模型
+  ipcMain.handle('ai:updateModel', async (_event, modelId: string, data: any) =>
+    wrap(_event, async () => {
+      const db = getDb();
+      const now = new Date().toISOString();
+      const updateData: any = {
+        name: data.name,
+        apiBase: data.apiBase,
+        model: data.model,
+        apiFormat: data.apiFormat,
+        enabled: data.enabled !== undefined ? (data.enabled ? 1 : 0) : undefined,
+        priority: data.priority !== undefined ? data.priority : undefined,
+        updatedAt: now,
+      };
+      if (data.apiKey && !data.apiKey.includes('****')) {
+        updateData.apiKey = encryptApiKey(data.apiKey);
+      }
+      await db.update(schema.aiCloudModels).set(updateData).where(eq(schema.aiCloudModels.id, modelId));
+      return sanitize({ success: true });
+    })
+  );
+
+  // 删除云端模型
+  ipcMain.handle('ai:deleteModel', async (_event, modelId: string) =>
+    wrap(_event, async () => {
+      const db = getDb();
+      await db.delete(schema.aiCloudModels).where(eq(schema.aiCloudModels.id, modelId));
+      // 如果删除的是当前激活的模型，重置 activeModelId
+      const configs = await db.select().from(schema.aiConfigs).limit(1);
+      if (configs[0]?.activeModelId === modelId) {
+        await db.update(schema.aiConfigs).set({ activeModelId: null }).where(eq(schema.aiConfigs.id, 'default'));
+      }
+      return sanitize({ success: true });
+    })
+  );
+
+  // 设置当前激活的模型
+  ipcMain.handle('ai:setActiveModel', async (_event, modelId: string | null) =>
+    wrap(_event, async () => {
+      const db = getDb();
+      await db.update(schema.aiConfigs).set({ activeModelId: modelId }).where(eq(schema.aiConfigs.id, 'default'));
+      return sanitize({ success: true });
+    })
+  );
+
+  // 测试单个模型的连接
+  ipcMain.handle('ai:testModelConnection', async (_event, modelId: string) =>
+    wrap(_event, async () => {
+      const db = getDb();
+      const model = await db.select().from(schema.aiCloudModels).where(eq(schema.aiCloudModels.id, modelId)).limit(1);
+      if (model.length === 0) throw new Error('模型不存在');
+      const m = model[0];
+      const apiKey = m.apiKey ? decryptApiKey(m.apiKey) : '';
+      const apiUrl = ensureApiUrl(m.apiBase, 'cloud');
+      if (!apiUrl) throw new Error('API 地址未配置');
+      if (!apiKey) throw new Error('API Key 未配置');
+
+      const requestBody = JSON.stringify({
+        model: m.model,
+        messages: [{ role: 'user', content: 'Hi' }],
+        max_tokens: 10,
+      });
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: requestBody,
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        throw new Error(`API 请求失败 (${response.status}): ${errorBody}`);
+      }
+
+      const data = await response.json();
+      return sanitize({ success: true, data: { model: m.model, response: data.choices?.[0]?.message?.content || '' } });
+    })
+  );
 }

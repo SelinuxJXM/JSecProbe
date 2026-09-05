@@ -10,26 +10,88 @@ import * as fs from 'fs';
 import { getRowMaxHeight, styleCell } from '../utils/excel-helper';
 import { wrap } from '../utils/ipc-wrapper';
 
-// 安全域ID到中文名称映射
-const DOMAIN_ID_TO_NAME: Record<string, string> = {
-  'secure_physical': '安全物理环境',
-  'secure_communication': '安全通信网络',
-  'secure_boundary': '安全区域边界',
-  'secure_computing': '安全计算环境',
-  'secure_management': '安全管理中心',
-  'security_management': '安全管理制度',
-  'security_organization': '安全管理机构',
-  'security_personnel': '安全管理人员',
-  'security_construction': '安全建设管理',
-  'security_maintenance': '安全运维管理',
-};
+// 国标十域 fallback（兼容旧标准库、未配置 domainsMeta 的标准）
+// 改造：动态化后端，所有 issue 相关的域名/排序按项目 standardId 从 standards.domainsMeta 加载
+const FALLBACK_DOMAIN_META: Array<{ id: string; name: string }> = [
+  { id: 'secure_physical', name: '安全物理环境' },
+  { id: 'secure_communication', name: '安全通信网络' },
+  { id: 'secure_boundary', name: '安全区域边界' },
+  { id: 'secure_computing', name: '安全计算环境' },
+  { id: 'secure_management', name: '安全管理中心' },
+  { id: 'security_management', name: '安全管理制度' },
+  { id: 'security_organization', name: '安全管理机构' },
+  { id: 'security_personnel', name: '安全管理人员' },
+  { id: 'security_construction', name: '安全建设管理' },
+  { id: 'security_maintenance', name: '安全运维管理' },
+];
+
+const FALLBACK_DOMAIN_ID_TO_NAME: Record<string, string> = Object.fromEntries(
+  FALLBACK_DOMAIN_META.map(d => [d.id, d.name])
+);
+
+const FALLBACK_DOMAIN_ORDER: string[] = FALLBACK_DOMAIN_META.map(d => d.id);
+
+// 项目级域映射信息（按项目 standardId 加载，fallback 国标十域）
+interface ProjectDomainInfo {
+  // 域 ID → 中文名（含 fallback，行标项目会用 domainsMeta 覆盖）
+  domainIdToName: Record<string, string>;
+  // 域顺序（domainsMeta 中数组的自然顺序，fallback 国标十域顺序）
+  domainOrder: string[];
+  // 中文名 → 域 ID（Excel 导入用，sheet 名解析为域 ID）
+  domainNameToId: Record<string, string>;
+}
+
+// 按项目 standardId 加载域映射信息
+// 优先 standards.domainsMeta，fallback 国标十域（兼容旧标准库、未配置 domainsMeta 的标准）
+async function loadProjectDomainInfo(projectId: string): Promise<ProjectDomainInfo> {
+  const fallbackNameToId = Object.fromEntries(
+    Object.entries(FALLBACK_DOMAIN_ID_TO_NAME).map(([id, name]) => [name, id])
+  );
+  const result: ProjectDomainInfo = {
+    domainIdToName: { ...FALLBACK_DOMAIN_ID_TO_NAME },
+    domainOrder: [...FALLBACK_DOMAIN_ORDER],
+    domainNameToId: { ...fallbackNameToId },
+  };
+  try {
+    const db = getDb();
+    const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
+    if (!project?.standardId) return result;
+    const [std] = await db.select().from(schema.standards).where(eq(schema.standards.id, project.standardId)).limit(1);
+    if (!std?.domainsMeta) return result;
+    const arr = JSON.parse(std.domainsMeta);
+    if (!Array.isArray(arr) || arr.length === 0) return result;
+    const idToName: Record<string, string> = {};
+    const order: string[] = [];
+    for (const d of arr) {
+      if (!d?.id) continue;
+      idToName[d.id] = d.name || d.id;
+      order.push(d.id);
+    }
+    if (order.length === 0) return result;
+    // 行标项目：用 domainsMeta 完全覆盖 fallback（不合并，避免国标残留域混入行标展示）
+    result.domainIdToName = idToName;
+    result.domainOrder = order;
+    result.domainNameToId = Object.fromEntries(
+      Object.entries(idToName).map(([id, name]) => [name, id])
+    );
+  } catch (err) {
+    log.warn('加载项目域映射信息失败，使用国标 fallback:', err);
+  }
+  return result;
+}
 
 async function validatePath(inputPath: string): Promise<string> {
-  const resolved = path.resolve(inputPath);
-  if (resolved.includes('..')) {
-    throw new Error(`路径访问被拒绝: 非法的路径格式`);
+  if (!inputPath) {
+    throw new Error('路径不能为空');
   }
-  return resolved;
+  // 在解析前按路径段检查：拒绝显式包含的 '..'（路径穿越尝试）。
+  // path.resolve 会折叠 '../'，解析后字面 '..' 已不存在，仅做 includes('..') 判断会永远不命中，
+  // 导致目录穿越穿透放行；同时用户通过对话框选择的任意绝对路径（无 '..' 段）不受影响。
+  const segments = inputPath.split(/[\\/]/);
+  if (segments.includes('..')) {
+    throw new Error('路径访问被拒绝: 非法的路径格式');
+  }
+  return path.resolve(inputPath);
 }
 
 const MAX_EXCEL_SIZE = 50 * 1024 * 1024;
@@ -92,6 +154,8 @@ export function registerIssueHandlers(): void {
       const sortFn = sortField && sortOrder === 'descending' ? desc : asc;
 
       let list: any[];
+      // 资产信息映射（id → 完整资产对象），用于排序与输出名称映射，避免重复查询资产表
+      const assetNameMap: Record<string, any> = {};
       if (sortField) {
         // 用户指定了排序字段，按指定字段排序
         list = await db.select().from(schema.issues)
@@ -99,24 +163,26 @@ export function registerIssueHandlers(): void {
           .orderBy(sortFn(sortField))
           .limit(pageSize)
           .offset((page - 1) * pageSize);
+
+        // 预取本页资产信息，供输出阶段映射资产名称（与默认排序分支共用 assetNameMap，避免重复查询）
+        const sortAssetIds = [...new Set(list.map((i: any) => i.assetId).filter(Boolean))];
+        if (sortAssetIds.length > 0) {
+          const sortAssetRows = await db.select().from(schema.assets).where(inArray(schema.assets.id, sortAssetIds));
+          sortAssetRows.forEach((a: any) => { assetNameMap[a.id] = a; });
+        }
       } else {
         // 默认排序：先获取所有符合条件的数据，在应用层按安全域和资产类型排序，再分页
         const allList = await db.select().from(schema.issues).where(whereClause);
 
         // 获取资产信息用于排序
         const allAssetIds = [...new Set(allList.map((i: any) => i.assetId).filter(Boolean))];
-        const assetNameMap: Record<string, any> = {};
         if (allAssetIds.length > 0) {
           const assetRows = await db.select().from(schema.assets).where(inArray(schema.assets.id, allAssetIds));
           assetRows.forEach((a: any) => { assetNameMap[a.id] = a; });
         }
 
-        // 安全域排序顺序
-        const DOMAIN_ORDER = [
-          'secure_physical', 'secure_communication', 'secure_boundary',
-          'secure_computing', 'secure_management', 'security_management',
-          'security_organization', 'security_personnel', 'security_construction', 'security_maintenance',
-        ];
+        // 改造：按项目 standardId 动态加载域顺序，fallback 国标十域
+        const { domainOrder: DOMAIN_ORDER } = await loadProjectDomainInfo(projectId);
 
         // 安全计算环境资产类型排序
         const ASSET_TYPE_ORDER = [
@@ -156,18 +222,10 @@ export function registerIssueHandlers(): void {
         list = allList.slice(startIndex, startIndex + pageSize);
       }
 
-      // 获取资产名称映射
-      const assetIds = [...new Set(list.map((i: any) => i.assetId).filter(Boolean))];
-      const assetNameMap: Record<string, string> = {};
-      if (assetIds.length > 0) {
-        const assetRows = await db.select({ id: schema.assets.id, name: schema.assets.name }).from(schema.assets).where(inArray(schema.assets.id, assetIds));
-        assetRows.forEach((a: any) => { assetNameMap[a.id] = a.name; });
-      }
-
-      // 添加资产名称到结果
+      // 添加资产名称到结果（assetNameMap 已在上方按路径预取，含完整资产对象，直接取 name）
       const listWithAssetName = list.map((item: any) => ({
         ...item,
-        assetName: item.assetId ? (assetNameMap[item.assetId] || '-') : '-',
+        assetName: item.assetId ? (assetNameMap[item.assetId]?.name || '-') : '-',
       }));
 
       const riskStatsResult = await db
@@ -288,12 +346,8 @@ export function registerIssueHandlers(): void {
           sql`result IN ('non_compliant', 'nonconform', 'partial')`
         ));
 
-      // 安全域排序顺序
-      const DOMAIN_ORDER = [
-        'secure_physical', 'secure_communication', 'secure_boundary',
-        'secure_computing', 'secure_management', 'security_management',
-        'security_organization', 'security_personnel', 'security_construction', 'security_maintenance',
-      ];
+      // 改造：按项目 standardId 动态加载域顺序，fallback 国标十域
+      const { domainOrder: DOMAIN_ORDER } = await loadProjectDomainInfo(projectId);
 
       // 安全计算环境资产类型排序
       const ASSET_TYPE_ORDER = [
@@ -444,20 +498,40 @@ export function registerIssueHandlers(): void {
       }
       const extOr = or(...extOrConditions);
 
-      // 适用范围条件
-      const applicableConditions = [
-        eq(schema.assessmentItems.standardId, project?.standardId || 'gb-t-22239-2019-l3'),
-        extOr,
-      ];
-      if (project?.level) {
-        applicableConditions.push(lte(schema.assessmentItems.minLevel, project.level));
+      // === 解析有效 standardId（移除硬编码 gb-t-22239-2019-l3，兼容老项目/被删标准）===
+      // 策略：项目绑定值（trim 后合法） → 同 grade=project.level → isDefault=1 → 列表首条；找不到则空串（适用项=0，进度=0）
+      const projectRawStandard = typeof project?.standardId === 'string' ? project.standardId.trim() : '';
+      const level = Number(project?.level) || 3;
+      const standardsAll = await db
+        .select({ id: schema.standards.id, grade: schema.standards.grade, isDefault: schema.standards.isDefault })
+        .from(schema.standards);
+      let standardId = '';
+      if (projectRawStandard && standardsAll.some(s => s.id === projectRawStandard)) {
+        standardId = projectRawStandard;
+      } else if (standardsAll.length > 0) {
+        const sameGrade = standardsAll.find(s => Number(s.grade) === level);
+        const def = standardsAll.find(s => Number(s.isDefault) === 1);
+        standardId = (sameGrade || def || standardsAll[0]).id;
       }
 
-      // 子查询：适用范围的项ID
-      const itemIdsSubquery = db
-        .select({ id: schema.assessmentItems.id })
-        .from(schema.assessmentItems)
-        .where(and(...applicableConditions));
+      // 适用范围条件：无 standardId 时不再生成硬编码条件，保证 DB 查 0 条不报错
+      const applicableConditions: any[] = [];
+      if (standardId) applicableConditions.push(eq(schema.assessmentItems.standardId, standardId));
+      if (standardId) applicableConditions.push(extOr);
+      if (project?.level) applicableConditions.push(lte(schema.assessmentItems.minLevel, project.level));
+
+      // 子查询：适用范围的项ID（空条件退回永远假，避免 inArray 传空数组导致 SQL 语法错误）
+      const hasApplicableFilters = applicableConditions.length > 0;
+      const itemIdsSubquery = hasApplicableFilters
+        ? db
+            .select({ id: schema.assessmentItems.id })
+            .from(schema.assessmentItems)
+            .where(and(...applicableConditions))
+        : db
+            .select({ id: schema.assessmentItems.id })
+            .from(schema.assessmentItems)
+            .where(sql`0 = 1`)
+            .limit(0);
 
       const testedRecords = await db
         .select({ value: count() })
@@ -533,12 +607,8 @@ export function registerIssueHandlers(): void {
         assetCategory: item.assetId ? (assetMap[item.assetId]?.category || '') : '',
       }));
 
-      // 安全域排序顺序
-      const DOMAIN_ORDER = [
-        'secure_physical', 'secure_communication', 'secure_boundary',
-        'secure_computing', 'secure_management', 'security_management',
-        'security_organization', 'security_personnel', 'security_construction', 'security_maintenance',
-      ];
+      // 改造：按项目 standardId 动态加载域顺序与域名映射，fallback 国标十域
+      const { domainOrder: DOMAIN_ORDER, domainIdToName: DOMAIN_ID_TO_NAME } = await loadProjectDomainInfo(projectId);
 
       // 安全计算环境资产类型排序
       const ASSET_TYPE_ORDER = [
@@ -874,19 +944,9 @@ export function registerIssueHandlers(): void {
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.readFile(safePath);
 
-      // 安全域中文名称到ID映射
-      const DOMAIN_NAME_TO_ID: Record<string, string> = {
-        '安全物理环境': 'secure_physical',
-        '安全通信网络': 'secure_communication',
-        '安全区域边界': 'secure_boundary',
-        '安全计算环境': 'secure_computing',
-        '安全管理中心': 'secure_management',
-        '安全管理制度': 'security_management',
-        '安全管理机构': 'security_organization',
-        '安全管理人员': 'security_personnel',
-        '安全建设管理': 'security_construction',
-        '安全运维管理': 'security_maintenance',
-      };
+      // 改造：按项目 standardId 动态加载"中文名 → 域 ID"映射，fallback 国标十域
+      // sheet 名解析为域 ID，行标项目导入时使用行标实际域名
+      const { domainNameToId: DOMAIN_NAME_TO_ID } = await loadProjectDomainInfo(projectId);
 
       const now = new Date().toISOString();
       const errors: string[] = [];

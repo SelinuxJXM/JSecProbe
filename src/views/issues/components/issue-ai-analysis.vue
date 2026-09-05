@@ -188,6 +188,9 @@ import type { Issue } from '../../../../shared/types';
 
 const props = defineProps<{
   getIssueDomainId: (domainName: string) => string;
+  // Phase 4 行标上下文注入
+  projectId?: string;
+  standardId?: string;
 }>();
 
 const emit = defineEmits<{
@@ -274,6 +277,10 @@ async function analyzeIssue(issue: Issue) {
       securityDomain: props.getIssueDomainId(issue.securityDomain || ''),
       controlPoint: issue.controlPoint || '',
       controlName: issue.controlName || '',
+      // Phase 4：注入标准上下文关联参数
+      standardId: props.standardId,
+      projectId: props.projectId,
+      itemId: (issue as any).itemId,
     };
     console.log('[issue-ai-analysis.analyzeIssue] 调用IPC, params:', JSON.stringify(params));
 
@@ -357,7 +364,12 @@ async function batchAnalyzeIssues(issues: Issue[]) {
         securityDomain: props.getIssueDomainId(issue.securityDomain || ''),
         controlPoint: issue.controlPoint || '',
         controlName: issue.controlName || '',
+        // Phase 4：每条问题附带标准上下文关联
+        standardId: props.standardId,
+        itemId: (issue as any).itemId,
       })),
+      // Phase 4：全局 projectId（批量时用于统一推导 standardId）
+      projectId: props.projectId,
     };
     console.log('[issue-ai-analysis.batchAnalyzeIssues] 调用IPC, 问题数:', params.issues.length);
 

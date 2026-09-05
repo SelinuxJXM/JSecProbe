@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+﻿import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import electron from 'vite-plugin-electron';
 import renderer from 'vite-plugin-electron-renderer';
@@ -75,7 +75,7 @@ export default defineConfig({
           'vendor-element': ['element-plus'],
           'vendor-charts': ['echarts', 'vue-echarts'],
           'vendor-docs': ['docx', 'exceljs', 'xlsx', 'pdf-parse', 'pdfjs-dist', 'mammoth'],
-          'vendor-utils': ['marked', 'dompurify', 'dayjs'],
+          'vendor-utils': ['marked', 'dompurify'],
         },
       },
     },
@@ -89,5 +89,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    watch: {
+      // Windows 下 .tools/ 目录可能有被占用的 sql.zip/dll，避免 chokidar watch 失败
+      ignored: ['**/.tools/**', '**/node_modules/**', '**/JSecProbeData/**'],
+    },
   },
 });

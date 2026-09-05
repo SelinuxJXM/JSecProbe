@@ -86,6 +86,15 @@ export const standards = sqliteTable('standards', {
   domainCount: integer('domain_count').notNull().default(0),
   itemCount: integer('item_count').notNull().default(0),
   isDefault: integer('is_default').notNull().default(0),
+  // 行标支持扩展字段
+  standardType: text('standard_type').notNull().default('national'), // national(国标) | industry(行标) | local | enterprise
+  industry: text('industry').default(''), // 电力/金融/医疗/电信/政务（行标时填）
+  source: text('source').notNull().default('builtin'), // builtin(内置) | imported(导入) | custom(手动)
+  presetTemplate: text('preset_template').default(''), // 配套预置模板相对路径
+  domainsMeta: text('domains_meta'), // 标准域元信息 JSON（[{id,name,icon,domainType,sheetName,columnMap}]），行标导入时填充
+  presetMethod: text('preset_method').default('check'), // 预置导入默认 method（interview/check/test），缺省 'check'
+  columnMap: text('column_map'), // 预置导入列映射 JSON（{"序号":0,"控制点":1,"要求":2,"记录":3,"合规":4}），缺省沿用 A/B/C/D/E
+  levelCombo: text('level_combo').default(''), // 适用等级组合，如 S2A2G2 / S2A3G3 等（G=max(S,A)）；grade 为最终保护等级用于标准匹配
   createdAt: text('created_at').notNull().default(new Date().toISOString()),
 });
 
@@ -102,6 +111,11 @@ export const assessmentItems = sqliteTable('assessment_items', {
   isHighRisk: integer('is_high_risk').notNull().default(0),
   sortOrder: integer('sort_order').notNull().default(0),
   parentId: text('parent_id'),
+  // 预置记录（合并自原 S3A3G3.xlsx 模板）：导入标准时随测评项一起入库，
+  // 创建资产时直接从表中读取写入 assessment_records，不再依赖外部 Excel 模板
+  presetResult: text('preset_result'),   // 预置符合情况：符合/不符合/部分符合/不适用/未测评
+  presetRecord: text('preset_record'),   // 预置结果记录/证据文本
+  presetByType: text('preset_by_type'),  // 安全计算环境按资产类型区分的预置，JSON: { [categoryKey]: { result, record } }
 }, (table) => ({
   standardDomainIdx: index('item_standard_domain_idx').on(table.standardId, table.domain),
   standardIdIdx: index('item_standard_idx').on(table.standardId),
@@ -213,6 +227,22 @@ export const aiConfigs = sqliteTable('ai_configs', {
   ollamaUrl: text('ollama_url').default('http://localhost:11434'),
   // OCR预处理：云端模式默认关闭(0)，本地模式默认开启(1)
   ocrPreprocess: integer('ocr_preprocess').notNull().default(0),
+  // 当前聊天使用的云端模型 ID（null 时 fallback 到 priority=1 的启用模型）
+  activeModelId: text('active_model_id'),
+  updatedAt: text('updated_at').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
+export const aiCloudModels = sqliteTable('ai_cloud_models', {
+  id: text('id').primaryKey(),
+  configId: text('config_id').notNull().default('default'),
+  name: text('name').notNull(),
+  apiBase: text('api_base').notNull(),
+  apiKey: text('api_key'),
+  model: text('model').notNull(),
+  apiFormat: text('api_format').notNull().default('openai'),
+  enabled: integer('enabled').notNull().default(1),
+  priority: integer('priority').notNull().default(99),
   updatedAt: text('updated_at').notNull(),
   createdAt: text('created_at').notNull(),
 });
@@ -241,6 +271,8 @@ export const knowledgeCommands = sqliteTable('knowledge_commands', {
   deviceType: text('device_type').notNull().default(''),
   category: text('category').notNull().default(''),
   subCategory: text('sub_category').notNull().default(''),
+  // Phase 4 · 任务 30：命令库行业维度（通用=空；电力/金融/医疗/电信/政务…）
+  industry: text('industry').notNull().default(''),
   isFavorite: integer('is_favorite').notNull().default(0),
   referenceCount: integer('reference_count').notNull().default(0),
   createdAt: text('created_at').notNull(),
@@ -257,5 +289,6 @@ export const operationLogs = sqliteTable('operation_logs', {
   targetName: text('target_name'),
   description: text('description'),
   ipAddress: text('ip_address'),
+  detailJson: text('detail_json'), // 详细 JSON 审计信息（标准导入/导出等）
   createdAt: text('created_at').notNull(),
 });

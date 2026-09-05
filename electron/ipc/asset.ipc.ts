@@ -1,18 +1,17 @@
-import { ipcMain, dialog, app } from 'electron';
+import { ipcMain, dialog } from 'electron';
 import log from 'electron-log';
 import { logger } from '../utils/logger';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, and, count, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, lte, count, sql, inArray } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
+import * as path from 'path';
 import ExcelJS from 'exceljs';
 import { getRowMaxHeight, styleCell } from '../utils/excel-helper';
 import { ASSET_CATEGORY_NAMES, ASSET_IMPORTANCE_MAP, ASSET_COLUMNS_MAP, ASSET_CATEGORY_ORDER, ASSET_EXAMPLE_DATA, sanitizeSheetName } from '../utils/excel-config';
-import * as XLSX from 'xlsx';
-import * as path from 'path';
-import * as fs from 'fs';
 import { writeOperationLog } from '../utils/operation-log';
 import { wrap } from '../utils/ipc-wrapper';
+import { ASSET_CATEGORIES } from '../../shared/asset-categories';
 
 // 默认不作为测评对象的分类
 const NON_ASSESSMENT_CATEGORIES = ['sys_doc', 'other_asset', 'crypto_product', 'security_personnel'];
@@ -40,30 +39,6 @@ function detectCategoryFromFileName(filePath: string): string {
   return 'server_storage';
 }
 
-const ASSET_CATEGORY_SHEET_MAP: Record<string, string[]> = {
-  network_device: ['安全计算环境-XX网络设备', '安全计算环境-网络设备'],
-  security_device: ['安全计算环境-XX安全设备', '安全计算环境-安全设备'],
-  server_storage: ['安全计算环境-XX服务器', '安全计算环境-服务器'],
-  sys_doc: ['安全计算环境-XX系统管理文档', '安全计算环境-系统管理文档'],
-  management_platform: ['安全计算环境-XX管理平台', '安全计算环境-管理平台'],
-  business_app: ['安全计算环境-XX应用系统', '安全计算环境-应用系统'],
-  terminal: ['安全计算环境-XX终端', '安全计算环境-终端'],
-  data_resource: [
-    '安全计算环境-鉴别数据',
-    '安全计算环境-重要业务数据',
-    '安全计算环境-重要审计数据',
-    '安全计算环境-重要配置数据',
-    '安全计算环境-重要视频数据',
-    '安全计算环境-重要个人信息',
-    '数据类别-鉴别数据',
-    '数据类别-重要业务数据',
-    '数据类别-重要审计数据',
-    '数据类别-重要配置数据',
-    '数据类别-重要视频数据',
-    '数据类别-重要个人信息',
-  ],
-};
-
 const RESULT_MAP: Record<string, string> = {
   '符合': 'compliant',
   '部分符合': 'partial',
@@ -73,194 +48,236 @@ const RESULT_MAP: Record<string, string> = {
   '': 'untested',
 };
 
-function findAssetSheetName(asset: any, workbook: any): string | null {
-  const category = asset.category;
-  const name = asset.name || '';
-  
-  if (category === 'data_resource') {
-    const dataSheets = ASSET_CATEGORY_SHEET_MAP['data_resource'] || [];
-    for (const sheetName of dataSheets) {
-      if (workbook.SheetNames.includes(sheetName)) {
-        const dataType = sheetName.replace(/^(安全计算环境-|数据类别-)/, '');
-        if (name === dataType || name.includes(dataType) || dataType.includes(name)) {
-          return sheetName;
-        }
-      }
-    }
-    // 兜底：遍历工作簿中所有数据类别sheet
-    for (const sheetName of workbook.SheetNames) {
-      const match = sheetName.match(/^(?:安全计算环境-|数据类别-)(.+)$/);
-      if (match) {
-        const dataType = match[1];
-        if (name === dataType || name.includes(dataType) || dataType.includes(name)) {
-          return sheetName;
-        }
-      }
-    }
+// 项目扩展类型解析（与 assessment:getProgress / getItems 统计口径一致）
+const EXT_TYPE_MAP: Record<string, string> = {
+  '安全通用要求': 'general',
+  '云计算安全扩展要求': 'cloud',
+  '移动互联安全扩展要求': 'mobile',
+  '物联网安全扩展要求': 'iot',
+  '工业控制系统安全扩展要求': 'industrial',
+  '大数据安全扩展要求': 'bigdata',
+  '大数据安全扩展要求（国标附录）': 'bigdata',
+  '关键信息基础设施安全扩展要求': 'cii',
+};
+
+// 资产分类 -> 测评层面映射（与 assessment:getProgress 的 CATEGORY_TO_DOMAIN 保持一致）
+const PRESET_CATEGORY_TO_DOMAIN: Record<string, string> = {
+  'server_storage': 'secure_computing',
+  'sys_doc': 'secure_computing',
+  'network_device': 'secure_computing',
+  'security_device': 'secure_computing',
+  'business_app': 'secure_computing',
+  'terminal': 'secure_computing',
+  'management_platform': 'secure_computing',
+  'machine_room': 'secure_physical',
+  'data_resource': 'secure_computing',
+  'network_boundary': 'secure_boundary',
+  'data_category': 'secure_computing',
+  'other_asset': 'secure_computing',
+  'crypto_product': 'secure_computing',
+};
+
+// 解析预置测评记录所需的共享上下文：每个项目/标准只解析一次，供批量导入复用
+async function resolvePresetContext(db: any, projectId: string): Promise<{
+  standardId: string;
+  std: any;
+  presetMethod: string;
+  assetItems: any[];
+  globalItems: any[];
+} | null> {
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, projectId),
+  });
+  if (!project) return null;
+
+  // 查询标准信息：优先项目绑定 standardId，缺失时按「同等级 → 默认 → 第一条」fallback
+  let standardId: string = typeof project.standardId === 'string' ? project.standardId.trim() : '';
+  if (!standardId) {
+    const normalized = Number.isFinite(Number(project.level)) && Number(project.level) >= 2 && Number(project.level) <= 4 ? Number(project.level) : 3;
+    const all = await db
+      .select({ id: schema.standards.id, grade: schema.standards.grade, isDefault: schema.standards.isDefault })
+      .from(schema.standards);
+    const sameGrade = all.find((s: any) => Number(s.grade) === normalized);
+    const def = all.find((s: any) => Number(s.isDefault) === 1);
+    standardId = (sameGrade || def || all[0])?.id || '';
+    log.warn(`[presetImport] 项目 ${projectId} 缺失 standardId，已 fallback 到标准 ${standardId}`);
+  }
+  const std = standardId ? await db.query.standards.findFirst({ where: eq(schema.standards.id, standardId) }) : null;
+  if (!std) {
+    log.warn(`[presetImport] 标准 ${standardId} 不存在，跳过资产预置导入`);
     return null;
   }
-  
-  const possibleSheets = ASSET_CATEGORY_SHEET_MAP[category] || [];
-  for (const sheetName of possibleSheets) {
-    if (workbook.SheetNames.includes(sheetName)) {
-      return sheetName;
+
+  const presetMethod = std.presetMethod || 'check';
+
+  // 与统计口径一致：只取项目等级 + 扩展类型适用的测评项（通用要求 + 项目扩展要求）
+  const extCodes: string[] = [];
+  if (project.extensionType) {
+    for (const t of project.extensionType.split(',').filter(Boolean)) {
+      const code = EXT_TYPE_MAP[t.trim()] || t.trim();
+      if (!extCodes.includes(code)) extCodes.push(code);
     }
   }
-  
-  for (const sheetName of workbook.SheetNames) {
-    if (sheetName.includes(name)) {
-      return sheetName;
+  const itemConditions = [
+    eq(schema.assessmentItems.standardId, standardId),
+    extCodes.length > 0
+      ? inArray(schema.assessmentItems.extensionType, ['general', ...extCodes])
+      : eq(schema.assessmentItems.extensionType, 'general'),
+  ];
+  if (project.level) {
+    itemConditions.push(lte(schema.assessmentItems.minLevel, project.level));
+  }
+  const allItems = await db.query.assessmentItems.findMany({
+    where: and(...itemConditions),
+  });
+  if (allItems.length === 0) {
+    log.warn(`[presetImport] 标准 ${standardId} 无适用测评项，跳过预置导入`);
+    return null;
+  }
+
+  // 分组：凡不属于资产映射层面的域（含电力标准 domain-0「总体要求」等行业额外层面）均为全局层面，
+  // 只生成 assetId 为空的记录；与统计侧（assessment:getProgress / project / report.service）动态口径一致
+  const assetDomainIds = new Set(Object.values(PRESET_CATEGORY_TO_DOMAIN));
+  const assetItems: any[] = [];
+  const globalItems: any[] = [];
+  for (const item of allItems) {
+    if (assetDomainIds.has(item.domain)) {
+      assetItems.push(item);
+    } else {
+      globalItems.push(item);
     }
   }
-  
-  return null;
+
+  return { standardId, std, presetMethod, assetItems, globalItems };
 }
 
-async function importAssetPresetRecords(asset: any): Promise<number> {
-  try {
-    const db = getDb();
-    
-    const project = await db.query.projects.findFirst({
-      where: eq(schema.projects.id, asset.projectId),
-    });
-    if (!project) return 0;
-    
-    const level = project.level || 3;
-    let templateFileName = level === 2 ? 'S2A2G2.xlsx' : 'S3A3G3.xlsx';
-    
-    const possiblePaths = [
-      path.join(process.cwd(), templateFileName),
-      path.join(process.cwd(), 'resources', templateFileName),
-      path.join(app.getAppPath(), templateFileName),
-      path.join(path.dirname(app.getAppPath()), templateFileName),
-      path.join(path.dirname(app.getAppPath()), 'resources', templateFileName),
-      path.join(process.resourcesPath || '', templateFileName),
-      path.join(process.resourcesPath || '', 'resources', templateFileName),
-    ];
-    
-    let templatePath = '';
-    for (const p of possiblePaths) {
-      if (fs.existsSync(p)) {
-        templatePath = p;
-        break;
+// 纯内存计算单条预置测评记录，不产生任何 DB 查询
+function computePresetRecordData(item: any, assetCategory: string, now: string, presetMethod: string, projectId: string, assetId: string): any {
+  let presetRecord = item.presetRecord || '';
+  let presetResultRaw = item.presetResult || '';
+  // 安全计算环境域：优先取按资产类型区分的预置；解析失败或缺失则回退默认预置
+  if (item.domain === 'secure_computing' && item.presetByType) {
+    try {
+      const byType = JSON.parse(item.presetByType) as Record<string, { result: string; record: string }>;
+      const typePreset = byType[assetCategory];
+      if (typePreset) {
+        presetResultRaw = typePreset.result || '';
+        presetRecord = typePreset.record || '';
       }
+    } catch {
+      log.warn(`[presetImport] assessment_item ${item.id} 的 preset_by_type 解析失败，回退默认预置`);
     }
-    
-    if (!templatePath) {
-      log.warn(`未找到模板文件: ${templateFileName}`);
-      return 0;
-    }
-    
-    const workbook = XLSX.readFile(templatePath);
-    const sheetName = findAssetSheetName(asset, workbook);
-    
-    if (!sheetName) {
-      log.info(`未找到资产 ${asset.name} (${asset.category}) 对应的预置sheet`);
-      return 0;
-    }
-    
-    log.info(`为资产 ${asset.name} 使用预置sheet: ${sheetName}`);
-    
-    const worksheet = workbook.Sheets[sheetName];
-    const rows: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-    
-    if (rows.length === 0) return 0;
-    
-    const domainKey = 'secure_computing';
-    const allItems = await db.query.assessmentItems.findMany({
+  }
+  let resultValue: string = RESULT_MAP[presetResultRaw] || 'untested';
+  if (resultValue === 'untested' && presetRecord && presetRecord.indexOf('不适用') >= 0) {
+    resultValue = 'not_applicable';
+  }
+  return {
+    projectId,
+    itemId: item.id,
+    assetId,
+    result: resultValue,
+    method: presetMethod,
+    commandOutput: '',
+    evidence: '',
+    findings: presetRecord,
+    assessor: '',
+    assessmentDate: now,
+  };
+}
+
+// 批量生成资产预置测评记录：
+// - 共享上下文只解析一次（项目/标准/测评项）
+// - 已有记录一次性查出，避免逐资产 N+1 判重
+// - 分片批量插入 / 更新，替代逐一 await
+async function importPresetRecordsBatch(assets: any[]): Promise<number> {
+  try {
+    if (!assets || assets.length === 0) return 0;
+    const db = getDb();
+    const projectId = assets[0].projectId;
+    const ctx = await resolvePresetContext(db, projectId);
+    if (!ctx) return 0;
+    const { std, presetMethod, assetItems, globalItems } = ctx;
+
+    const now = new Date().toISOString();
+
+    // 一次性查出本批资产在该项目下已有的测评记录（含 assetId 为空的全局记录，防止重复插入）
+    const assetIds = assets.map(a => a.id);
+    const existingRecords = await db.query.assessmentRecords.findMany({
       where: and(
-        eq(schema.assessmentItems.domain, domainKey),
-        eq(schema.assessmentItems.standardId, project.standardId)
+        eq(schema.assessmentRecords.projectId, projectId),
+        or(
+          isNull(schema.assessmentRecords.assetId),
+          inArray(schema.assessmentRecords.assetId, [...assetIds, '']),
+        ),
       ),
     });
-    
-    const itemMap = new Map<string, any>();
-    for (const item of allItems) {
-      const key = `${item.controlPoint}||${item.requirement}`;
-      itemMap.set(key, item);
+    const existingMap = new Map<string, string>(); // key: `${itemId}||${assetId}` -> recordId
+    for (const r of existingRecords) {
+      existingMap.set(`${r.itemId}||${r.assetId || ''}`, r.id);
     }
-    
-    const now = new Date().toISOString();
-    let importedCount = 0;
-    
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      if (!row || row.length === 0) continue;
-      
-      const colA = row[0] ? String(row[0]).trim() : '';
-      const colB = row[1] ? String(row[1]).trim() : '';
-      const colC = row[2] ? String(row[2]).trim() : '';
-      const colD = row[3] ? String(row[3]).trim() : '';
-      const colE = row[4] ? String(row[4]).trim() : '';
-      
-      if (!colA || isNaN(parseInt(colA))) continue;
-      if (!colC) continue;
-      
-      if (!colD && (!colE || colE === '待判定')) continue;
-      
-      const controlPoint = colB;
-      const requirement = colC;
-      const resultRecord = colD;
-      const compliance = colE;
-      
-      const key = `${controlPoint}||${requirement}`;
-      let item = itemMap.get(key);
-      
-      if (!item) {
-        for (const [k, v] of itemMap) {
-          if (k.startsWith(`${controlPoint}||`) && v.requirement.includes(requirement.substring(0, 20))) {
-            item = v;
-            break;
-          }
-        }
-      }
-      
-      if (!item) continue;
-      
-      const existing = await db.query.assessmentRecords.findFirst({
-        where: and(
-          eq(schema.assessmentRecords.projectId, asset.projectId),
-          eq(schema.assessmentRecords.itemId, item.id),
-          eq(schema.assessmentRecords.assetId, asset.id)
-        ),
-      });
-      
-      const resultValue = RESULT_MAP[compliance] || 'untested';
-      
-      const recordData = {
-        projectId: asset.projectId,
-        itemId: item.id,
-        assetId: asset.id,
-        result: resultValue,
-        method: 'check',
-        commandOutput: '',
-        evidence: resultRecord,
-        findings: resultRecord,
-        assessor: '',
-        assessmentDate: now,
-      };
-      
-      if (existing) {
-        await db.update(schema.assessmentRecords)
-          .set({ ...recordData, updatedAt: now })
-          .where(eq(schema.assessmentRecords.id, existing.id));
+
+    const toInsert: any[] = [];
+    const toUpdate: Array<{ id: string; data: any }> = [];
+    let total = 0;
+
+    // 全局层面（管理类/安全通信/总体技术要求）记录只生成一次，assetId 置空
+    for (const item of globalItems) {
+      const recordData = computePresetRecordData(item, '', now, presetMethod, projectId, '');
+      const existingId = existingMap.get(`${item.id}||`);
+      if (existingId) {
+        toUpdate.push({ id: existingId, data: { ...recordData, updatedAt: now } });
       } else {
-        await db.insert(schema.assessmentRecords).values({
-          ...recordData,
-          id: randomUUID(),
-          createdAt: now,
-          updatedAt: now,
-        });
+        toInsert.push({ ...recordData, id: randomUUID(), createdAt: now, updatedAt: now });
       }
-      importedCount++;
+      total++;
     }
-    
-    log.info(`资产 ${asset.name} 导入预置测评记录: ${importedCount} 条`);
-    return importedCount;
+
+    // 资产记录：只与资产所属层面的测评项配对，杜绝跨层面笛卡尔积
+    // security_personnel 为登记类信息、非测评对象资产不参与统计，均不生成预置记录
+    for (const asset of assets) {
+      if (asset.category === 'security_personnel') continue;
+      if (Number(asset.isAssessmentTarget) === 0) continue;
+      const domainId = PRESET_CATEGORY_TO_DOMAIN[asset.category] || 'secure_computing';
+      for (const item of assetItems) {
+        if (item.domain !== domainId) continue;
+        const recordData = computePresetRecordData(item, asset.category, now, presetMethod, projectId, asset.id);
+        const existingId = existingMap.get(`${item.id}||${asset.id}`);
+        if (existingId) {
+          toUpdate.push({ id: existingId, data: { ...recordData, updatedAt: now } });
+        } else {
+          toInsert.push({ ...recordData, id: randomUUID(), createdAt: now, updatedAt: now });
+        }
+        total++;
+      }
+    }
+
+    // 分片批量插入，避免单条 values 过大
+    const insertChunk = 200;
+    for (let i = 0; i < toInsert.length; i += insertChunk) {
+      const chunk = toInsert.slice(i, i + insertChunk);
+      if (chunk.length > 0) await db.insert(schema.assessmentRecords).values(chunk);
+    }
+    // 分片批量更新
+    const updateChunk = 200;
+    for (let i = 0; i < toUpdate.length; i += updateChunk) {
+      const chunk = toUpdate.slice(i, i + updateChunk);
+      for (const u of chunk) {
+        await db.update(schema.assessmentRecords).set(u.data).where(eq(schema.assessmentRecords.id, u.id));
+      }
+    }
+
+    log.info(`批量预置测评记录: 资产 ${assets.length} 个, 资产层面项 ${assetItems.length} + 全局项 ${globalItems.length} 个, 共 ${total} 条 (新增 ${toInsert.length}, 更新 ${toUpdate.length}), 标准 ${std.code || ctx.standardId}`);
+    return total;
   } catch (error) {
-    log.error('导入资产预置测评记录失败:', error);
+    log.error('批量导入资产预置测评记录失败:', error);
     return 0;
   }
+}
+
+// 单资产路径（asset:create 使用），复用批量逻辑
+async function importAssetPresetRecords(asset: any): Promise<number> {
+  return importPresetRecordsBatch([asset]);
 }
 
 export function registerAssetHandlers(): void {
@@ -298,22 +315,6 @@ export function registerAssetHandlers(): void {
         .from(schema.assets)
         .where(eq(schema.assets.projectId, projectId))
         .groupBy(schema.assets.category);
-
-      const ASSET_CATEGORIES = [
-        { id: 'machine_room', name: '管理机房', icon: 'Server' },
-        { id: 'network_boundary', name: '区域边界', icon: 'Network' },
-        { id: 'network_device', name: '网络设备', icon: 'Router' },
-        { id: 'security_device', name: '安全设备', icon: 'Shield' },
-        { id: 'server_storage', name: '服务器/存储设备', icon: 'Database' },
-        { id: 'management_platform', name: '系统管理平台', icon: 'Settings' },
-        { id: 'business_app', name: '业务应用系统', icon: 'Layers' },
-        { id: 'terminal', name: '业务终端/运维终端', icon: 'Monitor' },
-        { id: 'other_asset', name: '其他系统或设备', icon: 'Box' },
-        { id: 'data_resource', name: '数据资源', icon: 'FileData' },
-        { id: 'crypto_product', name: '密码产品', icon: 'Key' },
-        { id: 'security_personnel', name: '安全相关人员', icon: 'Users' },
-        { id: 'sys_doc', name: '系统管理文档', icon: 'HardDrive' },
-      ];
 
       const categoryWithStats = ASSET_CATEGORIES.map((cat) => {
         const stat = categoryStats.find((s) => s.category === cat.id);
@@ -437,14 +438,15 @@ export function registerAssetHandlers(): void {
     })
   );
 
-  ipcMain.handle('asset:remove', wrap((_event, id: string) => {
+  ipcMain.handle('asset:remove', wrap(async (_event, id: string) => {
       const db = getDb();
       const asset = db.select().from(schema.assets).where(eq(schema.assets.id, id)).get();
       db.transaction((tx) => {
         tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.assetId, id)).run();
         tx.delete(schema.assets).where(eq(schema.assets.id, id)).run();
       });
-      writeOperationLog({
+      // 操作日志为异步写入，必须 await 以确保删除成功后再记录，避免日志丢失或被吞掉
+      await writeOperationLog({
         action: 'delete',
         module: 'asset',
         targetId: id,
@@ -465,10 +467,23 @@ export function registerAssetHandlers(): void {
     })
   );
 
+  // 校验导入文件路径：仅拒绝空路径与 '..' 路径穿越；用户通过对话框选择的任意绝对路径（含 appData 之外）均放行
+  function validateImportPath(inputPath: string): string {
+    if (!inputPath) {
+      throw new Error('路径不能为空');
+    }
+    const segments = inputPath.split(/[\\/]/);
+    if (segments.includes('..')) {
+      throw new Error('路径访问被拒绝: 非法的路径格式');
+    }
+    return path.resolve(inputPath);
+  }
+
   ipcMain.handle('asset:importExcel', wrap(async (_event, projectId: string, filePath: string) => {
+      const resolvedPath = validateImportPath(filePath);
       const db = getDb();
       const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(filePath);
+      await workbook.xlsx.readFile(resolvedPath);
 
       const CATEGORY_NAME_TO_KEY: Record<string, string> = {
         '管理机房': 'machine_room',
@@ -708,6 +723,7 @@ export function registerAssetHandlers(): void {
         let importCount = 0;
         const now = new Date().toISOString();
         let skippedRows = 0;
+        const rowsToInsert: Array<typeof schema.assets.$inferInsert> = [];
 
         for (let rowNum = 2; rowNum <= worksheet.rowCount; rowNum++) {
           const row = worksheet.getRow(rowNum);
@@ -722,7 +738,7 @@ export function registerAssetHandlers(): void {
           const importanceStr = getCellString(row, 'importance');
           const importance = importanceStr ? (IMPORTANCE_MAP[importanceStr] || 'medium') : 'medium';
 
-          await db.insert(schema.assets).values({
+          rowsToInsert.push({
             id,
             projectId,
             category,
@@ -743,17 +759,22 @@ export function registerAssetHandlers(): void {
             updatedAt: now,
           });
 
-          const insertedAsset = await db.query.assets.findFirst({
-            where: eq(schema.assets.id, id),
-          });
-          if (insertedAsset) {
-            importAssetPresetRecords(insertedAsset).catch((err) => {
-              log.error(`导入资产 ${name} 预置测评记录失败:`, err);
-            });
-          }
-
           importCount++;
         }
+
+        // 批量插入资产（避免 N+1 单条插入）
+        if (rowsToInsert.length > 0) {
+          const batchSize = 50;
+          for (let i = 0; i < rowsToInsert.length; i += batchSize) {
+            const batch = rowsToInsert.slice(i, i + batchSize);
+            await db.insert(schema.assets).values(batch);
+          }
+        }
+        // 批量导入预置测评记录（异步，fire-and-forget，不影响主流程）
+        // 一次性批量处理本批资产，共享上下文只解析一次，避免逐资产 N+1 查询
+        importPresetRecordsBatch(rowsToInsert).catch((err) => {
+          log.error('批量导入资产预置测评记录失败:', err);
+        });
 
         logger.info(`[AssetImport] Sheet "${worksheet.name}": imported ${importCount} rows, skipped ${skippedRows} rows, total rows in sheet: ${worksheet.rowCount}`);
         return importCount;

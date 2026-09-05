@@ -33,24 +33,27 @@ export const useUserStore = defineStore('user', () => {
 
   async function restoreSession() {
     const savedToken = localStorage.getItem('token');
-    if (savedToken) {
-      try {
-        const res = await window.api.auth.validateSession(savedToken);
-        if (res.success && res.data?.valid) {
-          token.value = savedToken;
-        } else {
-          localStorage.removeItem('token');
+    if (!savedToken) return;
+    try {
+      const res = await window.api.auth.validateSession(savedToken);
+      if (res.success && res.data?.valid && res.data.user) {
+        token.value = savedToken;
+        user.value = res.data.user;
+        if (res.data.user.mustChangePassword && router.currentRoute.value.path !== '/change-password') {
+          router.push('/change-password?userId=' + res.data.user.id);
         }
-      } catch {
+      } else {
+        token.value = '';
+        user.value = null;
         localStorage.removeItem('token');
+        const publicPages = ['/login', '/change-password'];
+        if (!publicPages.includes(router.currentRoute.value.path)) {
+          router.push('/login');
+        }
       }
+    } catch {
+      localStorage.removeItem('token');
     }
-  }
-
-  function clearSession() {
-    user.value = null;
-    token.value = '';
-    localStorage.removeItem('token');
   }
 
   function setUser(loginResult: { user: User; token?: string }) {
@@ -69,7 +72,6 @@ export const useUserStore = defineStore('user', () => {
     login,
     logout,
     restoreSession,
-    clearSession,
     setUser,
   };
 });

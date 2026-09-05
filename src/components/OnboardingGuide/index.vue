@@ -11,8 +11,9 @@
 
         <!-- 引导卡片 -->
         <div
+          ref="cardRef"
           class="onboarding-card"
-          :class="currentStep?.target ? 'with-target' : 'welcome'"
+          :class="[currentStep?.target ? 'with-target' : 'welcome', { 'is-entering': isEntering }]"
           :style="cardStyle"
         >
           <!-- 进度指示器 -->
@@ -58,7 +59,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   DataLine,
   Folder,
@@ -67,6 +69,8 @@ import {
   Bell,
   Pointer,
 } from '@element-plus/icons-vue';
+
+const router = useRouter();
 
 // 图标映射
 const iconMap: Record<string, any> = {
@@ -80,6 +84,7 @@ const iconMap: Record<string, any> = {
 
 interface OnboardingStep {
   target?: string; // CSS 选择器
+  route?: string;
   icon?: string;
   title: string;
   content: string;
@@ -88,8 +93,24 @@ interface OnboardingStep {
 
 const visible = ref(false);
 const currentStepIndex = ref(0);
+const isEntering = ref(false);
 const spotlightStyle = ref<Record<string, string>>({});
 const cardStyle = ref<Record<string, string>>({});
+const cardRef = ref<HTMLElement | null>(null);
+
+async function ensureRoute(step: OnboardingStep) {
+  if (!step.route) return;
+  if (router.currentRoute.value.path === step.route) return;
+  await router.push(step.route);
+  // 等待 page-fade out-in 路由过渡（out/enter 各 0.3s）完整结束后再定位
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  // 兜底轮询目标元素（慢机器或异步组件渲染场景，最多额外 500ms）
+  if (step.target) {
+    for (let i = 0; i < 10 && !document.querySelector(step.target); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
 
 const steps: OnboardingStep[] = [
   {
@@ -100,24 +121,43 @@ const steps: OnboardingStep[] = [
   },
   {
     target: '.sidebar-menu',
+    route: '/dashboard',
     icon: 'DataLine',
     title: '导航菜单',
-    content: '通过左侧导航栏可以快速切换各个功能模块：工作台查看数据概览、项目管理测评项目、AI助手辅助分析、知识库查阅标准文档。',
+    content: '通过左侧导航栏可以快速切换各个功能模块，接下来带您逐一了解每个模块的作用。',
     position: 'right',
   },
   {
     target: '.stats-row',
+    route: '/dashboard',
     icon: 'DataLine',
     title: '数据概览',
-    content: '工作台展示项目统计数据和趋势图表，包括项目总数、进行中、已完成等状态分布，帮助您快速掌握整体测评进度。',
+    content: '工作台集中展示项目统计、创建趋势和状态分布，帮助您快速掌握整体测评进度。',
     position: 'bottom',
   },
   {
     target: '.toolbar',
+    route: '/projects/list',
     icon: 'Folder',
     title: '项目管理',
-    content: '在项目列表中创建、导入、导出项目。支持批量操作和自定义字段，方便管理多个测评项目。',
+    content: '在项目列表中创建、导入、导出测评项目，支持批量操作和自定义字段，方便管理多个测评项目。',
     position: 'bottom',
+  },
+  {
+    target: '.ai-sidebar',
+    route: '/ai-assistant',
+    icon: 'MagicStick',
+    title: 'AI 助手',
+    content: '智能 AI 辅助分析测评结果，自动生成风险建议，大幅提升现场测评效率。',
+    position: 'right',
+  },
+  {
+    target: '.kb-card',
+    route: '/knowledge',
+    icon: 'Reading',
+    title: '知识库',
+    content: '内置等保 2.0 标准文档与测评知识，测评过程中可随时查阅相关标准要求。',
+    position: 'left',
   },
   {
     target: '.header-right',
@@ -129,7 +169,7 @@ const steps: OnboardingStep[] = [
   {
     icon: 'MagicStick',
     title: '开始您的测评之旅',
-    content: '现在您已经了解了系统的基本功能，可以开始创建您的第一个测评项目了！如需再次查看引导，可以在个人中心中重新触发。',
+    content: '现在您已经了解了系统的基本功能，可以开始创建您的第一个测评项目了！如需再次查看引导，随时可点击右上角头像菜单 → 查看引导 重新观看。',
     position: 'center',
   },
 ];
@@ -172,35 +212,49 @@ function calculatePosition() {
     height: `${rect.height + 16}px`,
   };
 
-  // 卡片位置
+  // 卡片位置（带视口边界约束，避免溢出屏幕）
   const cardWidth = 380;
+  const cardHeight = cardRef.value?.offsetHeight || 280;
   const gap = 20;
+  const margin = 16;
+  const clampLeft = (left: number) =>
+    Math.max(margin, Math.min(left, window.innerWidth - cardWidth - margin));
+  const clampTop = (top: number) =>
+    Math.max(margin, Math.min(top, window.innerHeight - cardHeight - margin));
 
   switch (position) {
-    case 'right':
+    case 'right': {
       cardStyle.value = {
-        top: `${rect.top}px`,
-        left: `${rect.right + gap}px`,
+        top: `${clampTop(rect.top)}px`,
+        left: `${clampLeft(rect.right + gap)}px`,
       };
       break;
-    case 'bottom':
+    }
+    case 'bottom': {
       cardStyle.value = {
-        top: `${rect.bottom + gap}px`,
-        left: `${rect.left + rect.width / 2 - cardWidth / 2}px`,
+        top: `${clampTop(rect.bottom + gap)}px`,
+        left: `${clampLeft(rect.left + rect.width / 2 - cardWidth / 2)}px`,
       };
       break;
-    case 'left':
+    }
+    case 'left': {
       cardStyle.value = {
-        top: `${rect.top}px`,
-        left: `${rect.left - cardWidth - gap}px`,
+        top: `${clampTop(rect.top)}px`,
+        left: `${clampLeft(rect.left - cardWidth - gap)}px`,
       };
       break;
-    case 'top':
+    }
+    case 'top': {
+      const bottom = Math.max(
+        margin,
+        Math.min(window.innerHeight - rect.top + gap, window.innerHeight - cardHeight - margin)
+      );
       cardStyle.value = {
-        bottom: `${window.innerHeight - rect.top + gap}px`,
-        left: `${rect.left + rect.width / 2 - cardWidth / 2}px`,
+        bottom: `${bottom}px`,
+        left: `${clampLeft(rect.left + rect.width / 2 - cardWidth / 2)}px`,
       };
       break;
+    }
     default:
       cardStyle.value = {
         top: '50%',
@@ -213,9 +267,7 @@ function calculatePosition() {
 function nextStep() {
   if (currentStepIndex.value < steps.length - 1) {
     currentStepIndex.value++;
-    nextTick(() => {
-      calculatePosition();
-    });
+    enterStep();
   } else {
     completeGuide();
   }
@@ -224,10 +276,19 @@ function nextStep() {
 function prevStep() {
   if (currentStepIndex.value > 0) {
     currentStepIndex.value--;
-    nextTick(() => {
-      calculatePosition();
-    });
+    enterStep();
   }
+}
+
+async function enterStep() {
+  const step = currentStep.value;
+  isEntering.value = false;
+  await nextTick();
+  if (step) {
+    await ensureRoute(step);
+  }
+  isEntering.value = true;
+  calculatePosition();
 }
 
 function skipGuide() {
@@ -245,17 +306,13 @@ function startGuide() {
   }
   visible.value = true;
   currentStepIndex.value = 0;
-  nextTick(() => {
-    calculatePosition();
-  });
+  enterStep();
 }
 
 function restartGuide() {
   visible.value = true;
   currentStepIndex.value = 0;
-  nextTick(() => {
-    calculatePosition();
-  });
+  enterStep();
 }
 
 defineExpose({
@@ -265,6 +322,10 @@ defineExpose({
 
 onMounted(() => {
   window.addEventListener('resize', calculatePosition);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', calculatePosition);
 });
 </script>
 
@@ -302,10 +363,10 @@ onMounted(() => {
 .onboarding-card {
   position: absolute;
   width: 380px;
-  background: #fff;
+  background: var(--color-bg-card);
   border-radius: 16px;
   padding: 28px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-xl);
   pointer-events: auto;
   z-index: 10001;
   transition: all 0.4s ease;
@@ -335,23 +396,23 @@ onMounted(() => {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #e5e7eb;
+  background: var(--color-border-base);
   transition: all 0.3s ease;
 }
 
 .progress-dot.active {
-  background: #1B5FD9;
+  background: var(--color-primary);
   width: 20px;
   border-radius: 4px;
 }
 
 .progress-dot.completed {
-  background: #18A957;
+  background: var(--color-success);
 }
 
 .progress-text {
   font-size: 12px;
-  color: #909399;
+  color: var(--color-text-tertiary);
 }
 
 .onboarding-icon {
@@ -369,14 +430,14 @@ onMounted(() => {
 .onboarding-title {
   font-size: 18px;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--color-text-primary);
   margin: 0 0 12px;
 }
 
 .onboarding-content {
   font-size: 14px;
   line-height: 1.7;
-  color: #6b7280;
+  color: var(--color-text-secondary);
   margin: 0 0 24px;
 }
 
@@ -399,5 +460,48 @@ onMounted(() => {
 .onboarding-fade-enter-from,
 .onboarding-fade-leave-to {
   opacity: 0;
+}
+
+/* 步骤内容进入动效：fade + 上移 8px + 轻微缩放 */
+.onboarding-card.is-entering {
+  animation: onboarding-card-in 0.2s ease;
+}
+
+@keyframes onboarding-card-in {
+  from {
+    opacity: 0;
+    translate: 0 8px;
+    scale: 0.96;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+    scale: 1;
+  }
+}
+
+/* 欢迎图标上下浮动 */
+.onboarding-card.welcome .onboarding-icon {
+  animation: onboarding-icon-float 2.4s ease-in-out infinite;
+}
+
+@keyframes onboarding-icon-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+/* 尊重系统减弱动效偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-card.is-entering {
+    animation: none;
+  }
+  .onboarding-card.welcome .onboarding-icon {
+    animation: none;
+  }
 }
 </style>

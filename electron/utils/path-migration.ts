@@ -22,9 +22,30 @@ async function isAbsolutePathUnderAppData(inputPath: string): Promise<boolean> {
 }
 
 /**
- * 迁移测评记录中的截图路径（screenshotPaths 字段）
+ * 执行所有路径迁移
+ * 将数据库中存储的绝对路径转换为相对路径
  */
-async function migrateAssessmentRecordPaths(): Promise<number> {
+export async function migrateAllPaths(): Promise<{
+  assessmentRecords: number;
+  issues: number;
+  knowledgeDocuments: number;
+}> {
+  log.info('开始执行路径数据迁移...');
+
+  const assessmentCount = await migrateAssessmentRecordPathsSync();
+  const issueCount = await migrateIssueEvidencePathsSync();
+  const knowledgeCount = await migrateKnowledgeDocumentPathsSync();
+
+  log.info(`路径迁移完成: 测评记录 ${assessmentCount} 条, 问题 ${issueCount} 条, 知识库文档 ${knowledgeCount} 条`);
+
+  return {
+    assessmentRecords: assessmentCount,
+    issues: issueCount,
+    knowledgeDocuments: knowledgeCount,
+  };
+}
+
+async function migrateAssessmentRecordPathsSync(): Promise<number> {
   const db = getDb();
   const records = await db.select().from(assessmentRecords);
   let migratedCount = 0;
@@ -63,10 +84,7 @@ async function migrateAssessmentRecordPaths(): Promise<number> {
   return migratedCount;
 }
 
-/**
- * 迁移问题中的证据文件路径（evidenceFiles 字段）
- */
-async function migrateIssueEvidencePaths(): Promise<number> {
+async function migrateIssueEvidencePathsSync(): Promise<number> {
   const db = getDb();
   const issueList = await db.select().from(issues);
   let migratedCount = 0;
@@ -105,10 +123,7 @@ async function migrateIssueEvidencePaths(): Promise<number> {
   return migratedCount;
 }
 
-/**
- * 迁移知识库文档的文件路径（filePath 字段）
- */
-async function migrateKnowledgeDocumentPaths(): Promise<number> {
+async function migrateKnowledgeDocumentPathsSync(): Promise<number> {
   const db = getDb();
   const docs = await db.select().from(knowledgeDocuments);
   let migratedCount = 0;
@@ -130,28 +145,4 @@ async function migrateKnowledgeDocumentPaths(): Promise<number> {
   }
 
   return migratedCount;
-}
-
-/**
- * 执行所有路径迁移
- * 将数据库中存储的绝对路径转换为相对路径
- */
-export async function migrateAllPaths(): Promise<{
-  assessmentRecords: number;
-  issues: number;
-  knowledgeDocuments: number;
-}> {
-  log.info('开始执行路径数据迁移...');
-
-  const assessmentCount = await migrateAssessmentRecordPaths();
-  const issueCount = await migrateIssueEvidencePaths();
-  const knowledgeCount = await migrateKnowledgeDocumentPaths();
-
-  log.info(`路径迁移完成: 测评记录 ${assessmentCount} 条, 问题 ${issueCount} 条, 知识库文档 ${knowledgeCount} 条`);
-
-  return {
-    assessmentRecords: assessmentCount,
-    issues: issueCount,
-    knowledgeDocuments: knowledgeCount,
-  };
 }

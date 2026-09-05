@@ -8,7 +8,9 @@ interface ProjectRow {
   systemName: string;
   assessedUnit: string;
   standardSystem: string;
+  standardId?: string;
   levelCombo: string;
+  level: number;
   extensionTypes: string[];
   status: string;
   [key: string]: any;
@@ -18,7 +20,6 @@ interface ProjectAutoSaveOptions {
   projectList: Ref<ProjectRow[]>;
   editedRows: Ref<string[]>;
   deletedIds: Ref<string[]>;
-  parseLevelFromCombo: (combo: string) => number;
   loadProjects: () => Promise<void>;
   debounceDelay?: number;
   periodicInterval?: number;
@@ -31,7 +32,6 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
     projectList,
     editedRows,
     deletedIds,
-    parseLevelFromCombo,
     loadProjects,
     debounceDelay = 45000,
     periodicInterval = 45000,
@@ -71,13 +71,15 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
             name: row.name.trim(),
             systemName: row.systemName,
             assessedUnit: row.assessedUnit,
+            // 传递 standardId（项目创建后不可更改，避免 records 孤儿）
+            standardId: row.standardId,
             standardSystem: row.standardSystem,
             levelCombo: row.levelCombo,
             extensionType:
               row.extensionTypes && row.extensionTypes.length > 0
                 ? row.extensionTypes.join(',')
                 : undefined,
-            level: parseLevelFromCombo(row.levelCombo),
+            level: Number(row.level) || 3,
           });
           if (res.success) created++;
         } else {
@@ -92,7 +94,7 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
               row.extensionTypes && row.extensionTypes.length > 0
                 ? row.extensionTypes.join(',')
                 : '',
-            level: parseLevelFromCombo(row.levelCombo),
+            level: Number(row.level) || 3,
             status: row.status as any,
           });
           if (res.success) updated++;

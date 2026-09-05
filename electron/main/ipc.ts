@@ -13,6 +13,7 @@ import { registerReportHandlers } from '../ipc/report.ipc';
 import { registerUpdateHandlers } from '../services/update.service';
 import { registerDocumentHandlers } from '../ipc/document.ipc';
 import { registerFileHandlers } from '../ipc/file.ipc';
+import { registerWindowHandlers } from '../ipc/window.ipc';
 
 export function registerIpcHandlers(): void {
   registerAuthHandlers();
@@ -30,4 +31,5 @@ export function registerIpcHandlers(): void {
   registerUpdateHandlers();
   registerDocumentHandlers();
   registerFileHandlers();
+  registerWindowHandlers();
 }

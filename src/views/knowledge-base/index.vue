@@ -205,6 +205,22 @@
             <option value="网络架构">网络架构</option>
             <option value="安全配置">安全配置</option>
           </select>
+          <!-- Phase 4 · 任务 30：命令库行业维度（可选） -->
+          <select v-model="commandFilterIndustry" class="kb-select" @change="commandPagination.page = 1; loadCommands();">
+            <option value="">全部行业（含通用）</option>
+            <option v-for="p in INDUSTRY_PRESETS" :key="p" :value="p">{{ p }}</option>
+            <template v-for="s in commandIndustryStats" :key="'stat-' + (s.industry || '-empty-')">
+              <option v-if="s.industry && !INDUSTRY_PRESETS.includes(s.industry)" :value="s.industry">
+                {{ s.industry }}（{{ s.count }}）
+              </option>
+            </template>
+            <option :value="'__ALL__'">
+              仅通用命令（{{ (commandIndustryStats.find(s => s.industry === '')?.count) || 0 }}）
+            </option>
+          </select>
+          <div v-if="commandMatchedIndustry" class="kb-matched-industry" title="按当前标准行业自动筛选">
+            🔎 已匹配行业：<b>{{ commandMatchedIndustry }}</b>
+          </div>
           <div class="kb-search-box">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="kb-search-icon"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             <input v-model="commandKeyword" type="text" placeholder="搜索命令..." class="kb-search-input" @input="debounceCommandSearch">
@@ -221,6 +237,7 @@
                 <th>命令内容</th>
                 <th style="width:160px">用途说明</th>
                 <th style="width:80px">适用OS</th>
+                <th style="width:70px;text-align:center">行业维度</th>
                 <th style="width:50px;text-align:center">收藏</th>
               </tr>
             </thead>
@@ -248,6 +265,27 @@
                   <div v-else class="cmd-os-tags">
                     <span v-for="os in cmd.os.split('/')" :key="os" class="cmd-os-tag" :class="'os-' + os.trim().toLowerCase()">{{ os.trim() }}</span>
                   </div>
+                </td>
+                <!-- Phase 4 · 任务 30：行业维度列（可选） -->
+                <td style="text-align:center; white-space: nowrap">
+                  <input
+                    v-if="String(cmd.id).startsWith('temp-') || editingCommandId === cmd.id"
+                    v-model="(cmd as any).industry"
+                    class="cmd-input"
+                    list="cmd-industry-list"
+                    placeholder="留空=通用"
+                    @input="markCommandModified(cmd)"
+                  />
+                  <span v-else @click="startEditCommand(cmd)" style="cursor:pointer;">
+                    <el-tag v-if="(cmd as any).industry" size="small" type="warning">{{ (cmd as any).industry }}</el-tag>
+                    <el-tag v-else size="small" effect="plain">通用</el-tag>
+                  </span>
+                  <datalist id="cmd-industry-list">
+                    <option v-for="p in INDUSTRY_PRESETS" :key="p" :value="p">{{ p }}</option>
+                    <option v-for="s in commandIndustryStats" :key="'dl-' + s.industry" :value="s.industry">
+                      {{ s.industry || '通用' }}
+                    </option>
+                  </datalist>
                 </td>
                 <td class="cmd-fav" @click="toggleFavorite(cmd)">
                   <span v-if="cmd.isFavorite" class="fav-active">&#9733;</span>
@@ -535,10 +573,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue';
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import DOMPurify from 'dompurify';
 import type { KnowledgeCategory, KnowledgeDocument, KnowledgeCommand } from '../../../shared/types';
+import { useProjectStore } from '@/stores/project';
 import FilePreviewDialog from '../onsite-verification/components/file-preview-dialog.vue';
 import RecursiveCategoryTree from './components/RecursiveCategoryTree.vue';
 import SkeletonLoader from '@/components/SkeletonLoader/index.vue';
@@ -559,6 +598,7 @@ const commandList = ref<KnowledgeCommand[]>([]);
 const docViewerVisible = ref(false);
 const viewingDoc = ref<KnowledgeDocument | null>(null);
 const filePreviewRef = ref<InstanceType<typeof FilePreviewDialog>>();
+const projectStore = useProjectStore();
 
 const showCategoryDialog = ref(false);
 const showUploadDialog = ref(false);
@@ -643,6 +683,11 @@ const commandFilterDeviceType = ref('');
 const commandFilterCategory = ref('');
 const commandFilterSubCategory = ref('');
 const commandKeyword = ref('');
+// Phase 4 · 任务 30：命令库行业维度（可选）
+const commandFilterIndustry = ref(''); // 空字符串：全部；'__ALL__'：仅通用；其它：按行业值过滤
+const commandIndustryStats = ref<Array<{ industry: string; count: number }>>([]);
+const commandMatchedIndustry = ref<string>(''); // 项目级/筛选后实际命中的行业（展示用）
+const INDUSTRY_PRESETS = ['电力', '金融', '医疗', '电信', '政务', '交通', '能源', '教育', '公安'];
 
 const tempCommandIdCounter = ref(-1);
 const modifiedCommandIds = reactive<Set<string>>(new Set());
@@ -761,6 +806,7 @@ function toggleNode(id: string) {
 function switchTab(tab: string) {
   activeTab.value = tab;
   if (tab === 'commands') {
+    loadCommandIndustries();
     loadCommands();
   }
 }
@@ -969,14 +1015,36 @@ async function loadCommands() {
     if (commandFilterSubCategory.value) params.subCategory = commandFilterSubCategory.value;
     if (commandKeyword.value) params.keyword = commandKeyword.value;
 
+    // Phase 4 · 任务 30：行业筛选
+    if (commandFilterIndustry.value === '__ALL__') {
+      // 仅通用命令
+      params.industry = '';
+      params.industryMode = 'universal';
+    } else if (commandFilterIndustry.value) {
+      params.industry = commandFilterIndustry.value;
+      params.industryMode = 'matchOrUniversal';
+    }
+
     const res = await window.api.knowledge.listCommands(params);
     if (res.success && res.data) {
-      commandList.value = res.data.list;
+      commandList.value = res.data.list.map((c: any) => ({ industry: '', ...c }));
       commandPagination.total = res.data.total;
+      commandMatchedIndustry.value = res.data.matchedIndustry || '';
     }
   } finally {
     commandLoading.value = false;
   }
+}
+
+// Phase 4 · 任务 30：加载命令库行业维度（字典 + 数量）
+async function loadCommandIndustries() {
+  if (!window.api) return;
+  try {
+    const res = await window.api.knowledge.listCommandIndustries();
+    if (res.success && Array.isArray(res.data)) {
+      commandIndustryStats.value = res.data;
+    }
+  } catch { /* ignore */ }
 }
 
 function addEmptyCommand() {
@@ -991,6 +1059,7 @@ function addEmptyCommand() {
     deviceType: '服务器',
     category: '身份鉴别',
     subCategory: '',
+    industry: '',
     isFavorite: 0,
     referenceCount: 0,
     createdAt: new Date().toISOString(),
@@ -1026,6 +1095,7 @@ async function saveCommandChanges() {
           deviceType: cmd.deviceType,
           category: cmd.category,
           subCategory: cmd.subCategory || '',
+          industry: typeof (cmd as any).industry === 'string' ? (cmd as any).industry : '',
           createdAt: cmd.createdAt,
           updatedAt: cmd.updatedAt,
         });
@@ -1041,6 +1111,7 @@ async function saveCommandChanges() {
           deviceType: cmd.deviceType,
           category: cmd.category,
           subCategory: cmd.subCategory || '',
+          industry: typeof (cmd as any).industry === 'string' ? (cmd as any).industry : '',
         });
         if (res.success) updated++;
       }
@@ -1050,6 +1121,7 @@ async function saveCommandChanges() {
     commandVersion.value = 0;
     ElMessage.success(`保存成功：新增 ${created} 条，更新 ${updated} 条`);
     loadCommands();
+    loadCommandIndustries();
   } catch (error) {
     ElMessage.error('保存失败：' + (error instanceof Error ? error.message : '未知错误'));
   } finally {
@@ -1068,9 +1140,9 @@ async function viewDocument(doc: KnowledgeDocument) {
       viewingDoc.value = res.data;
       // 如果有文件路径，打开文件预览
       if (res.data.filePath) {
-        setTimeout(() => {
-          filePreviewRef.value?.open(res.data!);
-        }, 100);
+        // 等待弹窗渲染完成后再打开预览，避免使用 setTimeout hack 导致的组件卸载后回调
+        await nextTick();
+        filePreviewRef.value?.open(res.data!);
       }
     }
   } finally {
@@ -1207,10 +1279,19 @@ async function selectCommandFile() {
 
 async function handleImportCommandFile() {
   if (!window.api || !commandFile.value) return;
+  // 经主进程 IPC 读取文件（含路径校验、大小限制），避免渲染进程直接依赖 Node fs
+  const fileRes = await window.api.fs.readFile(commandFile.value);
+  if (!fileRes.success || !fileRes.data) {
+    ElMessage.error('文件读取失败：' + (fileRes.error?.message || '未知错误'));
+    return;
+  }
+  let commands: any[];
   try {
-    const fs = await import('fs');
-    const content = fs.readFileSync(commandFile.value, 'utf-8');
-    const commands = JSON.parse(content);
+    commands = JSON.parse(fileRes.data as string);
+  } catch {
+    ElMessage.error('文件解析失败：不是有效的 JSON 格式');
+    return;
+  }
 
     if (!Array.isArray(commands)) {
       ElMessage.error('文件格式错误：必须是JSON数组');
@@ -1264,9 +1345,6 @@ async function handleImportCommandFile() {
     } else {
       ElMessage.error('导入失败：没有成功导入任何命令');
     }
-  } catch (error) {
-    ElMessage.error('文件读取失败：' + (error instanceof Error ? error.message : '未知错误'));
-  }
 }
 
 function resetUploadForm() {
@@ -1347,6 +1425,10 @@ async function deleteDocument(doc: KnowledgeDocument) {
 }
 
 function showReferenceDialog(doc: KnowledgeDocument) {
+  if (!projectStore.currentProject) {
+    ElMessage.warning('请先在项目管理中选择一个项目，再引用文档');
+    return;
+  }
   referenceDoc.value = doc;
   referenceForm.targetType = 'asset';
   referenceForm.targetId = '';
@@ -1356,13 +1438,44 @@ function showReferenceDialog(doc: KnowledgeDocument) {
 }
 
 async function loadAssets() {
-  // 知识库为全局页面，缺少项目上下文，暂不加载资产列表
-  assetList.value = [];
+  // 引用目标需项目上下文：加载当前项目的资产列表供选择
+  const projectId = projectStore.currentProject?.id;
+  if (!projectId || !window.api) {
+    assetList.value = [];
+    return;
+  }
+  try {
+    const res = await window.api.asset.list({ projectId });
+    if (res.success && res.data) {
+      assetList.value = ((res.data as { list: { id: string; name: string }[] }).list || []).map((a) => ({ id: a.id, name: a.name }));
+    } else {
+      assetList.value = [];
+    }
+  } catch {
+    assetList.value = [];
+  }
 }
 
 async function loadAssessments() {
-  // 知识库为全局页面，缺少项目上下文，暂不加载测评项列表
-  assessmentList.value = [];
+  // 引用目标需项目上下文：加载当前项目标准的测评项（核查项）列表供选择
+  const project = projectStore.currentProject;
+  if (!project?.standardId || !window.api) {
+    assessmentList.value = [];
+    return;
+  }
+  try {
+    const res = await window.api.assessment.getItems(project.standardId);
+    if (res.success && res.data) {
+      assessmentList.value = (res.data as any[]).map((i) => ({
+        id: i.id,
+        name: `${i.controlPoint || ''}${i.controlName ? ' - ' + i.controlName : ''}`,
+      }));
+    } else {
+      assessmentList.value = [];
+    }
+  } catch {
+    assessmentList.value = [];
+  }
 }
 
 async function handleReferenceDocument() {
@@ -1491,6 +1604,7 @@ async function handleBatchImportGuide() {
 onMounted(() => {
   loadCategories();
   loadDocuments();
+  loadCommandIndustries();
   loadCommands();
 });
 
@@ -1787,6 +1901,19 @@ $info-light: var(--color-primary-light);
   background-image: url("data:image/svg+xml;utf8,<svg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239CA3AF' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
   background-repeat: no-repeat;
   background-position: right 6px center;
+}
+
+/* Phase 4 · 任务 30：行业筛选提示 */
+.kb-matched-industry {
+  font-size: 12px;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  padding: 4px 10px;
+  border-radius: 6px;
+  margin-left: -2px;
+  line-height: 1.4;
+  white-space: nowrap;
 }
 
 .kb-content-area {

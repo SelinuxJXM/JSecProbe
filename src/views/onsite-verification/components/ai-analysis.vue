@@ -237,6 +237,11 @@ const props = defineProps<{
   tableRows: any[];
   saveAllRows: () => Promise<boolean>;
   loadScreenshotDataUrl: (row: any, filePath: string) => Promise<string | null>;
+  // Phase 4 行标上下文注入（与 composable 对应）
+  projectId?: string;
+  standardId?: string;
+  domainId?: string;
+  currentItemId?: string;
 }>();
 
 import { useAiAnalysis } from '../composables/useAiAnalysis';
@@ -272,6 +277,10 @@ const {
   tableRows: computed(() => props.tableRows),
   saveAllRows: props.saveAllRows,
   loadScreenshotDataUrl: props.loadScreenshotDataUrl,
+  projectId: props.projectId,
+  standardId: props.standardId,
+  domainId: props.domainId,
+  currentItemId: props.currentItemId,
 });
 
 // 合规标签样式

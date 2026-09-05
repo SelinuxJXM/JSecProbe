@@ -1,16 +1,13 @@
-import { ipcMain, dialog, app } from 'electron';
+import { ipcMain, dialog } from 'electron';
 import log from 'electron-log';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
 import { eq, like, and, desc, count, sql, not, or, lte, inArray } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import ExcelJS from 'exceljs';
-import * as XLSX from 'xlsx';
-import * as path from 'path';
-import * as fs from 'fs';
 import type { ProjectListParams } from '../../shared/types';
 import { writeOperationLog } from '../utils/operation-log';
-import { wrap } from '../utils/ipc-wrapper';
+import { wrap, wrapRaw } from '../utils/ipc-wrapper';
 
 async function calcProjectProgress(projectId: string): Promise<number> {
   try {
@@ -95,16 +92,10 @@ async function calcProjectProgress(projectId: string): Promise<number> {
       domainItemCounts[item.domain] = (domainItemCounts[item.domain] || 0) + 1;
     }
 
-    // 全局层面列表
-    const GLOBAL_DOMAINS = [
-      'secure_communication',
-      'secure_management',
-      'security_management',
-      'security_organization',
-      'security_personnel',
-      'security_construction',
-      'security_maintenance',
-    ];
+    // 全局层面列表：动态推导（凡不属于资产映射层面的域均为全局层面），
+    // 兼容电力等行业标准的额外安全层面（如 domain-0「总体要求」）；与 report.service / 前端口径一致
+    const assetDomainIds = new Set(Object.values(CATEGORY_TO_DOMAIN));
+    const GLOBAL_DOMAINS = Object.keys(domainItemCounts).filter(d => !assetDomainIds.has(d));
 
     // 总项数 = Σ(每个层面的资产数 × 该层面测评项数) + 全局层面测评项数
     let total = 0;
@@ -305,6 +296,45 @@ export function registerProjectHandlers(): void {
     })
   );
 
+  ipcMain.handle('project:getTrend', wrap(async () => {
+    const db = getDb();
+    const rows = await db
+      .select({ createdAt: schema.projects.createdAt })
+      .from(schema.projects);
+
+    const now = new Date();
+    const months: string[] = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+    }
+
+    const createdMap: Record<string, number> = Object.fromEntries(months.map((m) => [m, 0]));
+    let beforeBase = 0;
+    for (const row of rows) {
+      if (!row.createdAt) continue;
+      const d = new Date(row.createdAt);
+      if (Number.isNaN(d.getTime())) continue;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      if (key in createdMap) {
+        createdMap[key] += 1;
+      } else if ((months[0] ?? '') > key) {
+        beforeBase += 1;
+      }
+    }
+
+    const created = months.map((m) => createdMap[m]);
+    const cumulative: number[] = [];
+    let running = beforeBase;
+    for (const c of created) {
+      running += c;
+      cumulative.push(running);
+    }
+
+    return { months, created, cumulative };
+  })
+  );
+
   ipcMain.handle('project:get', wrap(async (_event, id: string) => {
       const db = getDb();
       const project = await db.query.projects.findFirst({
@@ -374,10 +404,6 @@ export function registerProjectHandlers(): void {
         updatedAt: now,
       });
 
-      importPresetRecords(id, level).catch((err) => {
-        log.error('导入预置测评记录失败:', err);
-      });
-
       calcProjectProgress(id).catch((err) => {
         log.error('[project:create] 进度计算失败:', err);
       });
@@ -398,193 +424,6 @@ export function registerProjectHandlers(): void {
     })
   );
 
-  // 从Excel模板导入预置测评记录
-  async function importPresetRecords(projectId: string, level: number) {
-    try {
-      const db = getDb();
-      
-      // 根据等级选择对应的Excel模板
-      let templateFileName = '';
-      if (level === 2) {
-        templateFileName = 'S2A2G2.xlsx';
-      } else if (level === 3) {
-        templateFileName = 'S3A3G3.xlsx';
-      } else {
-        return;
-      }
-      
-      // 尝试从多个位置查找模板文件
-      const possiblePaths = [
-        path.join(process.cwd(), templateFileName),
-        path.join(process.cwd(), 'resources', templateFileName),
-        path.join(app.getAppPath(), templateFileName),
-        path.join(path.dirname(app.getAppPath()), templateFileName),
-        path.join(path.dirname(app.getAppPath()), 'resources', templateFileName),
-        path.join(process.resourcesPath || '', templateFileName),
-        path.join(process.resourcesPath || '', 'resources', templateFileName),
-      ];
-      
-      log.info(`开始查找模板文件: ${templateFileName}`);
-      log.info(`process.cwd(): ${process.cwd()}`);
-      log.info(`app.getAppPath(): ${app.getAppPath()}`);
-      log.info(`process.resourcesPath: ${process.resourcesPath}`);
-      
-      let templatePath = '';
-      for (const p of possiblePaths) {
-        const exists = fs.existsSync(p);
-        log.info(`  检查路径: ${p} -> ${exists ? '存在' : '不存在'}`);
-        if (exists) {
-          templatePath = p;
-          break;
-        }
-      }
-      
-      if (!templatePath) {
-        log.warn(`未找到模板文件: ${templateFileName}`);
-        return;
-      }
-      
-      log.info(`找到模板文件: ${templatePath}`);
-      
-      const workbook = XLSX.readFile(templatePath);
-      log.info(`Excel文件包含 ${workbook.SheetNames.length} 个工作表: ${workbook.SheetNames.join(', ')}`);
-      
-      const SHEET_TO_DOMAIN: Record<string, string> = {
-        '安全物理环境': 'secure_physical',
-        '安全通信网络': 'secure_communication',
-        '安全区域边界-XX边界': 'secure_boundary',
-        '安全区域边界': 'secure_boundary',
-        '安全计算环境-XX服务器': 'secure_computing',
-        '安全计算环境-XX网络设备': 'secure_computing',
-        '安全计算环境-XX安全设备': 'secure_computing',
-        '安全计算环境-XX应用系统': 'secure_computing',
-        '安全计算环境-XX管理平台': 'secure_computing',
-        '安全计算环境-XX数据库': 'secure_computing',
-        '安全计算环境-XX终端': 'secure_computing',
-        '安全管理中心': 'secure_management',
-        '安全管理制度': 'security_management',
-        '安全管理机构': 'security_organization',
-        '安全管理人员': 'security_personnel',
-        '安全建设管理': 'security_construction',
-        '安全运维管理': 'security_maintenance',
-      };
-      
-      const resultMap: Record<string, string> = {
-        '符合': 'compliant',
-        '部分符合': 'partial',
-        '不符合': 'non_compliant',
-        '不适用': 'not_applicable',
-        '待判定': 'untested',
-        '': 'untested',
-      };
-      
-      // 获取该项目的标准库测评项并建立索引
-      const projectRecord = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
-      const projectStandardId = projectRecord?.standardId || 'gb-t-22239-2019-l3';
-      const allItems = await db.query.assessmentItems.findMany({
-        where: eq(schema.assessmentItems.standardId, projectStandardId)
-      });
-      log.info(`获取到 ${allItems.length} 条测评项，标准库ID: ${projectStandardId}`);
-      const itemMap = new Map<string, any>();
-      for (const item of allItems) {
-        const key = `${item.domain}||${item.controlPoint}||${item.requirement}`;
-        itemMap.set(key, item);
-      }
-      log.info(`已构建测评项索引，共 ${itemMap.size} 条`);
-      
-      const now = new Date().toISOString();
-      let importedCount = 0;
-      
-      for (const sheetName of workbook.SheetNames) {
-        const domainKey = SHEET_TO_DOMAIN[sheetName];
-        if (!domainKey) continue;
-        
-        const worksheet = workbook.Sheets[sheetName];
-        const rows: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-        
-        if (rows.length === 0) continue;
-        
-        for (let i = 1; i < rows.length; i++) {
-          const row = rows[i];
-          if (!row || row.length === 0) continue;
-          
-          const colA = row[0] ? String(row[0]).trim() : '';
-          const colB = row[1] ? String(row[1]).trim() : '';
-          const colC = row[2] ? String(row[2]).trim() : '';
-          const colD = row[3] ? String(row[3]).trim() : '';
-          const colE = row[4] ? String(row[4]).trim() : '';
-          
-          if (!colA || isNaN(parseInt(colA))) continue;
-          
-          const controlPoint = colB;
-          const requirement = colC;
-          const resultRecord = colD;
-          const compliance = colE;
-          
-          if (!requirement) continue;
-          
-          const key = `${domainKey}||${controlPoint}||${requirement}`;
-          let item = itemMap.get(key);
-          
-          if (!item) {
-            for (const [k, v] of itemMap) {
-              if (k.startsWith(`${domainKey}||${controlPoint}||`) && v.requirement.includes(requirement.substring(0, 20))) {
-                item = v;
-                break;
-              }
-            }
-          }
-          
-          if (!item) {
-            log.debug(`未找到匹配的测评项: domain=${domainKey}, controlPoint=${controlPoint}, requirement前20字符=${requirement.substring(0, 20)}`);
-            continue;
-          }
-          
-          // 检查是否已存在记录
-          const existing = await db.query.assessmentRecords.findFirst({
-            where: and(
-              eq(schema.assessmentRecords.projectId, projectId),
-              eq(schema.assessmentRecords.itemId, item.id),
-              sql`(${schema.assessmentRecords.assetId} IS NULL OR ${schema.assessmentRecords.assetId} = '')`
-            ),
-          });
-          
-          const resultValue = resultMap[compliance] || 'untested';
-          
-          const recordData = {
-            projectId,
-            itemId: item.id,
-            assetId: null,
-            result: resultValue,
-            method: 'check',
-            commandOutput: '',
-            evidence: resultRecord,
-            findings: resultRecord,
-            assessor: '',
-            assessmentDate: now,
-          };
-          
-          if (existing) {
-            await db.update(schema.assessmentRecords)
-              .set({ ...recordData, updatedAt: now })
-              .where(eq(schema.assessmentRecords.id, existing.id));
-          } else {
-            await db.insert(schema.assessmentRecords).values({
-              ...recordData,
-              id: randomUUID(),
-              createdAt: now,
-              updatedAt: now,
-            });
-          }
-          importedCount++;
-        }
-      }
-      
-      log.info(`项目 ${projectId} 导入预置测评记录: ${importedCount} 条`);
-    } catch (error) {
-      log.error('导入预置测评记录失败:', error);
-    }
-  }
 
   ipcMain.handle('project:update', wrap(async (_event, id: string, data: any) => {
       const db = getDb();
@@ -651,10 +490,10 @@ export function registerProjectHandlers(): void {
         targetName: project?.name,
         description: `删除项目: ${project?.name || id}`,
       });
-    })
+    }, { moduleName: 'project', requireSession: true })
   );
 
-  ipcMain.handle('project:export', async (_event, projectId: string) => {
+  ipcMain.handle('project:export', wrapRaw(async (_event, projectId: string) => {
     try {
       const db = getDb();
       const project = await db.query.projects.findFirst({
@@ -713,9 +552,9 @@ export function registerProjectHandlers(): void {
     } catch (error: any) {
       return { success: false, error };
     }
-  });
+  }, { moduleName: 'project', requireSession: true }));
 
-  ipcMain.handle('project:exportAll', async () => {
+  ipcMain.handle('project:exportAll', wrapRaw(async () => {
     try {
       const db = getDb();
       const projects = await db.select().from(schema.projects);
@@ -762,9 +601,9 @@ export function registerProjectHandlers(): void {
     } catch (error: any) {
       return { success: false, error };
     }
-  });
+  }, { moduleName: 'project', requireSession: true }));
 
-  ipcMain.handle('project:import', async () => {
+  ipcMain.handle('project:import', wrapRaw(async () => {
     try {
       const result = await dialog.showOpenDialog({
         filters: [{ name: 'Excel文件', extensions: ['xlsx', 'xls'] }],
@@ -816,5 +655,5 @@ export function registerProjectHandlers(): void {
     } catch (error: any) {
       return { success: false, error };
     }
-  });
+  }, { moduleName: 'project', requireSession: true }));
 }

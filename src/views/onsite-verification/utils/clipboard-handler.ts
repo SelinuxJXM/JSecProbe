@@ -115,10 +115,13 @@ export function parsePlainText(text: string): string[][] {
  */
 export const COMPLIANCE_TEXT_MAP: Record<string, string> = {
   '符合': 'conform',
+  'conform': 'conform',
   '部分符合': 'partial',
   '部分': 'partial',
+  'partial': 'partial',
   '不符合': 'nonconform',
   '不合规': 'nonconform',
+  'nonconform': 'nonconform',
   '不适用': 'na',
   'n/a': 'na',
   'na': 'na',
@@ -168,6 +171,21 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
   } = options;
 
   /**
+   * 调整指定行结论 textarea 的高度（根据内容自适应）
+   * @param rowIndex 行索引
+   */
+  function adjustConclusionHeightForRow(rowIndex: number) {
+    const domRows = document.querySelectorAll('tbody tr');
+    const targetTextarea = domRows[rowIndex]?.querySelector('.conclusion-box') as HTMLTextAreaElement;
+    if (targetTextarea) {
+      setTimeout(() => {
+        targetTextarea.style.height = 'auto';
+        targetTextarea.style.height = targetTextarea.scrollHeight + 2 + 'px';
+      }, 0);
+    }
+  }
+
+  /**
    * 处理测评结论批量粘贴（从Excel复制多行多列内容）
    * 多列时按顺序映射：第1列→结论，第2列→符合性，第3列→关键证据点
    * @param _event 粘贴事件
@@ -192,23 +210,32 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
     if (rows.length === 0) {
       const pastedText = clipboardData.getData('text');
       if (!pastedText) return;
-      rows = parsePlainText(pastedText);
+      // 不含制表符 \t（列分隔符）时，视为单个单元格内容，整体保留其内部换行；
+      // 含制表符时才按 行/列 拆成多格表格
+      if (!pastedText.includes('\t')) {
+        rows = [[pastedText]];
+      } else {
+        rows = parsePlainText(pastedText);
+      }
     }
 
-    // 如果只有一行，正常粘贴不做处理
-    if (rows.length <= 1) return;
-
-    // 阻止默认粘贴行为
+    // 阻止默认粘贴，改为显式写入目标单元格
     _event.preventDefault();
 
-    // 获取表格行
-    const domRows = document.querySelectorAll('tbody tr');
-    if (!domRows || domRows.length === 0) return;
+    // 单值粘贴：直接写入当前行结论列
+    if (rows.length <= 1 && rows[0]?.length === 1) {
+      tableRows.value[rowIndex].conclusion = rows[0][0];
+      adjustConclusionHeightForRow(rowIndex);
+      hasUnsavedChanges.value = true;
+      saveStatus.value = 'unsaved';
+      debounceAutoSave(tableRows.value[rowIndex] || {});
+      return;
+    }
 
+    // 从当前行开始，批量填充内容
     const colCount = Math.max(...rows.map(r => r.length));
     const isMultiCol = colCount >= 2;
 
-    // 从当前行开始，批量填充内容
     for (let i = 0; i < rows.length; i++) {
       const targetRowIndex = rowIndex + i;
       if (targetRowIndex >= tableRows.value.length) break;
@@ -216,13 +243,7 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
       // 第一列填充到测评结论
       if (rows[i].length > 0 && rows[i][0]) {
         tableRows.value[targetRowIndex].conclusion = rows[i][0];
-        const targetTextarea = domRows[targetRowIndex]?.querySelector('.conclusion-box') as HTMLTextAreaElement;
-        if (targetTextarea) {
-          setTimeout(() => {
-            targetTextarea.style.height = 'auto';
-            targetTextarea.style.height = targetTextarea.scrollHeight + 2 + 'px';
-          }, 0);
-        }
+        adjustConclusionHeightForRow(targetRowIndex);
       }
 
       // 第二列填充到符合性（如果存在）
@@ -273,7 +294,13 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
     if (rows.length === 0) {
       const pastedText = clipboardData.getData('text');
       if (!pastedText) return;
-      rows = parsePlainText(pastedText);
+      // 不含制表符 \t（列分隔符）时，视为单个单元格内容，整体保留其内部换行；
+      // 含制表符时才按 行/列 拆成多格表格
+      if (!pastedText.includes('\t')) {
+        rows = [[pastedText]];
+      } else {
+        rows = parsePlainText(pastedText);
+      }
     }
 
     // 如果只有一个值，直接设置当前行
@@ -371,8 +398,12 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
    * 设置全局粘贴事件处理器
    * 用于处理图片粘贴和文本粘贴到关键证据点
    */
+  // 保存全局粘贴监听引用，便于卸载时移除，避免监听器泄漏
+  let globalPasteHandler: ((event: ClipboardEvent) => void) | null = null;
+
   function setupGlobalPasteHandler() {
-    document.addEventListener('paste', async (event: ClipboardEvent) => {
+    if (globalPasteHandler) return;
+    globalPasteHandler = async (event: ClipboardEvent) => {
       if (tableRows.value.length === 0) return;
       const currentRow = tableRows.value[currentRowIndex.value];
       if (!currentRow) return;
@@ -398,8 +429,11 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
         }
       }
 
+      // 若目标单元格的 @paste 已接管处理，跳过全局文本注入
+      if (event.defaultPrevented) return;
+
       const target = event.target as HTMLElement;
-      const isEditable = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+      const isEditable = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable;
       if (isEditable) return;
 
       const text = event.clipboardData?.getData('text/plain');
@@ -412,7 +446,15 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
         }
         ElMessage.success('已粘贴到关键证据点');
       }
-    });
+    };
+    document.addEventListener('paste', globalPasteHandler);
+  }
+
+  function removeGlobalPasteHandler() {
+    if (globalPasteHandler) {
+      document.removeEventListener('paste', globalPasteHandler);
+      globalPasteHandler = null;
+    }
   }
 
   return {
@@ -420,6 +462,7 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
     handleCompliancePaste,
     saveClipboardImage,
     setupGlobalPasteHandler,
+    removeGlobalPasteHandler,
   };
 }
 

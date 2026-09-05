@@ -5,7 +5,7 @@ import log from 'electron-log';
 import crypto from 'crypto';
 import { wrap } from '../utils/ipc-wrapper';
 import { getAppDataPath } from '../main/paths';
-import { toRelativePath, resolvePath } from '../utils/path-resolver';
+import { toRelativePath, validateDataPath, resolvePath } from '../utils/path-resolver';
 
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -93,20 +93,6 @@ function getMimeType(ext: string): string {
   return MIME_TYPES[ext.toLowerCase()] || 'application/octet-stream';
 }
 
-async function validatePath(inputPath: string): Promise<string> {
-  if (!inputPath || typeof inputPath !== 'string') {
-    throw new Error('路径无效');
-  }
-  // 归一化路径后检查是否包含路径遍历
-  const resolved = await resolvePath(inputPath);
-  const normalized = path.resolve(resolved);
-  // 检查规范化路径中是否还包含 ".." （路径遍历攻击）
-  if (normalized.includes('..')) {
-    throw new Error(`路径访问被拒绝: 非法的路径格式`);
-  }
-  return normalized;
-}
-
 function validateId(id: string, name: string): void {
   if (!id || typeof id !== 'string') {
     throw new Error(`${name}无效`);
@@ -114,6 +100,24 @@ function validateId(id: string, name: string): void {
   if (id.includes('..') || id.includes('/') || id.includes('\\') || id.includes('\0')) {
     throw new Error(`${name}包含非法字符`);
   }
+}
+
+/**
+ * 解析用户通过文件对话框显式选择的文件：仅做路径归一化与穿越防护，
+ * 不强制位于应用数据目录内（用户已主动选择，读取属合理行为）。
+ * 用于 getBase64 / readText / readWord 等预览场景；
+ * 注意：删除类操作（screenshot:deleteFile）仍使用 validateDataPath 受管目录限制。
+ */
+async function resolveUserFilePath(inputPath: string): Promise<string> {
+  if (!inputPath || typeof inputPath !== 'string') {
+    throw new Error('路径无效');
+  }
+  const resolved = await resolvePath(inputPath);
+  const normalized = path.resolve(resolved);
+  if (normalized.includes('..')) {
+    throw new Error('路径访问被拒绝: 非法的路径格式');
+  }
+  return normalized;
 }
 
 export function registerScreenshotHandlers(): void {
@@ -250,7 +254,7 @@ export function registerScreenshotHandlers(): void {
       throw new Error('文件无效');
     }
 
-    let resolvedPath = await validatePath(filePath);
+    let resolvedPath = await resolveUserFilePath(filePath);
 
     // 容错：如果精确路径不存在，尝试在同目录下按原始文件名（去时间戳）模糊匹配
     if (!fs.existsSync(resolvedPath)) {
@@ -281,7 +285,7 @@ export function registerScreenshotHandlers(): void {
       throw new Error('文件路径无效');
     }
 
-    let resolvedPath = await validatePath(filePath);
+    let resolvedPath = await resolveUserFilePath(filePath);
     if (!fs.existsSync(resolvedPath)) {
       const fuzzyPath = findFuzzyMatch(resolvedPath);
       if (fuzzyPath) {
@@ -311,7 +315,7 @@ export function registerScreenshotHandlers(): void {
       throw new Error('文件路径无效');
     }
 
-    let resolvedPath = await validatePath(filePath);
+    let resolvedPath = await resolveUserFilePath(filePath);
     if (!fs.existsSync(resolvedPath)) {
       const fuzzyPath = findFuzzyMatch(resolvedPath);
       if (fuzzyPath) {
@@ -337,7 +341,7 @@ export function registerScreenshotHandlers(): void {
   }, { moduleName: 'screenshot' }));
 
   ipcMain.handle('screenshot:deleteFile', wrap(async (_event, { filePath }: { filePath: string }) => {
-    const resolvedPath = await validatePath(filePath);
+    const resolvedPath = await validateDataPath(filePath);
     if (fs.existsSync(resolvedPath)) {
       fs.unlinkSync(resolvedPath);
     }

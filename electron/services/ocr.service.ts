@@ -30,74 +30,53 @@ function isImageFile(filePath: string): boolean {
   return ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff'].includes(ext);
 }
 
-export async function getSharedWorker(language: string = 'eng'): Promise<Worker | null> {
-  // 已有 Worker 且语言匹配，直接返回
-  if (sharedWorker && sharedWorkerLanguage === language) {
-    return sharedWorker;
-  }
-
-  // 正在初始化且语言匹配，复用当前初始化 Promise
-  if (sharedWorkerInitializing && sharedWorkerLanguage === language) {
-    return sharedWorkerInitializing;
-  }
-
-  // 语言不匹配：先终止旧 Worker（先清空引用避免竞态）
-  if (sharedWorker) {
-    const oldWorker = sharedWorker;
-    sharedWorker = null;
-    sharedWorkerLanguage = null;
-    log.info(`[OCR] 语言切换: 重建 Worker (target=${language})`);
-    try {
-      await oldWorker.terminate();
-    } catch (err) {
-      log.warn('[OCR] 终止旧 Worker 失败:', err);
+export async function getSharedWorker(language: string = 'chi_sim+eng'): Promise<Worker | null> {
+  return await (async () => {
+    // 已有 Worker 且语言匹配，直接返回
+    if (sharedWorker && sharedWorkerLanguage === language) {
+      return sharedWorker;
     }
-  }
 
-  // 正在初始化但语言不同：等待当前初始化完成后再创建新语言 Worker
-  if (sharedWorkerInitializing && sharedWorkerLanguage !== language) {
-    const pendingInit = sharedWorkerInitializing;
-    try {
-      const worker = await pendingInit;
-      // 初始化完成的 Worker 语言不对，需要终止
-      if (worker) {
-        try {
-          await worker.terminate();
-        } catch (err) {
-          log.warn('[OCR] 终止不匹配 Worker 失败:', err);
-        }
-        if (sharedWorker === worker) {
-          sharedWorker = null;
-          sharedWorkerLanguage = null;
-        }
-      }
-    } catch {
-      // 忽略初始化错误
-    }
-    sharedWorkerInitializing = null;
-    sharedWorkerLanguage = null;
-  }
-
-  // 创建新 Worker
-  sharedWorkerLanguage = language;
-  sharedWorkerInitializing = (async () => {
-    try {
-      const worker = await createWorker(language);
-      sharedWorker = worker;
-      sharedWorkerLanguage = language;
-      log.info(`[OCR] Worker 初始化成功 (language=${language})`);
-      return worker;
-    } catch (error) {
-      log.error('[OCR] 初始化 worker 失败:', error);
+    // 语言不匹配：先终止旧 Worker
+    if (sharedWorker) {
+      const oldWorker = sharedWorker;
       sharedWorker = null;
       sharedWorkerLanguage = null;
-      return null;
-    } finally {
-      sharedWorkerInitializing = null;
+      log.info(`[OCR] 语言切换: 终止旧 Worker (target=${language})`);
+      try {
+        await oldWorker.terminate();
+      } catch (err) {
+        log.warn('[OCR] 终止旧 Worker 失败:', err);
+      }
     }
-  })();
 
-  return sharedWorkerInitializing;
+    // 正在初始化且语言匹配，复用当前初始化 Promise
+    if (sharedWorkerInitializing && sharedWorkerLanguage === language) {
+      return sharedWorkerInitializing;
+    }
+
+    // 创建新 Worker
+    sharedWorkerLanguage = language;
+    const initPromise = (async () => {
+      try {
+        const worker = await createWorker(language);
+        sharedWorker = worker;
+        sharedWorkerLanguage = language;
+        log.info(`[OCR] Worker 初始化成功 (language=${language})`);
+        return worker;
+      } catch (error) {
+        log.error('[OCR] 初始化 worker 失败:', error);
+        sharedWorker = null;
+        sharedWorkerLanguage = null;
+        return null;
+      } finally {
+        sharedWorkerInitializing = null;
+      }
+    })();
+
+    sharedWorkerInitializing = initPromise;
+    return initPromise;
+  })();
 }
 
 async function preprocessImage(imagePath: string): Promise<Buffer> {
@@ -116,7 +95,7 @@ export async function extractTextFromImage(
   imagePath: string,
   options: OCROptions = {}
 ): Promise<OCRResult> {
-  const { language = 'eng', preprocess = true } = options;
+  const { language = 'chi_sim+eng', preprocess = true } = options;
 
   try {
     if (!isImageFile(imagePath)) {

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
+import type { User } from '../../shared/types';
 
 const ipc = <T = any>(channel: string) => (...args: any[]): Promise<T> => ipcRenderer.invoke(channel, ...args);
 
@@ -21,7 +22,7 @@ const updateService = {
 };
 
 const aiService = {
-  chat: ipc<{ content: string; suggestions: string[] }>('ai:chat'),
+  chat: ipc<{ content: string; suggestions: string[]; modelName?: string; switched?: boolean }>('ai:chat'),
   analyzeAssessment: ipc<{ content: string }>('ai:analyzeAssessment'),
   batchAnalyzeScreenshots: ipc<{ content: string }>('ai:batchAnalyzeScreenshots'),
   analyzeIssue: ipc<{ content: string }>('ai:analyzeIssue'),
@@ -31,6 +32,13 @@ const aiService = {
   saveConfig: ipc<void>('ai:saveConfig'),
   testConnection: ipc<any>('ai:testConnection'),
   getProgress: ipc<{ stage: string; message: string; percent: number; timestamp: number } | null>('ai:getProgress'),
+  // 多模型管理
+  getModels: ipc<{ models: Array<{ id: string; name: string; apiBase: string; model: string; apiFormat: string; enabled: boolean; priority: number }>; activeModelId: string | null }>('ai:getModels'),
+  createModel: ipc<{ id: string }>('ai:createModel'),
+  updateModel: ipc<void>('ai:updateModel'),
+  deleteModel: ipc<void>('ai:deleteModel'),
+  setActiveModel: ipc<void>('ai:setActiveModel'),
+  testModelConnection: ipc<any>('ai:testModelConnection'),
   onAnalysisProgress: (callback: (data: { stage: string; message: string; percent: number }) => void) => {
     const handler = (_e: IpcRendererEvent, data: any) => callback(data);
     ipcRenderer.on('ai:progress', handler);
@@ -49,18 +57,23 @@ const api = {
     logout: ipc<void>('auth:logout'),
     getCurrentUser: ipc<{ userId: string; username: string } | null>('auth:getCurrentUser'),
     changePassword: ipc<void>('auth:changePassword'),
-    validateSession: ipc<{ valid: boolean; userId?: string; username?: string }>('auth:validateSession'),
+    validateSession: ipc<{ valid: boolean; userId?: string; username?: string; user?: User }>('auth:validateSession'),
+    encryptCredential: ipc<{ encrypted: string }>('auth:encryptCredential'),
+    decryptCredential: ipc<{ decrypted: string }>('auth:decryptCredential'),
+    isEncryptionAvailable: ipc<{ available: boolean }>('auth:isEncryptionAvailable'),
   },
   project: {
     list: ipc<any>('project:list'),
     get: ipc<any>('project:get'),
     getStatistics: ipc<any>('project:getStatistics'),
+    getTrend: ipc<any>('project:getTrend'),
     create: ipc<any>('project:create'),
     update: ipc<any>('project:update'),
     remove: ipc<void>('project:remove'),
     import: ipc<{ imported: number }>('project:import'),
     export: ipc<{ path: string }>('project:export'),
     exportAll: ipc<{ path: string }>('project:exportAll'),
+    resolveStandardId: ipc<string>('project:resolveStandardId'),
   },
   asset: {
     list: ipc<any>('asset:list'),
@@ -78,14 +91,23 @@ const api = {
     getItems: ipc<any>('standard:getItems'),
     setDefault: ipc<void>('standard:setDefault'),
     remove: ipc<void>('standard:remove'),
+    import: ipc<any>('standard:import'),
+    parseExcel: ipc<any>('standard:parseExcel'),
+    create: ipc<any>('standard:create'),
+    update: ipc<any>('standard:update'),
+    export: ipc<any>('standard:export'),
+    exportBatch: ipc<any>('standard:exportBatch'),
+    exportExcel: ipc<any>('standard:exportExcel'),
+    downloadTemplate: ipc<any>('standard:downloadTemplate'),
+    compare: ipc<any>('standard:compare'),
   },
   assessment: {
     getItems: ipc<any>('assessment:getItems'),
     getItemsByCategory: ipc<any>('assessment:getItemsByCategory'),
     getRecords: ipc<any>('assessment:getRecords'),
     getRecordsByAsset: ipc<any>('assessment:getRecordsByAsset'),
+    getProjectRecords: ipc<any>('assessment:getProjectRecords'),
     getRecordByAssetAndItem: ipc<any>('assessment:getRecordByAssetAndItem'),
-    getRecordsByDomain: ipc<any>('assessment:getRecordsByDomain'),
     saveRecord: ipc<any>('assessment:saveRecord'),
     getProgress: ipc<any>('assessment:getProgress'),
     listDomains: ipc<any>('assessment:listDomains'),
@@ -131,10 +153,13 @@ const api = {
     updateCategory: ipc<void>('knowledge:updateCategory'),
     deleteCategory: ipc<void>('knowledge:deleteCategory'),
     listCommands: ipc<any>('knowledge:listCommands'),
+    listCommandIndustries: ipc<any>('knowledge:listCommandIndustries'),
     createCommand: ipc<string>('knowledge:createCommand'),
     updateCommand: ipc<void>('knowledge:updateCommand'),
     deleteCommand: ipc<void>('knowledge:deleteCommand'),
     favoriteCommand: ipc<void>('knowledge:favoriteCommand'),
+    importExcel: ipc<{ imported: number; errors: string[] }>('knowledge:importExcel'),
+    getStats: ipc<any>('knowledge:getStats'),
     importKnowledge: ipc<{ count: number }>('knowledge:importKnowledge'),
     exportKnowledge: ipc<{ path: string }>('knowledge:exportKnowledge'),
     downloadDocument: ipc<{ path: string; title: string }>('knowledge:downloadDocument'),
@@ -150,6 +175,7 @@ const api = {
     exists: (filePath: string) => ipcRenderer.invoke('file:exists', filePath),
     readAsArrayBuffer: (filePath: string) => ipcRenderer.invoke('file:readAsArrayBuffer', filePath),
     readAsText: (filePath: string, encoding?: string) => ipcRenderer.invoke('file:readAsText', filePath, encoding),
+    cleanupScreenshots: (opts?: any) => ipcRenderer.invoke('file:cleanupScreenshots', opts),
   },
   system: {
     getInfo: ipc<any>('system:getInfo'),
@@ -161,6 +187,17 @@ const api = {
     previewBackup: ipc<any>('system:previewBackup'),
     listBackups: ipc<any[]>('system:listBackups'),
     changeDataPath: ipc<string>('system:changeDataPath'),
+  },
+  window: {
+    minimize: ipc<void>('window:minimize'),
+    maximizeToggle: ipc<boolean>('window:maximizeToggle'),
+    isMaximized: ipc<boolean>('window:isMaximized'),
+    close: ipc<void>('window:close'),
+    onMaximizeChange: (callback: (maximized: boolean) => void) => {
+      const handler = (_e: IpcRendererEvent, maximized: boolean) => callback(maximized);
+      ipcRenderer.on('window:maximizeChanged', handler);
+      return () => ipcRenderer.removeListener('window:maximizeChanged', handler);
+    },
   },
   user: {
     list: ipc<any>('user:list'),
@@ -211,18 +248,13 @@ const api = {
   },
   fs: {
     ensureDir: ipc<void>('fs:ensureDir'),
-    writeFile: ipc<void>('fs:writeFile'),
+    // 注意：主进程 wrap() 返回 IpcResponse<T>；此处显式 IpcResponse 让渲染端拿到 success/error 字段，而不是被 void 吞掉
+    writeFile: ipc<any>('fs:writeFile'),
+    readFile: ipc<string>('fs:readFile'),
+    readFileBase64: ipc<string>('fs:readFileBase64'),
+    writeTextFile: ipc<any>('fs:writeTextFile'),
   },
 
-  on(channel: string, callback: (...args: any[]) => void) {
-    const handler = (_e: IpcRendererEvent, ...args: any[]) => callback(...args);
-    ipcRenderer.on(channel, handler);
-    return () => ipcRenderer.removeListener(channel, handler);
-  },
-
-  sendLog(level: string, message: string) {
-    ipcRenderer.send('log:line', { level, message });
-  },
 
   /**
    * 监听主进程日志，转发到 DevTools Console
@@ -240,7 +272,7 @@ const api = {
   },
 
   platform: process.platform,
-  isPackaged: process.env.NODE_ENV === 'production',
+  isPackaged: process.argv.includes('--jsecprobe-packaged=true'),
 };
 
 contextBridge.exposeInMainWorld('api', api);
