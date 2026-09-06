@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.2.3'; // 版本号由 package.json 动态获取
+const TAG = 'v2.2.4'; // 版本号由 package.json 动态获取
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,20 +57,11 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.2.3 更新内容
+    body: `## v2.2.4 更新内容
 
-### AI 智能辅助增强
-- 新增 AI 对话附件功能，支持发送任意文件辅助测评分析
-  - 图片：支持上传/粘贴/拖拽添加，AI 多模态识图（jpg/png/gif/webp/bmp，自动压缩）
-  - 文档：Word(docx)、Excel(xlsx/xls/csv)、PDF 及文本类文件自动提取内容送入 AI 分析
-- 支持粘贴板直接粘贴截图/文件，拖拽文件到对话框快速添加
-- 附件文件自动保存到本地 ai-chat-attachments 目录
-
-### 界面修复
-- 修复深色模式下待发送附件显示对比度不足的问题
-
-### 稳定性修复
-- 修复 AI 请求失败时错误信息未准确记录的问题`,
+### 现场核查优化
+- 修复核查表结论单元格的粘贴行为：光标在输入框内粘贴时，内容插入到光标位置（或替换已选中文本），与常规编辑体验一致，不再整体替换单元格内容
+- 单元格选中后粘贴仍保持整体替换语义，从 Excel 复制多行多列的批量填充功能不变`,
     draft: false,
     prerelease: false,
   });
