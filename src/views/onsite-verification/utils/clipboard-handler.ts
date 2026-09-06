@@ -101,9 +101,13 @@ export function parseExcelTableHTML(html: string): string[][] | null {
 
 /**
  * 解析纯文本粘贴为二维数组（支持 Tab 分隔的多列）
+ * 保留中间空行作为占位（避免复制"空格、有值格"时值错位填充到上一行），仅去除首尾空行
  */
 export function parsePlainText(text: string): string[][] {
-  return text.split(/\r\n|\r|\n/).filter(line => line.trim() !== '').map(line => line.split('\t'));
+  return text
+    .replace(/^(\r\n|\r|\n)+|(\r\n|\r|\n)+$/g, '')
+    .split(/\r\n|\r|\n/)
+    .map(line => line.split('\t'));
 }
 
 // ============================================================
@@ -171,6 +175,30 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
   } = options;
 
   /**
+   * 最近一次复制的模式：
+   * - 'cell'：单元格级复制（选中单元格后 Ctrl+C，复制整个单元格内容）→ 粘贴时整体替换单元格
+   * - 'edit'：编辑态复制（光标在输入框内选中文本 Ctrl+C）→ 粘贴时插入光标位置
+   * - null：未知（初始状态/外部复制），按单元格级整体替换处理（与历史行为一致）
+   */
+  let lastCopyMode: 'cell' | 'edit' | null = null;
+
+  /**
+   * 最近一次单元格级复制时选中的单元格数量（仅 'cell' 模式有效）
+   * 用于区分"多格复制（跨行无Tab时应按行拆分填充）"与"单格复制（内容含换行时应整体替换）"
+   */
+  let lastCopyCellCount = 0;
+
+  /**
+   * 记录复制模式（在 Ctrl+C 时由页面 keydown 处理器调用）
+   * @param mode 复制模式
+   * @param cellCount 单元格级复制时选中的单元格数量，编辑态复制可省略
+   */
+  function setCopyMode(mode: 'cell' | 'edit', cellCount = 0) {
+    lastCopyMode = mode;
+    lastCopyCellCount = cellCount;
+  }
+
+  /**
    * 调整指定行结论 textarea 的高度（根据内容自适应）
    * @param rowIndex 行索引
    */
@@ -210,19 +238,29 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
     if (rows.length === 0) {
       const pastedText = clipboardData.getData('text');
       if (!pastedText) return;
-      // 不含制表符 \t（列分隔符）时，视为单个单元格内容，整体保留其内部换行；
-      // 含制表符时才按 行/列 拆成多格表格
+      // 不含制表符 \t（列分隔符）时的处理：
+      // - 多格复制（cell 模式且选中多个单元格，如整列框选）：按换行拆成多行，逐行填充
+      // - 单格复制 / 编辑态 / 外部复制：视为单个单元格内容，整体保留其内部换行
       if (!pastedText.includes('\t')) {
-        rows = [[pastedText]];
+        if (lastCopyMode === 'cell' && lastCopyCellCount > 1) {
+          rows = pastedText
+            .replace(/^(\r\n|\r|\n)+|(\r\n|\r|\n)+$/g, '')
+            .split(/\r\n|\r|\n/)
+            .map(line => [line]);
+        } else {
+          rows = [[pastedText]];
+        }
       } else {
         rows = parsePlainText(pastedText);
       }
     }
 
-    // 编辑态（光标在结论输入框内）粘贴单个值时，放行浏览器默认行为：
-    // 插入到光标位置（或替换已选中文本），高度调整与自动保存由 textarea 的 @input 处理
+    // 编辑态粘贴：仅当最近一次复制来自输入框内选中文本（'edit' 模式）且粘贴单个值时，
+    // 才放行浏览器默认行为（插入到光标位置或替换已选中文本）。
+    // 单元格级复制（'cell'）或未知来源（null，如外部复制）粘贴单值时保持整体替换，
+    // 保证"复制单元格→粘贴单元格"的整体替换语义。高度调整与自动保存由 textarea 的 @input 处理。
     const target = _event.target as HTMLElement | null;
-    if (target?.tagName === 'TEXTAREA' && rows.length <= 1 && rows[0]?.length === 1) {
+    if (lastCopyMode === 'edit' && target?.tagName === 'TEXTAREA' && rows.length <= 1 && rows[0]?.length === 1) {
       return;
     }
 
@@ -301,14 +339,25 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
     if (rows.length === 0) {
       const pastedText = clipboardData.getData('text');
       if (!pastedText) return;
-      // 不含制表符 \t（列分隔符）时，视为单个单元格内容，整体保留其内部换行；
-      // 含制表符时才按 行/列 拆成多格表格
+      // 不含制表符 \t（列分隔符）时的处理：
+      // - 多格复制（cell 模式且选中多个单元格，如整列框选）：按换行拆成多行，逐行填充
+      // - 单格复制 / 外部复制：视为单个单元格内容，整体保留其内部换行
       if (!pastedText.includes('\t')) {
-        rows = [[pastedText]];
+        if (lastCopyMode === 'cell' && lastCopyCellCount > 1) {
+          rows = pastedText
+            .replace(/^(\r\n|\r|\n)+|(\r\n|\r|\n)+$/g, '')
+            .split(/\r\n|\r|\n/)
+            .map(line => [line]);
+        } else {
+          rows = [[pastedText]];
+        }
       } else {
         rows = parsePlainText(pastedText);
       }
     }
+
+    // 阻止默认粘贴（与 handleConclusionPaste 一致，统一在分支判断前执行）
+    _event.preventDefault();
 
     // 如果只有一个值，直接设置当前行
     if (rows.length <= 1 && rows[0]?.length === 1) {
@@ -319,9 +368,6 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
       debounceAutoSave(tableRows.value[rowIndex] || {});
       return;
     }
-
-    // 阻止默认粘贴
-    _event.preventDefault();
 
     const colCount = Math.max(...rows.map(r => r.length));
     const isMultiCol = colCount >= 2;
@@ -468,6 +514,7 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
     handleConclusionPaste,
     handleCompliancePaste,
     saveClipboardImage,
+    setCopyMode,
     setupGlobalPasteHandler,
     removeGlobalPasteHandler,
   };

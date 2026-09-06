@@ -1196,13 +1196,28 @@ const handleKeyDown = (e: KeyboardEvent) => {
     e.preventDefault();
     autoSave.triggerManualSave();
   }
-  if ((e.ctrlKey || e.metaKey) && e.key === 'c' && tableCellSelection.selectedCells.value.size > 0) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
     const activeEl = document.activeElement;
-    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT')) {
-      return;
+    const focusInEditable =
+      !!activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT');
+    // 输入框内是否存在真实选中的文本（光标未拖选时 selectionStart === selectionEnd）
+    const hasTextSelection =
+      activeEl instanceof HTMLTextAreaElement || activeEl instanceof HTMLInputElement
+        ? activeEl.selectionStart !== activeEl.selectionEnd
+        : false;
+    const hasCellSelection = tableCellSelection.selectedCells.value.size > 0;
+
+    if (focusInEditable && (hasTextSelection || !hasCellSelection)) {
+      // 编辑态复制：仅当输入框内有真实选中文本，或没有任何选中单元格时才走此分支
+      // （Ctrl+Click 框选会被 preventDefault 阻止焦点转移，焦点仍残留在原输入框内且无选中文本，
+      //   此时若打 edit 标会导致什么都没复制、粘贴时命中剪贴板残留旧内容，故优先单元格复制）
+      clipboardHandler.setCopyMode('edit');
+    } else if (hasCellSelection) {
+      e.preventDefault();
+      // 单元格级复制整格内容（携带选中格数，供粘贴端区分多格拆行填充/单格整体替换）
+      clipboardHandler.setCopyMode('cell', tableCellSelection.selectedCells.value.size);
+      tableCellSelection.copySelectedCells();
     }
-    e.preventDefault();
-    tableCellSelection.copySelectedCells();
   }
   if ((e.key === 'Delete' || e.key === 'Backspace') && tableCellSelection.selectedCells.value.size > 0) {
     const activeEl = document.activeElement;
@@ -2035,13 +2050,13 @@ onUpdated(() => {
   .cell-compliance,
   .cell-evidence {
     &.selected {
-      outline: 1px solid rgba(27, 95, 217, 0.5);
-      outline-offset: -1px;
+      outline: 1.5px solid rgba(27, 95, 217, 0.35);
+      outline-offset: -1.5px;
     }
 
     &.selection-anchor {
-      outline: 1px solid rgba(245, 158, 11, 0.6);
-      outline-offset: -1px;
+      outline: 1.5px solid rgba(245, 158, 11, 0.5);
+      outline-offset: -1.5px;
     }
   }
 
@@ -2324,6 +2339,18 @@ onUpdated(() => {
       option {
         background: var(--color-bg-card);
         color: var(--color-text-primary);
+      }
+    }
+
+    .cell-conclusion,
+    .cell-compliance,
+    .cell-evidence {
+      &.selected {
+        outline-color: rgba(96, 165, 250, 0.6);
+      }
+
+      &.selection-anchor {
+        outline-color: rgba(251, 191, 36, 0.7);
       }
     }
   }

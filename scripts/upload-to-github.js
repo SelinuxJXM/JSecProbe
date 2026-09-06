@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.2.4'; // 版本号由 package.json 动态获取
+const TAG = 'v2.2.5'; // 版本号由 package.json 动态获取
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,11 +57,16 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.2.4 更新内容
+    body: `## v2.2.5 更新内容
 
-### 现场核查优化
-- 修复核查表结论单元格的粘贴行为：光标在输入框内粘贴时，内容插入到光标位置（或替换已选中文本），与常规编辑体验一致，不再整体替换单元格内容
-- 单元格选中后粘贴仍保持整体替换语义，从 Excel 复制多行多列的批量填充功能不变`,
+### 现场核查复制粘贴修复
+- 修复批量复制多个单元格后粘贴到同一单元格的问题：多格复制的纯文本按行拆分、逐行填充目标区域
+- 修复 Ctrl+Click 框选时焦点残留导致 Ctrl+C 误判为编辑态复制、实际未复制内容的问题
+- 修复复制包含空单元格的多行内容时，后续单元格的值错位填充到上一行的问题（保留中间空行占位）
+- 符合性列粘贴同步支持多格拆行填充，并与结论列统一默认粘贴行为
+
+### 界面优化
+- 选中单元格框线调整为 1.5px，深色模式下自动切换为高对比亮色描边，选中状态更清晰`,
     draft: false,
     prerelease: false,
   });
