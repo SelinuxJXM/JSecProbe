@@ -27,6 +27,7 @@ import {
   isOCREnabled,
   getSharedWorker,
 } from '../services/ocr.service';
+import { extractTextFromFile } from '../utils/text-extract';
 
 const MAX_IMAGE_SIZE_MB = 20;
 const MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024;
@@ -219,6 +220,57 @@ function isBlockedIp(hostname: string): boolean {
   // 0.0.0.0
   if (hostname === '0.0.0.0') return true;
   return false;
+}
+
+const MAX_CHAT_DOC_TEXT_LENGTH = 200 * 1024;
+
+async function buildChatMessageContent(msg: { role: string; content: string; attachments?: Array<{ name: string; path: string; type: 'image' | 'document' }> }): Promise<any> {
+  const attachments = msg.attachments || [];
+  if (msg.role !== 'user' || attachments.length === 0) {
+    return msg.content;
+  }
+
+  const userContent: any[] = [];
+  const docBlocks: string[] = [];
+  const failedDocs: string[] = [];
+
+  for (const att of attachments) {
+    try {
+      const absPath = await resolvePath(att.path);
+      if (att.type === 'image') {
+        const base64 = await encodeImageToBase64(absPath);
+        if (base64) {
+          userContent.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } });
+        } else {
+          failedDocs.push(`${att.name}（图片读取失败）`);
+        }
+      } else {
+        let text = await extractTextFromFile(absPath);
+        if (text.length > MAX_CHAT_DOC_TEXT_LENGTH) {
+          text = text.slice(0, MAX_CHAT_DOC_TEXT_LENGTH) + '\n...(内容过长已截断)';
+        }
+        docBlocks.push(`--- 附件: ${att.name} ---\n${text}\n--- 附件结束 ---`);
+      }
+    } catch (err: any) {
+      log.error('[ai:chat] 附件处理失败:', att.name, err.message);
+      failedDocs.push(`${att.name}（读取失败: ${err.message}）`);
+    }
+  }
+
+  let textContent = msg.content || '';
+  if (docBlocks.length > 0) {
+    textContent = `${textContent}\n\n${docBlocks.join('\n\n')}`.trim();
+  }
+  if (failedDocs.length > 0) {
+    textContent = `${textContent}\n\n[以下附件读取失败，未包含在上下文中: ${failedDocs.join('; ')}]`.trim();
+  }
+
+  if (userContent.length === 0) {
+    return textContent || msg.content;
+  }
+
+  userContent.push({ type: 'text', text: textContent || '请分析以上附件内容' });
+  return userContent;
 }
 
 function ensureApiUrl(baseUrl: string | null | undefined, mode?: string): string {
@@ -436,15 +488,18 @@ export function registerAIHandlers(): void {
           }
         }
 
+        let lastError = '';
         for (const model of attemptOrder) {
           const apiKey = model.apiKey ? decryptApiKey(model.apiKey) : '';
           if (!apiKey) {
             log.warn(`[AI故障转移] 模型 ${model.name} 缺少 API Key，跳过`);
+            lastError = `模型 ${model.name} 缺少 API Key`;
             continue;
           }
           const apiUrl = ensureApiUrl(model.apiBase, mode);
           if (!apiUrl) {
             log.warn(`[AI故障转移] 模型 ${model.name} API 地址无效，跳过`);
+            lastError = `模型 ${model.name} API 地址无效`;
             continue;
           }
 
@@ -477,12 +532,13 @@ export function registerAIHandlers(): void {
             return { success: true, modelId: model.id, modelName: model.name, content };
           } catch (error: any) {
             log.warn(`[AI故障转移] 模型 ${model.name} 失败: ${error.message}`);
+            lastError = error.message || String(error);
             continue; // 尝试下一个
           }
         }
 
         // 所有云端模型都失败
-        throw new Error(`云端模型全部失败（共 ${attemptOrder.length} 个）。最近错误：${messages[messages.length - 1]?.content?.substring(0, 50)}...`);
+        throw new Error(`云端模型全部失败（共 ${attemptOrder.length} 个）。最近错误：${lastError}`);
       }
     }
 
@@ -935,7 +991,7 @@ export function registerAIHandlers(): void {
   });
 
   ipcMain.handle('ai:chat', async (_event, params: {
-    messages: { role: string; content: string }[];
+    messages: { role: string; content: string; attachments?: Array<{ name: string; path: string; type: 'image' | 'document' }> }[];
     model?: string;
     temperature?: number;
     context?: string;
@@ -964,7 +1020,9 @@ export function registerAIHandlers(): void {
       if (params.context) {
         messages.push({ role: 'system', content: params.context });
       }
-      messages.push(...params.messages);
+      for (const msg of params.messages) {
+        messages.push({ role: msg.role, content: await buildChatMessageContent(msg) });
+      }
 
       // 使用故障转移机制
       const result = await callWithFailover({ messages, temperature, mode, config });

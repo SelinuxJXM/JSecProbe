@@ -394,6 +394,19 @@ export interface CloudModel {
   priority: number;
 }
 
+export interface ChatAttachment {
+  name: string;
+  path: string;
+  type: 'image' | 'document';
+  size: number;
+}
+
+export interface ChatMessageWithAttachments {
+  role: string;
+  content: string;
+  attachments?: ChatAttachment[];
+}
+
 export interface ApiBridge {
   auth: {
     login: (username: string, password: string) => Promise<IpcResponse<LoginResult>>;
@@ -611,7 +624,7 @@ export interface ApiBridge {
     list: (params: { page?: number; pageSize?: number; module?: string; action?: string }) => Promise<IpcResponse<{ list: OperationLog[]; total: number }>>;
   };
   ai: {
-    chat: (params: { messages: { role: string; content: string }[]; model?: string; temperature?: number; context?: string }) => Promise<IpcResponse<{ content: string; suggestions: string[] }>>;
+    chat: (params: { messages: ChatMessageWithAttachments[]; model?: string; temperature?: number; context?: string }) => Promise<IpcResponse<{ content: string; suggestions: string[] }>>;
     analyzeAssessment: (params: { controlPoint: string; requirement: string; command: string; result: string; screenshots?: string[]; ocrPreprocess?: boolean; standardId?: string; itemId?: string; domain?: string }) => Promise<IpcResponse<{ content: string }>>;
     batchAnalyzeScreenshots: (params: { items: { id: string; controlPoint: string; requirement: string }[]; screenshots: string[]; documents?: { name: string; content: string }[]; ocrPreprocess?: boolean }) => Promise<IpcResponse<{ content: string }>>;
     analyzeIssue: (params: { issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; projectId?: string; itemId?: string }) => Promise<IpcResponse<{ content: string }>>;
@@ -643,6 +656,9 @@ export interface ApiBridge {
   };
   document: {
     extractText: (params: { filePaths: string[] }) => Promise<IpcResponse<{ name: string; content: string }[]>>;
+  };
+  attachment: {
+    save: (params: { name: string; base64Data: string }) => Promise<IpcResponse<{ path: string; name: string; size: number; type: 'image' | 'document' }>>;
   };
   image: {
     saveScreenshot: (base64Data: string, fileName: string) => Promise<IpcResponse<{ filePath: string; fileName: string }>>;

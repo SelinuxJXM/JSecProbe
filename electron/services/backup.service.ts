@@ -520,12 +520,24 @@ export async function listBackups(): Promise<Array<{ name: string; path: string;
         let timestamp = '';
         try {
           const zip = new AdmZip(filePath);
-          const manifestEntry = zip.getEntry('manifest.json');
+          let manifestEntry = zip.getEntry('manifest.json');
+          if (!manifestEntry) {
+            manifestEntry = zip.getEntry('.backup_staging/manifest.json');
+          }
           if (manifestEntry) {
             const manifest = JSON.parse(manifestEntry.getData().toString('utf-8'));
             timestamp = manifest.timestamp || '';
           }
         } catch {
+        }
+        if (!timestamp) {
+          const m = e.name.match(/^backup_(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})\.zip$/);
+          if (m) {
+            const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+            if (!Number.isNaN(d.getTime())) {
+              timestamp = d.toISOString();
+            }
+          }
         }
         return {
           name: e.name,

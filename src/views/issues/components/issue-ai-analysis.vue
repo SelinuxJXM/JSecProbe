@@ -91,10 +91,10 @@
       <div class="ai-dialog-header">
         <span class="ai-dialog-title">🤖 AI批量分析整改建议</span>
         <div class="ai-dialog-header-actions">
-          <button v-if="batchProgress.percent < 100 && batchProgress.stage !== 'error'" class="ai-minimize-btn" @click="batchProgress.visible = false; batchMinimized = true" title="最小化">
+          <button class="ai-minimize-btn" @click="batchProgress.visible = false; batchMinimized = true" title="最小化">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
           </button>
-          <button v-if="batchProgress.stage === 'error' || batchProgress.stage === 'done'" class="ai-close-btn" @click="batchProgress.visible = false" title="关闭">
+          <button class="ai-close-btn" @click="closeBatchDialog" title="关闭">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
@@ -147,7 +147,7 @@
               <svg v-else-if="item.failed" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
               <span v-else class="issue-dot"></span>
             </span>
-            <span class="issue-name">{{ item.issueTitle }}</span>
+            <span class="issue-name">{{ item.issueDescription }}</span>
           </div>
         </div>
       </div>
@@ -228,7 +228,11 @@ const batchElapsedTime = ref(0);
 const batchEstimatedRemaining = ref(0);
 const batchSuccessCount = ref(0);
 const batchFailedCount = ref(0);
-const batchIssueList = ref<Array<{ issueId: string; issueTitle: string; failed: boolean }>>([]);
+const batchIssueList = ref<Array<{ issueId: string; issueTitle: string; issueDescription: string; failed: boolean }>>([]);
+
+function closeBatchDialog() {
+  batchProgress.value.visible = false;
+}
 
 let unsubscribeBatchProgress: (() => void) | null = null;
 let batchStartTime = 0;
@@ -337,6 +341,7 @@ async function batchAnalyzeIssues(issues: Issue[]) {
   batchIssueList.value = issues.map(issue => ({
     issueId: issue.id,
     issueTitle: issue.issueTitle,
+    issueDescription: issue.issueDescription || issue.issueTitle,
     failed: false,
   }));
   batchStartTime = Date.now();

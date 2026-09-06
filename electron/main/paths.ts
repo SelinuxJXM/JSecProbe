@@ -41,9 +41,7 @@ function writeConfig(config: Record<string, any>): void {
 }
 
 export function getAppDataPathSync(): string {
-  if (!appDataPath) {
-    appDataPath = resolve(getDefaultBasePath());
-  }
+  ensurePathResolved();
   return appDataPath;
 }
 
@@ -60,17 +58,18 @@ function ensureDataDirs(basePath: string): void {
   }
 }
 
-export async function getAppDataPath(): Promise<string> {
+// 同步内核：读配置 + 旧路径迁移 + 目录创建，getAppDataPath/getAppDataPathSync 统一走此函数，
+// 两条入口语义完全一致，任何调用顺序都不会污染缓存
+function ensurePathResolved(): string {
   if (appDataPath) {
-    // 缓存命中时也确保子目录存在（幂等），避免提前缓存导致 data 等目录缺失、数据库打不开
     ensureDataDirs(appDataPath);
     return appDataPath;
   }
-  
+
   const config = readConfig();
   let basePath = config.dataPath || getDefaultBasePath();
   basePath = resolve(basePath);
-  
+
   // 数据迁移：如果新路径不存在，检查旧路径（程序目录/JSecProbeData）是否有数据
   if (!existsSync(basePath) && app.isPackaged) {
     const execDir = process.execPath.substring(0, process.execPath.lastIndexOf('\\'));
@@ -86,11 +85,15 @@ export async function getAppDataPath(): Promise<string> {
       }
     }
   }
-  
+
   appDataPath = basePath;
   ensureDataDirs(appDataPath);
-  
+
   return appDataPath;
+}
+
+export async function getAppDataPath(): Promise<string> {
+  return ensurePathResolved();
 }
 
 export function setAppDataPath(newPath: string): void {
@@ -109,7 +112,7 @@ export function getDefaultUserDataPath(): string {
 }
 
 export function getDbPath(): string {
-  return join(appDataPath, 'data', 'mlps.db');
+  return join(getAppDataPathSync(), 'data', 'mlps.db');
 }
 
 export function getLogPath(): string {

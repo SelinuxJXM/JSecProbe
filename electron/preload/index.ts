@@ -232,6 +232,9 @@ const api = {
   document: {
     extractText: ipc<{ name: string; content: string }[]>('document:extractText'),
   },
+  attachment: {
+    save: ipc<{ path: string; name: string; size: number; type: 'image' | 'document' }>('attachment:save'),
+  },
   image: {
     saveScreenshot: ipc<{ filePath: string; fileName: string }>('image:saveScreenshot'),
   },

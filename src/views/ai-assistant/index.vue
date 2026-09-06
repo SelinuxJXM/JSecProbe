@@ -71,18 +71,19 @@
         </div>
 
         <div class="ai-sidebar-section">
-          <div class="ai-sidebar-title">截图分析</div>
-          <div class="ai-upload-area" @click="triggerScreenshotUpload" @dragover.prevent @drop.prevent="handleDrop">
-            <el-icon :size="32" class="upload-icon"><Picture /></el-icon>
-            <div class="upload-text">点击或拖拽上传截图</div>
-            <div class="upload-hint">支持 JPG、PNG 格式</div>
-            <input ref="fileInput" type="file" accept="image/*" hidden @change="handleFileSelect" />
-          </div>
-          <div v-if="screenshotPreview" class="screenshot-preview">
-            <img :src="screenshotPreview" alt="截图预览" />
-            <el-button type="primary" size="small" :loading="analyzing" @click="analyzeScreenshot">
-              {{ analyzing ? '分析中...' : '开始分析' }}
-            </el-button>
+          <div class="ai-sidebar-title">附件上传</div>
+          <div class="ai-upload-area" @click="triggerAttachmentUpload" @dragover.prevent @drop.prevent="handleDrop">
+            <el-icon :size="32" class="upload-icon"><Paperclip /></el-icon>
+            <div class="upload-text">点击或拖拽上传附件</div>
+            <div class="upload-hint">支持图片、PDF、Word、Excel、文本等格式</div>
+            <input
+              ref="fileInput"
+              type="file"
+              accept=".jpg,.jpeg,.png,.gif,.bmp,.webp,.pdf,.doc,.docx,.xls,.xlsx,.md,.txt,.csv,.log,.json,.xml,.html,.css,.js,.ts"
+              multiple
+              hidden
+              @change="handleFileSelect"
+            />
           </div>
         </div>
 
@@ -160,6 +161,13 @@
             </div>
             <div class="msg-content">
               <div class="msg-role">{{ msg.role === 'user' ? '我' : 'AI助手' }}</div>
+              <div v-if="msg.attachments && msg.attachments.length > 0" class="msg-attachments">
+                <div v-for="(att, i) in msg.attachments" :key="i" class="msg-attachment-item">
+                  <el-icon :size="14"><component :is="att.type === 'image' ? Picture : Document" /></el-icon>
+                  <span class="msg-attachment-name">{{ att.name }}</span>
+                  <span class="msg-attachment-size">{{ formatAttachmentSize(att.size) }}</span>
+                </div>
+              </div>
               <div class="msg-bubble markdown-body" v-html="renderMarkdown(msg.content)"></div>
               <div v-if="msg.role === 'assistant' && msg.suggestions" class="msg-suggestions">
                 <el-tag
@@ -189,21 +197,30 @@
         </div>
 
         <div class="ai-input-area">
+          <div v-if="pendingAttachments.length > 0" class="pending-attachments">
+            <div v-for="(att, i) in pendingAttachments" :key="att.path" class="pending-attachment-chip">
+              <el-icon :size="14"><component :is="att.type === 'image' ? Picture : Document" /></el-icon>
+              <span class="chip-name" :title="att.name">{{ att.name }}</span>
+              <span class="chip-size">{{ formatAttachmentSize(att.size) }}</span>
+              <el-icon class="chip-remove" :size="14" @click="removeAttachment(i)"><CircleClose /></el-icon>
+            </div>
+          </div>
           <div class="ai-input-wrapper">
             <el-input
               v-model="inputMessage"
               type="textarea"
               :rows="2"
-              placeholder="输入您的问题..."
+              placeholder="输入您的问题... 可直接粘贴图片或文件"
               resize="none"
               @keydown.enter.exact.prevent="sendMessage()"
+              @paste="handlePaste"
             />
             <div class="ai-input-actions">
-              <el-button :icon="Picture" circle @click="triggerScreenshotUpload" />
+              <el-button :icon="Paperclip" circle title="添加附件" @click="triggerAttachmentUpload" />
               <el-button
                 type="primary"
                 :icon="Promotion"
-                :disabled="!inputMessage.trim() || loading"
+                :disabled="(!inputMessage.trim() && pendingAttachments.length === 0) || loading"
                 :loading="loading"
                 @click="sendMessage()"
               >
@@ -742,6 +759,8 @@ import {
   User,
   MagicStick,
   Promotion,
+  Paperclip,
+  CircleClose,
   Monitor,
   Download,
   Refresh,
@@ -751,15 +770,53 @@ import {
 
 const showSettings = ref(false);
 const loading = ref(false);
-const analyzing = ref(false);
-const messages = ref<{ id: number; role: string; content: string; suggestions?: string[] }[]>([]);
+const messages = ref<{ id: number; role: string; content: string; suggestions?: string[]; attachments?: PendingAttachment[] }[]>([]);
 const inputMessage = ref('');
-const screenshotPreview = ref('');
+const pendingAttachments = ref<PendingAttachment[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
 const messagesContainer = ref<HTMLElement | null>(null);
 const selectedProjectId = ref<string>('');
 const projectList = ref<any[]>([]);
 const projectsLoading = ref(false);
+
+interface PendingAttachment {
+  name: string;
+  path: string;
+  type: 'image' | 'document';
+  size: number;
+}
+
+const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'];
+const TEXT_EXTENSIONS = ['.md', '.txt', '.csv', '.log', '.json', '.xml', '.html', '.css', '.js', '.ts'];
+const DOC_EXTENSIONS = ['.pdf', '.doc', '.docx', '.xls', '.xlsx'];
+const IMAGE_MAX_SIZE = 10 * 1024 * 1024;
+const TEXT_MAX_SIZE = 1024 * 1024;
+const DOC_MAX_SIZE = 20 * 1024 * 1024;
+
+function getFileExtension(name: string): string {
+  return name.toLowerCase().match(/\.[^.]+$/)?.[0] || '';
+}
+
+function getAttachmentKind(file: File): 'image' | 'text' | 'document' | null {
+  const ext = getFileExtension(file.name);
+  if (IMAGE_EXTENSIONS.includes(ext)) return 'image';
+  if (TEXT_EXTENSIONS.includes(ext)) return 'text';
+  if (DOC_EXTENSIONS.includes(ext)) return 'document';
+  if (file.type.startsWith('image/')) return 'image';
+  return null;
+}
+
+function getAttachmentSizeLimit(kind: 'image' | 'text' | 'document'): number {
+  if (kind === 'image') return IMAGE_MAX_SIZE;
+  if (kind === 'text') return TEXT_MAX_SIZE;
+  return DOC_MAX_SIZE;
+}
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+}
 
 const aiSettings = reactive({
   apiFormat: 'openai',
@@ -1414,7 +1471,11 @@ async function sendMessage(customMessage?: string, context?: string) {
   }
 
   const content = customMessage || inputMessage.value.trim();
-  if (!content || loading.value) return;
+  if ((!content && pendingAttachments.value.length === 0) || loading.value) return;
+  if (customMessage && pendingAttachments.value.length > 0) {
+    ElMessage.warning('快捷指令暂不支持携带附件');
+    return;
+  }
 
   // 等待设置加载完成
   if (!settingsLoaded.value) {
@@ -1432,7 +1493,8 @@ async function sendMessage(customMessage?: string, context?: string) {
     messages.value.push({
       id: Date.now() + Math.random(),
       role: 'user',
-      content,
+      content: content || '请分析附件内容',
+      attachments: pendingAttachments.value.length > 0 ? [...pendingAttachments.value] : undefined,
     });
     messages.value.push({
       id: Date.now() + Math.random(),
@@ -1440,26 +1502,31 @@ async function sendMessage(customMessage?: string, context?: string) {
       content: 'AI 未配置，无法进行分析。请点击右上角的「AI设置」按钮配置 API Key。',
       suggestions: ['配置AI API Key', '查看使用帮助'],
     });
+    pendingAttachments.value = [];
+    nextTick(() => scrollToBottom());
     return;
   }
 
+  const messageAttachments = pendingAttachments.value.length > 0 ? [...pendingAttachments.value] : undefined;
   messages.value.push({
     id: Date.now() + Math.random(),
     role: 'user',
-    content,
+    content: content || '请分析附件内容',
+    attachments: messageAttachments,
   });
-  
+
   inputMessage.value = '';
+  pendingAttachments.value = [];
   loading.value = true;
-  
+
   await nextTick();
   scrollToBottom();
-  
+
   // 如果已配置AI，优先使用AI
   if (isConfigured.value) {
     try {
       const res = await window.api.ai.chat({
-        messages: messages.value.map(m => ({ role: m.role, content: m.content })),
+        messages: messages.value.map(m => ({ role: m.role, content: m.content, attachments: m.attachments })),
         model: aiSettings.mode === 'local' ? aiSettings.ollamaModel : aiSettings.model,
         temperature: aiSettings.temperature,
         context: context || undefined,
@@ -1515,6 +1582,7 @@ async function quickAction(action: string) {
 
 function clearChat() {
   messages.value = [];
+  pendingAttachments.value = [];
 }
 
 function scrollToBottom() {
@@ -1523,104 +1591,101 @@ function scrollToBottom() {
   }
 }
 
-function triggerScreenshotUpload() {
+function triggerAttachmentUpload() {
   fileInput.value?.click();
 }
 
 function handleFileSelect(e: Event) {
   const target = e.target as HTMLInputElement;
-  const file = target.files?.[0];
-  if (file) {
-    processImage(file);
-  }
+  const files = target.files ? Array.from(target.files) : [];
+  files.forEach(file => addAttachmentFile(file));
   target.value = '';
 }
 
 function handleDrop(e: DragEvent) {
-  const file = e.dataTransfer?.files?.[0];
-  const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'];
-  const ext = file?.name.toLowerCase().match(/\.[^.]+$/)?.[0] || '';
-  if (file && file.type.startsWith('image/') && imageExtensions.includes(ext)) {
-    processImage(file);
-  }
+  const files = e.dataTransfer?.files;
+  if (!files || files.length === 0) return;
+  Array.from(files).forEach(file => addAttachmentFile(file));
 }
 
-function processImage(file: File) {
-  if (file.size > 10 * 1024 * 1024) {
-    ElMessage.warning('图片大小不能超过 10MB');
+function removeAttachment(index: number) {
+  pendingAttachments.value.splice(index, 1);
+}
+
+function isDuplicateAttachment(name: string, size: number): boolean {
+  return pendingAttachments.value.some(a => a.name === name && a.size === size);
+}
+
+async function addAttachmentFile(file: File) {
+  if (isDuplicateAttachment(file.name, file.size)) {
+    ElMessage.warning(`附件「${file.name}」已存在`);
     return;
   }
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    screenshotPreview.value = e.target?.result as string;
-  };
-  reader.readAsDataURL(file);
-}
+  const kind = getAttachmentKind(file);
+  if (!kind) {
+    ElMessage.warning(`不支持的文件类型：${file.name}`);
+    return;
+  }
+  const limit = getAttachmentSizeLimit(kind);
+  if (file.size > limit) {
+    const limitLabel = kind === 'image' ? '10MB' : kind === 'text' ? '1MB' : '20MB';
+    ElMessage.warning(`「${file.name}」超过大小限制（${limitLabel}）`);
+    return;
+  }
+  if (!window.api) {
+    ElMessage.warning('应用未初始化，请在 Electron 环境中运行');
+    return;
+  }
 
-async function analyzeScreenshot() {
-  if (!screenshotPreview.value) return;
-  analyzing.value = true;
-  
-  messages.value.push({
-    id: Date.now() + Math.random(),
-    role: 'user',
-    content: '[图片] 请分析这张截图中的安全配置情况',
-  });
-  
-  loading.value = true;
-  
   try {
-    if (isConfigured.value && window.api) {
-      const base64Data = screenshotPreview.value.split(',')[1];
-      const saveResult = await window.api.screenshot.saveFromBase64({
-        projectId: 'ai-analysis',
-        itemId: 'screenshot',
-        base64Data,
+    const base64Data = await readAttachmentAsBase64(file);
+    const res = await window.api.attachment.save({ name: file.name, base64Data });
+    if (res.success && res.data) {
+      pendingAttachments.value.push({
+        name: res.data.name,
+        path: res.data.path,
+        type: res.data.type,
+        size: res.data.size,
       });
-      
-      if (saveResult.success && saveResult.data) {
-        const res = await window.api.ai.analyzeAssessment({
-          controlPoint: '截图安全配置分析',
-          requirement: '请分析截图中的系统安全配置情况，包括口令策略、访问控制、审计配置等',
-          command: '',
-          result: '请根据截图内容进行分析',
-          screenshots: [saveResult.data.path],
-          ocrPreprocess: aiSettings.ocrPreprocess,
-        });
-        
-        if (res.success && res.data) {
-          messages.value.push({
-            id: Date.now() + Math.random(),
-            role: 'assistant',
-            content: res.data.content || 'AI分析完成，但未返回具体内容',
-            suggestions: ['进一步分析', '生成整改建议', '保存分析结果'],
-          });
-        } else {
-          throw new Error(res.error?.message || 'AI分析失败');
-        }
-      } else {
-        throw new Error('截图保存失败');
-      }
     } else {
-      messages.value.push({
-        id: Date.now() + Math.random(),
-        role: 'assistant',
-        content: '请先配置AI API Key，然后才能使用截图分析功能。',
-        suggestions: ['配置AI API Key', '查看使用帮助'],
-      });
+      ElMessage.error(`附件保存失败：${res.error?.message || '未知错误'}`);
     }
   } catch (error: any) {
-    messages.value.push({
-      id: Date.now() + Math.random(),
-      role: 'assistant',
-      content: `截图分析失败：${error.message || '未知错误'}`,
-      suggestions: ['重试', '检查AI配置'],
-    });
-  } finally {
-    loading.value = false;
-    analyzing.value = false;
-    screenshotPreview.value = '';
-    nextTick(() => scrollToBottom());
+    ElMessage.error(`附件「${file.name}」处理失败：${error.message || '未知错误'}`);
+  }
+}
+
+function readAttachmentAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(',')[1] || '';
+      if (!base64) {
+        reject(new Error('文件内容读取失败'));
+        return;
+      }
+      resolve(base64);
+    };
+    reader.onerror = () => reject(new Error('文件读取失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function handlePaste(e: ClipboardEvent) {
+  const items = e.clipboardData?.items;
+  if (!items || items.length === 0) return;
+
+  const files: File[] = [];
+  for (const item of Array.from(items)) {
+    if (item.kind === 'file') {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  if (files.length > 0) {
+    e.preventDefault();
+    files.forEach(file => addAttachmentFile(file));
   }
 }
 
@@ -1826,20 +1891,6 @@ onActivated(() => {
   color: var(--text-placeholder);
 }
 
-.screenshot-preview {
-  margin-top: 12px;
-  
-  img {
-    width: 100%;
-    border-radius: 6px;
-    margin-bottom: 8px;
-  }
-  
-  .el-button {
-    width: 100%;
-  }
-}
-
 .ai-status {
   .status-item {
     display: flex;
@@ -1978,6 +2029,36 @@ onActivated(() => {
   margin-bottom: 4px;
 }
 
+.msg-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.msg-attachment-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  font-size: 12px;
+  color: var(--text-primary);
+
+  .msg-attachment-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .msg-attachment-size {
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+}
+
 .msg-bubble {
   padding: 12px 16px;
   border-radius: 12px;
@@ -2061,6 +2142,48 @@ onActivated(() => {
 .ai-input-area {
   padding: 16px;
   border-top: 1px solid var(--border-color);
+}
+
+.pending-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pending-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: var(--bg-hover);
+  font-size: 12px;
+  color: var(--text-primary);
+
+  .chip-name {
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chip-size {
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+
+  .chip-remove {
+    cursor: pointer;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+
+    &:hover {
+      color: var(--color-danger);
+    }
+  }
 }
 
 .ai-input-wrapper {

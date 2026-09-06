@@ -91,10 +91,10 @@
       <div class="ai-dialog-header">
         <span class="ai-dialog-title">📝 AI批量分析问题描述</span>
         <div class="ai-dialog-header-actions">
-          <button v-if="batchProgress.percent < 100 && batchProgress.stage !== 'error'" class="ai-minimize-btn" @click="batchProgress.visible = false; batchMinimized = true" title="最小化">
+          <button class="ai-minimize-btn" @click="batchProgress.visible = false; batchMinimized = true" title="最小化">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
           </button>
-          <button v-if="batchProgress.stage === 'error' || batchProgress.stage === 'done'" class="ai-close-btn" @click="batchProgress.visible = false" title="关闭">
+          <button class="ai-close-btn" @click="closeBatchDialog" title="关闭">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
@@ -147,7 +147,7 @@
               <svg v-else-if="item.failed" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
               <span v-else class="issue-dot"></span>
             </span>
-            <span class="issue-name">{{ item.issueTitle }}</span>
+            <span class="issue-name">{{ item.issueDescription }}</span>
           </div>
         </div>
       </div>
@@ -227,7 +227,11 @@ const batchElapsedTime = ref(0);
 const batchEstimatedRemaining = ref(0);
 const batchSuccessCount = ref(0);
 const batchFailedCount = ref(0);
-const batchIssueList = ref<Array<{ issueId: string; issueTitle: string; failed: boolean }>>([]);
+const batchIssueList = ref<Array<{ issueId: string; issueTitle: string; issueDescription: string; failed: boolean }>>([]);
+
+function closeBatchDialog() {
+  batchProgress.value.visible = false;
+}
 
 let batchStartTime = 0;
 let batchTimerInterval: ReturnType<typeof setInterval> | null = null;
@@ -331,6 +335,7 @@ async function batchAnalyzeIssueDescriptions(issues: Issue[]) {
   batchIssueList.value = issues.map(issue => ({
     issueId: issue.id,
     issueTitle: issue.issueTitle,
+    issueDescription: issue.issueDescription || issue.issueTitle,
     failed: false,
   }));
   batchStartTime = Date.now();
@@ -732,6 +737,103 @@ html:not(.dark) .ai-issue-dialog {
         color: rgba(0, 0, 0, 0.9);
       }
     }
+  }
+}
+
+// 深色模式下批量分析弹窗适配
+html.dark .ai-batch-dialog {
+  .batch-progress-container {
+    .progress-info {
+      .stage-text {
+        color: var(--color-text-primary);
+      }
+
+      .percent-text {
+        color: var(--color-primary-hover);
+      }
+    }
+  }
+
+  .ai-progress-bar {
+    background: var(--color-bg-hover);
+  }
+
+  .progress-meta {
+    background: var(--color-bg-hover);
+    border-color: var(--color-border-base);
+
+    .meta-label {
+      color: var(--color-text-tertiary);
+    }
+
+    .meta-value {
+      color: var(--color-text-primary);
+    }
+  }
+
+  .issue-list-progress {
+    border-color: var(--color-border-base);
+  }
+
+  .issue-list-header {
+    background: var(--color-bg-hover);
+    color: var(--color-text-secondary);
+    border-bottom-color: var(--color-border-base);
+  }
+
+  .issue-list-container {
+    overflow-x: hidden;
+  }
+
+  .issue-list-item {
+    &:hover {
+      background: var(--color-bg-hover);
+    }
+
+    .issue-name {
+      color: var(--color-text-primary);
+    }
+
+    &.processing {
+      background: var(--color-primary-light);
+
+      .issue-status-icon {
+        color: var(--color-primary-hover);
+      }
+
+      .issue-name {
+        color: var(--color-primary-hover);
+      }
+    }
+
+    &.failed .issue-name {
+      color: var(--color-danger, #DC2626);
+    }
+
+    &.pending .issue-name {
+      color: var(--color-text-tertiary);
+    }
+  }
+
+  .issue-dot {
+    background: var(--color-text-tertiary);
+  }
+
+  .batch-summary {
+    background: var(--color-success-light);
+    border-color: rgba(24, 169, 87, 0.35);
+  }
+
+  .summary-item.success {
+    color: var(--color-success, #10B981);
+  }
+
+  .summary-item.failed {
+    color: var(--color-danger, #DC2626);
+  }
+
+  .loading-hint .loading-hint-text {
+    color: var(--color-text-secondary);
   }
 }
 
