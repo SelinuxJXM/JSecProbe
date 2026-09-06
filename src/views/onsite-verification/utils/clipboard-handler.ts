@@ -219,6 +219,13 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
       }
     }
 
+    // 编辑态（光标在结论输入框内）粘贴单个值时，放行浏览器默认行为：
+    // 插入到光标位置（或替换已选中文本），高度调整与自动保存由 textarea 的 @input 处理
+    const target = _event.target as HTMLElement | null;
+    if (target?.tagName === 'TEXTAREA' && rows.length <= 1 && rows[0]?.length === 1) {
+      return;
+    }
+
     // 阻止默认粘贴，改为显式写入目标单元格
     _event.preventDefault();
 
