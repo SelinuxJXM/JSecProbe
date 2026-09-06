@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.2.2'; // 版本号由 package.json 动态获取
+const TAG = 'v2.2.3'; // 版本号由 package.json 动态获取
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,17 +57,20 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.2.2 更新内容
+    body: `## v2.2.3 更新内容
 
-### AI 修复
-- 修复「自动（按优先级）」模式下 AI 对话报「API Key未配置」的问题
-  - 根因：对话入口的旧校验只检查全局设置中的 API Key，未识别「模型管理」中各模型独立配置的 API Key，导致自动模式请求在调用前即被拦截
-  - 修复后：自动模式按优先级正常调用各启用模型（使用各自 API Key），全部失败才提示错误；指定模型模式行为不变
+### AI 智能辅助增强
+- 新增 AI 对话附件功能，支持发送任意文件辅助测评分析
+  - 图片：支持上传/粘贴/拖拽添加，AI 多模态识图（jpg/png/gif/webp/bmp，自动压缩）
+  - 文档：Word(docx)、Excel(xlsx/xls/csv)、PDF 及文本类文件自动提取内容送入 AI 分析
+- 支持粘贴板直接粘贴截图/文件，拖拽文件到对话框快速添加
+- 附件随消息持久化保存，历史对话可查看已发送附件
+
+### 界面修复
+- 修复深色模式下待发送附件显示对比度不足的问题
 
 ### 稳定性修复
-- 修复全新环境下首次启动报「Cannot open database because the directory does not exist」的问题
-  - 数据目录缓存命中时跳过了子目录创建，导致全新安装/重装后数据库目录缺失
-  - 现在任意启动路径下都会确保数据目录存在，并在打开数据库前兜底创建父目录`,
+- 修复 AI 请求失败时错误信息未准确记录的问题`,
     draft: false,
     prerelease: false,
   });
