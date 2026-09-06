@@ -64,7 +64,7 @@ async function createRelease() {
   - 图片：支持上传/粘贴/拖拽添加，AI 多模态识图（jpg/png/gif/webp/bmp，自动压缩）
   - 文档：Word(docx)、Excel(xlsx/xls/csv)、PDF 及文本类文件自动提取内容送入 AI 分析
 - 支持粘贴板直接粘贴截图/文件，拖拽文件到对话框快速添加
-- 附件随消息持久化保存，历史对话可查看已发送附件
+- 附件文件自动保存到本地 ai-chat-attachments 目录
 
 ### 界面修复
 - 修复深色模式下待发送附件显示对比度不足的问题
