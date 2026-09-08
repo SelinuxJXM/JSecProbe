@@ -150,9 +150,12 @@ async function loadSavedCredentials() {
         const result = await window.api.auth.decryptCredential(encrypted);
         if (result.success && result.data?.decrypted) {
           form.password = result.data.decrypted;
+        } else {
+          // 旧版本损坏的密文无法解密：清除坏数据，勾选状态保留，下次登录成功后重新保存
+          localStorage.removeItem('jsecprobe_password_enc');
         }
       } catch {
-        // 解密失败时留空，要求用户重新输入
+        localStorage.removeItem('jsecprobe_password_enc');
       }
     }
   }

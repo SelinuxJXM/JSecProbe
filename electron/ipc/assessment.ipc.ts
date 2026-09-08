@@ -14,6 +14,7 @@ import { styleCell, getRowMaxHeight } from '../utils/excel-helper';
 import { wrap } from '../utils/ipc-wrapper';
 import { validateUuid, validateNotEmpty, validateComplianceStatus, sanitizeInput } from '../utils/validation';
 import { resolvePath } from '../utils/path-resolver';
+import type { ExcelSheetInfo } from '../../shared/types';
 
 // 国标 fallback：域 ID → sheet 名（用于测评 Excel 导出/导入）
 // 改造：行标项目通过 std.domainsMeta 中每个域的 name/sheetName 动态覆盖
@@ -52,6 +53,62 @@ async function loadProjectDomainSheets(projectId: string): Promise<Array<{ domai
     log.warn('加载项目域 sheet 映射失败，使用国标 fallback:', err);
     return [...FALLBACK_DOMAIN_SHEETS];
   }
+}
+
+// 共享：解析单个 sheet 名 → 域/资产信息（{层面名}_{全局层面/资产名}）
+// 弹窗预览（getExcelSheetInfo）与实际导入（importExcel）必须使用同一套规则，
+// 保证「预览说能导的就一定能导」。domainSheetMap 为 loadProjectDomainSheets
+// 构建的 {层面中文名: 域ID} 映射，由调用方构建一次、循环复用。
+async function resolveSheetName(
+  sheetName: string,
+  projectId: string,
+  domainSheetMap: Record<string, string>
+): Promise<{
+  domainKey: string | null;
+  domainName: string;
+  assetId: string | null;
+  assetName: string | null;
+  isGlobal: boolean;
+}> {
+  const db = getDb();
+  for (const [baseName, dKey] of Object.entries(domainSheetMap)) {
+    const prefix = baseName + '_';
+    if (sheetName.startsWith(prefix)) {
+      const suffix = sheetName.substring(prefix.length).trim();
+
+      if (suffix === '全局层面') {
+        return { domainKey: dKey, domainName: baseName, assetId: null, assetName: null, isGlobal: true };
+      }
+
+      const assetName = suffix;
+      if (assetName) {
+        const asset = await db.query.assets.findFirst({
+          where: and(
+            eq(schema.assets.projectId, projectId),
+            eq(schema.assets.name, assetName)
+          ),
+        });
+        if (asset) {
+          return { domainKey: dKey, domainName: baseName, assetId: asset.id, assetName: asset.name, isGlobal: false };
+        }
+        const escapedAssetName = assetName.replace(/[%_\\]/g, '\\$&');
+        const fuzzyAssets = await db.query.assets.findMany({
+          where: and(
+            eq(schema.assets.projectId, projectId),
+            sql`${schema.assets.name} LIKE ${`%${escapedAssetName}%`} ESCAPE '\\'`
+          ),
+          limit: 1,
+        });
+        if (fuzzyAssets.length > 0) {
+          return { domainKey: dKey, domainName: baseName, assetId: fuzzyAssets[0].id, assetName: fuzzyAssets[0].name, isGlobal: false };
+        }
+      }
+      // 层面识别成功但资产匹配不上：保持旧行为（assetId=null，按全局层面落库），
+      // 前端会对该 sheet 标注「未匹配到资产」提示，不再静默
+      return { domainKey: dKey, domainName: baseName, assetId: null, assetName: null, isGlobal: false };
+    }
+  }
+  return { domainKey: null, domainName: sheetName, assetId: null, assetName: null, isGlobal: false };
 }
 
 // 国标 fallback：资产 category → 等价域 ID 列表（一个 category 可能跨多个等价域）
@@ -1358,8 +1415,54 @@ export function registerAssessmentHandlers(): void {
     }
   });
 
-  // 导入评估记录
-  ipcMain.handle('assessment:importExcel', wrap(async (_event, projectId: string, filePath: string, domainIds?: string[], assetIds?: string[]) => {
+  // 导入前预解析：返回 Excel 中每个 sheet 的解析结果，供前端弹窗可视化选择
+  // 与 importExcel 共用 resolveSheetName，保证「预览说能导的就一定能导」
+  ipcMain.handle('assessment:getExcelSheetInfo', wrap(async (_event, projectId: string, filePath: string) => {
+    try {
+      if (!fs.existsSync(filePath)) {
+        throw new Error('文件不存在');
+      }
+
+      const db = getDb();
+
+      const project = await db.query.projects.findFirst({
+        where: eq(schema.projects.id, projectId),
+      });
+      if (!project) {
+        throw new Error('项目不存在');
+      }
+
+      const workbook = XLSX.readFile(filePath);
+      const importDomainSheets = await loadProjectDomainSheets(projectId);
+      const domainSheetMap = Object.fromEntries(importDomainSheets.map(d => [d.sheetName, d.domain]));
+
+      const sheets: ExcelSheetInfo[] = [];
+      for (const sheetName of workbook.SheetNames) {
+        const resolved = await resolveSheetName(sheetName, projectId, domainSheetMap);
+        const worksheet = workbook.Sheets[sheetName];
+        const rows: any[][] = worksheet ? XLSX.utils.sheet_to_json(worksheet, { header: 1 }) : [];
+        sheets.push({
+          sheetName,
+          domainKey: resolved.domainKey,
+          domainName: resolved.domainName,
+          assetId: resolved.assetId,
+          assetName: resolved.assetName,
+          isGlobal: resolved.isGlobal,
+          importable: resolved.domainKey !== null,
+          assetMatched: resolved.isGlobal ? true : resolved.assetId !== null,
+          rowCount: Math.max(0, rows.length - 1),
+        });
+      }
+
+      return { sheets };
+    } catch (error: any) {
+      log.error('解析 Excel sheet 信息失败:', error);
+      throw error;
+    }
+  }));
+
+  // 导入评估记录（sheetNames 为可选：勾选的 sheet 名列表，未传时导入全部）
+  ipcMain.handle('assessment:importExcel', wrap(async (_event, projectId: string, filePath: string, sheetNames?: string[]) => {
     try {
       if (!fs.existsSync(filePath)) {
         throw new Error('文件不存在');
@@ -1394,77 +1497,19 @@ export function registerAssessmentHandlers(): void {
       let totalCount = 0;
       const now = new Date().toISOString();
 
-      const selectedDomainIds = domainIds && domainIds.length > 0 ? domainIds : null;
-      const selectedAssetIds = assetIds && assetIds.length > 0 ? assetIds : null;
-      const hasSelection = selectedDomainIds || selectedAssetIds;
-
       const excelDataMap = new Map<string, {result: string, resultRecord: string, evidence: string, assetId: string | null, domainKey: string}>();
 
       for (const sheetName of workbook.SheetNames) {
-        let domainKey: string | null = null;
-        let assetId: string | null = null;
-
-        // 解析sheet名：{层面名}_{全局层面/资产名}
-        for (const [baseName, dKey] of Object.entries(DOMAIN_NAMES)) {
-          const prefix = baseName + '_';
-          if (sheetName.startsWith(prefix)) {
-            domainKey = dKey;
-            const suffix = sheetName.substring(prefix.length).trim();
-
-            if (suffix === '全局层面') {
-              // 全局层面sheet
-            } else {
-              // 资产sheet
-              const assetName = suffix;
-              if (assetName) {
-                const asset = await db.query.assets.findFirst({
-                  where: and(
-                    eq(schema.assets.projectId, projectId),
-                    eq(schema.assets.name, assetName)
-                  ),
-                });
-                if (asset) {
-                  assetId = asset.id;
-                } else {
-                  const escapedAssetName = assetName.replace(/[%_\\]/g, '\\$&');
-                  const fuzzyAssets = await db.query.assets.findMany({
-                    where: and(
-                      eq(schema.assets.projectId, projectId),
-                      sql`${schema.assets.name} LIKE ${`%${escapedAssetName}%`} ESCAPE '\\'`
-                    ),
-                    limit: 1,
-                  });
-                  if (fuzzyAssets.length > 0) assetId = fuzzyAssets[0].id;
-                }
-              }
-            }
-            break;
-          }
+        // 勾选了 sheet 时只处理勾选的（未勾选的连解析都不发生）
+        if (sheetNames && sheetNames.length > 0 && !sheetNames.includes(sheetName)) {
+          continue;
         }
+
+        // 解析sheet名：{层面名}_{全局层面/资产名}（与预解析接口共用同一套规则）
+        const resolved = await resolveSheetName(sheetName, projectId, DOMAIN_NAMES);
+        const domainKey = resolved.domainKey;
+        const assetId = resolved.assetId;
         if (!domainKey) continue;
-
-        // 过滤选中的内容
-        if (hasSelection) {
-          if (assetId) {
-            // 资产sheet：检查资产是否在选中列表中
-            if (selectedAssetIds && !selectedAssetIds.includes(assetId)) {
-              continue;
-            }
-            // 如果只选了层面没选资产，且该层面未被选中，也跳过
-            if (!selectedAssetIds && selectedDomainIds && !selectedDomainIds.includes(domainKey)) {
-              continue;
-            }
-          } else {
-            // 全局层面sheet：检查层面是否在选中的全局层面列表中
-            if (selectedDomainIds && !selectedDomainIds.includes(domainKey)) {
-              continue;
-            }
-            // 如果只选了资产没选层面，全局层面不导入
-            if (!selectedDomainIds && selectedAssetIds) {
-              continue;
-            }
-          }
-        }
 
         const worksheet = workbook.Sheets[sheetName];
         const rows: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
@@ -1551,42 +1596,12 @@ export function registerAssessmentHandlers(): void {
       const activeExtGroups = EXTENSION_GROUPS;
 
       // 第三步：确定需要遍历的层面
-      // 如果有选中的资产，需要包含这些资产所在的层面
-      const CATEGORY_TO_DOMAIN_MAP: Record<string, string> = {
-        machine_room: 'secure_physical',
-        network_boundary: 'secure_boundary',
-        network_device: 'secure_computing',
-        security_device: 'secure_computing',
-        server_storage: 'secure_computing',
-        sys_doc: 'secure_computing',
-        business_app: 'secure_computing',
-        terminal: 'secure_computing',
-        data_resource: 'secure_computing',
-        management_platform: 'secure_computing',
-      };
-
-      let domainsToImport = DOMAIN_SHEETS;
-      if (hasSelection) {
-        const domainSet = new Set<string>();
-        if (selectedDomainIds) {
-          for (const d of selectedDomainIds) domainSet.add(d);
-        }
-        if (selectedAssetIds) {
-          // 查询选中资产所属的层面（通过category映射）
-          const assets = await db.query.assets.findMany({
-            where: and(
-              eq(schema.assets.projectId, projectId),
-              inArray(schema.assets.id, selectedAssetIds)
-            ),
-            columns: { category: true }
-          });
-          for (const a of assets) {
-            const domainId = CATEGORY_TO_DOMAIN_MAP[a.category] || 'secure_computing';
-            domainSet.add(domainId);
-          }
-        }
-        domainsToImport = DOMAIN_SHEETS.filter(d => domainSet.has(d.domain));
+      // sheet 选择机制下，从 excelDataMap 反推实际涉及的层面（勾选了哪些 sheet 就涉及哪些层面）
+      const involvedDomainKeys = new Set<string>();
+      for (const data of excelDataMap.values()) {
+        involvedDomainKeys.add(data.domainKey);
       }
+      const domainsToImport = DOMAIN_SHEETS.filter(d => involvedDomainKeys.has(d.domain));
 
       for (const { domain: domainKey } of domainsToImport) {
         const extOrConditions = [eq(schema.assessmentItems.extensionType, 'general')];
@@ -1611,40 +1626,24 @@ export function registerAssessmentHandlers(): void {
           if (extItems.length === 0) continue;
 
           for (const item of extItems) {
-            // 需要处理的目标列表：选中的资产 + 全局层面（如果选中）
-            const targetAssetIds: Array<string | null> = [];
-            
-            if (selectedAssetIds && selectedAssetIds.length > 0) {
-              targetAssetIds.push(...selectedAssetIds);
+            // sheet 选择机制下，目标列表 = excelDataMap 中该层面实际出现的资产集合
+            // 含全局层面记录（assetId=null）时加入 null；未匹配资产的 sheet 同样以 null 落库（保持旧行为）
+            const assetIdSet = new Set<string>();
+            let hasGlobalRecord = false;
+            for (const data of excelDataMap.values()) {
+              if (data.domainKey !== domainKey) continue;
+              if (data.assetId) assetIdSet.add(data.assetId);
+              else hasGlobalRecord = true;
             }
-            
-            if (selectedDomainIds && selectedDomainIds.includes(domainKey)) {
-              targetAssetIds.push(null);
-            }
-            
-            if (!hasSelection) {
-              targetAssetIds.push(null);
-            }
-            
+            const targetAssetIds: Array<string | null> = [...assetIdSet];
+            if (hasGlobalRecord) targetAssetIds.push(null);
+
             for (const targetAssetId of targetAssetIds) {
               const key = `${domainKey}||${targetAssetId || 'null'}||${item.controlPoint}||${item.requirement}`;
               const data = excelDataMap.get(key);
-              
+
               if (!data) continue;
               if (!data.resultRecord && data.result === 'untested') continue;
-
-              // 按选择过滤
-              if (hasSelection) {
-                if (data.assetId) {
-                  if (selectedAssetIds && !selectedAssetIds.includes(data.assetId)) {
-                    continue;
-                  }
-                } else {
-                  if (!selectedDomainIds || !selectedDomainIds.includes(domainKey)) {
-                    continue;
-                  }
-                }
-              }
 
               const existingConditions = [
                 eq(schema.assessmentRecords.projectId, projectId),

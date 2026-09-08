@@ -237,7 +237,9 @@ export function registerAuthHandlers(): void {
     const { safeStorage } = await import('electron');
     try {
       const encrypted = await safeStorage.encryptString(plaintext);
-      return { success: true, encrypted };
+      // safeStorage 返回二进制 Buffer，localStorage 只能存字符串，
+      // 统一以 Base64 文本承载密文，解密侧按 Base64 还原
+      return { success: true, encrypted: encrypted.toString('base64') };
     } catch (err: any) {
       return { success: false, error: err.message || '加密失败' };
     }
@@ -246,7 +248,7 @@ export function registerAuthHandlers(): void {
   ipcMain.handle('auth:decryptCredential', wrap(async (_event, encrypted: string) => {
     const { safeStorage } = await import('electron');
     try {
-      const decrypted = await safeStorage.decryptString(Buffer.from(encrypted));
+      const decrypted = await safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
       return { success: true, decrypted };
     } catch (err: any) {
       return { success: false, error: err.message || '解密失败' };

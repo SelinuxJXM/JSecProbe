@@ -26,6 +26,19 @@ function showErrorAndQuit(title: string, message: string, detail?: string) {
   app.quit();
 }
 
+// 判断未处理的 Promise 拒绝是否为网络抖动等暂态外部错误。
+// 此类错误不应杀死正在使用的应用，仅记录日志即可；未知类型的拒绝仍弹窗退出。
+function isTransientRejection(reason: unknown): boolean {
+  const msg = String((reason as { message?: unknown })?.message ?? reason ?? '').toLowerCase();
+  const keywords = [
+    'net::', // Chromium 网络错误（如 net::ERR_CONNECTION_CLOSED）
+    'enotfound', 'econnrefused', 'econnreset', 'econnaborted', 'etimedout',
+    'eai_again', 'socket hang up', 'fetch failed', 'network',
+    'timed out', 'certificate', 'dns',
+  ];
+  return keywords.some((k) => msg.includes(k));
+}
+
 const USER_DATA_BASE = getDefaultBasePath();
 const LOCK_DIR = join(USER_DATA_BASE, 'locks');
 
@@ -259,6 +272,10 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason, promise) => {
   log.error('未处理的 Promise 拒绝:', reason);
   log.error('Promise:', promise);
+  // 网络抖动等暂态错误：仅记录日志，不打断正在使用的应用
+  if (isTransientRejection(reason)) {
+    return;
+  }
   setTimeout(() => {
     try { closeDb(); } catch (e) {}
     try { showErrorAndQuit('应用异常', '未处理的 Promise 拒绝', String(reason)); } catch (e) {}

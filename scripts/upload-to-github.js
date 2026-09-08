@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.2.5'; // 版本号由 package.json 动态获取
+const TAG = 'v2.2.6'; // 版本号由 package.json 动态获取
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,16 +57,19 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.2.5 更新内容
+    body: `## v2.2.6 更新内容
 
-### 现场核查复制粘贴修复
-- 修复批量复制多个单元格后粘贴到同一单元格的问题：多格复制的纯文本按行拆分、逐行填充目标区域
-- 修复 Ctrl+Click 框选时焦点残留导致 Ctrl+C 误判为编辑态复制、实际未复制内容的问题
-- 修复复制包含空单元格的多行内容时，后续单元格的值错位填充到上一行的问题（保留中间空行占位）
-- 符合性列粘贴同步支持多格拆行填充，并与结论列统一默认粘贴行为
+### 新增功能
+- 现场核查导入支持读取 Excel 文件实际包含的 sheet，弹窗按层面分组显示、带行数，可自定义勾选要导入的表
+- 未识别层面的 sheet 归入「无法识别的表」灰色分组可见不可选；未匹配到资产的 sheet 标注警示「将按全局层面导入」
 
-### 界面优化
-- 选中单元格框线调整为 1.5px，深色模式下自动切换为高对比亮色描边，选中状态更清晰`,
+### 问题修复
+- 修复登录「记住密码」失效：safeStorage 加密密文跨 IPC 携带后写入 localStorage 发生字节损坏，现统一以 Base64 承载，解密正常回填
+- 修复「应用异常」弹窗误杀进程：处理下载迟到的错误事件与全局 unhandledRejection 分级兜底
+- 修复现场核查导出弹窗在深色模式下文字与边框颜色异常
+
+### 稳定性优化
+- 全局未捕获的 Promise 拒绝区分「网络暂态错误（仅记日志）」与「未知异常（弹窗提示）」，避免误报应用崩溃`,
     draft: false,
     prerelease: false,
   });

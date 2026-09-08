@@ -113,6 +113,7 @@ const api = {
     listDomains: ipc<any>('assessment:listDomains'),
     exportExcel: ipc<any>('assessment:exportExcel'),
     exportExcelByAssets: ipc<any>('assessment:exportExcelByAssets'),
+    getExcelSheetInfo: ipc<any>('assessment:getExcelSheetInfo'),
     importExcel: ipc<any>('assessment:importExcel'),
   },
   screenshot: {

@@ -226,6 +226,19 @@ export interface AssessmentProgress {
   untested: number;
 }
 
+// 导入 Excel 时单个 sheet 的解析结果（供导入弹窗可视化选择）
+export interface ExcelSheetInfo {
+  sheetName: string;        // 原始 sheet 名
+  domainKey: string | null; // 域 ID，null = 层面未识别
+  domainName: string;       // 层面中文名（未识别时回退为 sheetName 原文）
+  assetId: string | null;   // 匹配到的资产 id，null = 全局层面或未匹配
+  assetName: string | null;
+  isGlobal: boolean;        // 是否「_全局层面」sheet
+  importable: boolean;      // 层面识别成功即可导入
+  assetMatched: boolean;    // 资产 sheet 是否真的匹配上了资产（全局层面恒为 true）
+  rowCount: number;         // 数据行数估算（不含表头）
+}
+
 export interface Issue {
   id: string;
   projectId: string;
@@ -511,7 +524,8 @@ export interface ApiBridge {
     listDomains: (standardId?: string) => Promise<IpcResponse<{ id: string; name: string; count: number }[]>>;
     exportExcel: (projectId: string, domain?: string) => Promise<IpcResponse<{ path: string }>>;
     exportExcelByAssets: (projectId: string, assetIds: string[], domainIds: string[]) => Promise<IpcResponse<{ path: string }>>;
-    importExcel: (projectId: string, filePath: string, domainIds?: string[], assetIds?: string[]) => Promise<IpcResponse<{ count: number }>>;
+    getExcelSheetInfo: (projectId: string, filePath: string) => Promise<IpcResponse<{ sheets: ExcelSheetInfo[] }>>;
+    importExcel: (projectId: string, filePath: string, sheetNames?: string[]) => Promise<IpcResponse<{ count: number }>>;
   };
   screenshot: {
     upload: (params: { projectId: string; itemId: string; filePath: string }) => Promise<IpcResponse<{ path: string; name: string }>>;

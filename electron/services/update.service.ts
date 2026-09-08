@@ -40,6 +40,7 @@ let updateSource: 'github' | 'r2' | null = null;
 let r2UpdateInfo: { version: string; sha512: string; size: number; releaseDate?: string; releaseNotes?: string } | null = null;
 let r2InstallerPath: string | null = null;
 let pendingCheckFallback = false;
+let activeDownload = false;
 
 const INSTALLER_PATHS_FILE = 'installer-paths.json';
 
@@ -135,7 +136,10 @@ function checkWithTimeout(timeoutMs: number = GITHUB_CHECK_TIMEOUT): Promise<voi
     autoUpdater.on('update-available', onAvailable);
     autoUpdater.on('update-not-available', onNotAvailable);
     autoUpdater.on('error', onError);
-    autoUpdater.checkForUpdates();
+    // electron-updater 的 checkForUpdates 在 emit("error") 之后还会 reject 返回的 Promise，
+    // 必须接住，否则超时切换备用源后迟到的网络错误（如 net::ERR_CONNECTION_CLOSED）
+    // 会变成未处理的 Promise 拒绝，触发全局兜底弹窗并退出应用
+    void autoUpdater.checkForUpdates().catch(() => { /* 错误已经过 error 事件处理 */ });
   });
 }
 
@@ -383,7 +387,13 @@ export function initAutoUpdater(window: BrowserWindow) {
       log.warn('[更新] 检查更新网络错误，即将尝试备用源:', error.message);
       return;
     }
-    log.error('[更新] 更新出错:', error);
+    // 检查会话已结束（如超时切换备用源后残留请求迟到的网络错误），
+    // 不再打扰用户、不污染 UI 状态，仅记录日志
+    if (!activeDownload) {
+      log.warn('[更新] 忽略迟到的更新错误（无进行中的下载会话）:', error.message);
+      return;
+    }
+    log.error('[更新] 下载更新出错:', error);
     sendStatusToWindow({
       status: 'error',
       error: error.message || '未知错误',
@@ -542,7 +552,14 @@ export function registerUpdateHandlers() {
     }
 
     log.info('[更新] 开始下载更新');
-    await autoUpdater.downloadUpdate();
+    // 标记下载会话进行中：期间 autoUpdater 的 error 事件需要真实上报给用户，
+    // 会话结束后迟到的 error 仅记日志，避免污染 UI 状态
+    activeDownload = true;
+    try {
+      await autoUpdater.downloadUpdate();
+    } finally {
+      activeDownload = false;
+    }
   }, 'update'));
 
   ipcMain.handle('update:install', wrap(async () => {

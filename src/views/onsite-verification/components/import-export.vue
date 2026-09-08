@@ -77,15 +77,16 @@
       </template>
     </el-dialog>
 
-    <!-- 导入选择弹窗 -->
+    <!-- 导入选择弹窗（展示文件中实际包含的 sheet） -->
     <el-dialog
       v-model="importDialogVisible"
-      title="选择导入内容"
+      title="选择要导入的表"
       width="520px"
       class="export-dialog"
       :close-on-click-modal="false"
     >
       <div class="export-tree-container">
+        <div v-if="importParseError" class="import-parse-error">{{ importParseError }}</div>
         <div class="export-tree-header">
           <label class="checkbox-label">
             <input type="checkbox"
@@ -94,35 +95,30 @@
               @change="toggleImportSelectAll" />
             <span>全选</span>
           </label>
-          <span class="selected-count">{{ selectedImportItems.length }} / {{ importTotalCount }}</span>
+          <span class="selected-count">{{ checkedSheetNames.length }} / {{ importTotalCount }}</span>
         </div>
         <div class="export-tree">
-          <div v-for="domain in importTreeData" :key="domain.id" class="tree-group">
-            <div v-if="!domain.children || domain.children.length === 0" class="tree-leaf">
-              <label class="tree-item-label">
-                <input type="checkbox" :value="`domain:${domain.id}`" v-model="selectedImportItems" />
-                <span class="item-text">{{ domain.label }}</span>
+          <div v-for="group in importSheetGroups" :key="group.name" class="tree-group">
+            <div class="tree-node-header" @click="toggleImportGroup(group.name)">
+              <svg class="tree-chevron" :class="{ expanded: expandedImportGroups.includes(group.name) }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+              <label class="tree-item-label" @click.stop>
+                <input type="checkbox"
+                  :disabled="group.disabled"
+                  :checked="isGroupAllSelected(group)"
+                  :indeterminate="isGroupIndeterminate(group)"
+                  @change="toggleGroupSelectAll(group)" />
               </label>
+              <span class="item-text parent-text" :class="{ 'group-disabled': group.disabled }">{{ group.name }}</span>
+              <span class="item-count">{{ getGroupSelectedCount(group) }}/{{ group.sheets.length }}</span>
             </div>
-            <div v-else class="tree-node">
-              <div class="tree-node-header" @click="toggleImportDomain(domain.id)">
-                <svg class="tree-chevron" :class="{ expanded: expandedImportDomains.includes(domain.id) }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-                <label class="tree-item-label" @click.stop>
-                  <input type="checkbox"
-                    :checked="isImportDomainAllSelected(domain)"
-                    :indeterminate="isImportDomainIndeterminate(domain)"
-                    @change="toggleImportDomainSelectAll(domain)" />
+            <div v-show="expandedImportGroups.includes(group.name)" class="tree-children">
+              <div v-for="sheet in group.sheets" :key="sheet.sheetName" class="tree-leaf">
+                <label class="tree-item-label" :class="{ 'leaf-disabled': group.disabled }">
+                  <input type="checkbox" :disabled="group.disabled" :value="sheet.sheetName" v-model="checkedSheetNames" />
+                  <span class="item-text">{{ sheet.sheetName }}</span>
+                  <span class="item-count">{{ sheet.rowCount }} 行</span>
                 </label>
-                <span class="item-text parent-text">{{ domain.label }}</span>
-                <span class="item-count">{{ getImportDomainSelectedCount(domain) }}/{{ domain.children.length }}</span>
-              </div>
-              <div v-show="expandedImportDomains.includes(domain.id)" class="tree-children">
-                <div v-for="child in domain.children" :key="child.id" class="tree-leaf child-leaf">
-                  <label class="tree-item-label">
-                    <input type="checkbox" :value="`asset:${child.id}`" v-model="selectedImportItems" />
-                    <span class="item-text">{{ child.label }}</span>
-                  </label>
-                </div>
+                <div v-if="!group.disabled && !sheet.assetMatched" class="leaf-warning">未匹配到资产，将按全局层面导入</div>
               </div>
             </div>
           </div>
@@ -130,8 +126,8 @@
       </div>
       <template #footer>
         <el-button @click="importDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="importing" @click="confirmImport" :disabled="selectedImportItems.length === 0">
-          选择文件导入
+        <el-button type="primary" :loading="importing || importAnalyzing" @click="confirmImport" :disabled="checkedSheetNames.length === 0">
+          导入 {{ checkedSheetNames.length }} 个表
         </el-button>
       </template>
     </el-dialog>
@@ -324,141 +320,124 @@ async function confirmExport() {
   }
 }
 
-// ==================== 导入选择弹窗 ====================
-const importDialogVisible = ref(false);
-const selectedImportItems = ref<string[]>([]);
-const expandedImportDomains = ref<string[]>([]);
-const importing = ref(false);
+// ==================== 导入选择弹窗（按文件实际 sheet） ====================
+interface ImportSheetItem {
+  sheetName: string;
+  domainKey: string | null;
+  domainName: string;
+  assetId: string | null;
+  assetName: string | null;
+  isGlobal: boolean;
+  importable: boolean;
+  assetMatched: boolean;
+  rowCount: number;
+}
 
-const importTreeData = computed(() => {
-  return props.treeData.map(domain => ({
-    id: domain.id,
-    label: domain.label,
-    children: domain.children || [],
-  }));
+interface ImportSheetGroup {
+  name: string;
+  sheets: ImportSheetItem[];
+  disabled: boolean;
+}
+
+const importDialogVisible = ref(false);
+const importSheets = ref<ImportSheetItem[]>([]);
+const checkedSheetNames = ref<string[]>([]);
+const expandedImportGroups = ref<string[]>([]);
+const importing = ref(false);
+const importAnalyzing = ref(false);
+const importParseError = ref('');
+const importFilePath = ref('');
+
+// 按 domainName 分组；未识别层面（importable=false）归入「无法识别的表」并禁用
+const importSheetGroups = computed<ImportSheetGroup[]>(() => {
+  const groups: ImportSheetGroup[] = [];
+  const unknownGroup: ImportSheetGroup = { name: '无法识别的表', sheets: [], disabled: true };
+  for (const sheet of importSheets.value) {
+    if (!sheet.importable) {
+      unknownGroup.sheets.push(sheet);
+    } else {
+      let group = groups.find(g => g.name === sheet.domainName);
+      if (!group) {
+        group = { name: sheet.domainName, sheets: [], disabled: false };
+        groups.push(group);
+      }
+      group.sheets.push(sheet);
+    }
+  }
+  if (unknownGroup.sheets.length > 0) groups.push(unknownGroup);
+  return groups;
 });
 
 const importTotalCount = computed(() => {
   let count = 0;
-  for (const domain of importTreeData.value) {
-    if (!domain.children || domain.children.length === 0) {
-      count++;
-    } else {
-      count += domain.children.length;
-    }
+  for (const group of importSheetGroups.value) {
+    if (!group.disabled) count += group.sheets.length;
   }
   return count;
 });
 
 const isImportAllSelected = computed(() => {
-  return selectedImportItems.value.length === importTotalCount.value && importTotalCount.value > 0;
+  return checkedSheetNames.value.length === importTotalCount.value && importTotalCount.value > 0;
 });
 
 const isImportIndeterminate = computed(() => {
-  return selectedImportItems.value.length > 0 && selectedImportItems.value.length < importTotalCount.value;
+  return checkedSheetNames.value.length > 0 && checkedSheetNames.value.length < importTotalCount.value;
 });
 
 function toggleImportSelectAll() {
   if (isImportAllSelected.value) {
-    selectedImportItems.value = [];
+    checkedSheetNames.value = [];
   } else {
-    const allItems: string[] = [];
-    for (const domain of importTreeData.value) {
-      if (!domain.children || domain.children.length === 0) {
-        allItems.push(`domain:${domain.id}`);
-      } else {
-        for (const child of domain.children) {
-          allItems.push(`asset:${child.id}`);
-        }
-      }
+    const all: string[] = [];
+    for (const group of importSheetGroups.value) {
+      if (group.disabled) continue;
+      for (const sheet of group.sheets) all.push(sheet.sheetName);
     }
-    selectedImportItems.value = allItems;
+    checkedSheetNames.value = all;
   }
 }
 
-function isImportDomainAllSelected(domain: TreeNode) {
-  if (!domain.children || domain.children.length === 0) {
-    return selectedImportItems.value.includes(`domain:${domain.id}`);
-  }
-  return domain.children.every((child: TreeNode) => selectedImportItems.value.includes(`asset:${child.id}`));
+function isGroupAllSelected(group: ImportSheetGroup) {
+  if (group.disabled || group.sheets.length === 0) return false;
+  return group.sheets.every(s => checkedSheetNames.value.includes(s.sheetName));
 }
 
-function isImportDomainIndeterminate(domain: TreeNode) {
-  if (!domain.children || domain.children.length === 0) return false;
-  const selected = domain.children.filter((child: TreeNode) => selectedImportItems.value.includes(`asset:${child.id}`)).length;
-  return selected > 0 && selected < domain.children.length;
+function isGroupIndeterminate(group: ImportSheetGroup) {
+  if (group.disabled || group.sheets.length === 0) return false;
+  const selected = group.sheets.filter(s => checkedSheetNames.value.includes(s.sheetName)).length;
+  return selected > 0 && selected < group.sheets.length;
 }
 
-function getImportDomainSelectedCount(domain: TreeNode) {
-  if (!domain.children || domain.children.length === 0) return 0;
-  return domain.children.filter((child: TreeNode) => selectedImportItems.value.includes(`asset:${child.id}`)).length;
+function getGroupSelectedCount(group: ImportSheetGroup) {
+  return group.sheets.filter(s => checkedSheetNames.value.includes(s.sheetName)).length;
 }
 
-function toggleImportDomainSelectAll(domain: TreeNode) {
-  if (!domain.children || domain.children.length === 0) {
-    const key = `domain:${domain.id}`;
-    const idx = selectedImportItems.value.indexOf(key);
-    if (idx > -1) {
-      selectedImportItems.value.splice(idx, 1);
-    } else {
-      selectedImportItems.value.push(key);
-    }
+function toggleGroupSelectAll(group: ImportSheetGroup) {
+  if (group.disabled) return;
+  const names = group.sheets.map(s => s.sheetName);
+  if (isGroupAllSelected(group)) {
+    checkedSheetNames.value = checkedSheetNames.value.filter(n => !names.includes(n));
   } else {
-    const allSelected = isImportDomainAllSelected(domain);
-    if (allSelected) {
-      for (const child of domain.children) {
-        const key = `asset:${child.id}`;
-        const idx = selectedImportItems.value.indexOf(key);
-        if (idx > -1) selectedImportItems.value.splice(idx, 1);
-      }
-    } else {
-      for (const child of domain.children) {
-        const key = `asset:${child.id}`;
-        if (!selectedImportItems.value.includes(key)) {
-          selectedImportItems.value.push(key);
-        }
-      }
-    }
+    const next = new Set(checkedSheetNames.value);
+    for (const n of names) next.add(n);
+    checkedSheetNames.value = [...next];
   }
 }
 
-function toggleImportDomain(domainId: string) {
-  const idx = expandedImportDomains.value.indexOf(domainId);
+function toggleImportGroup(name: string) {
+  const idx = expandedImportGroups.value.indexOf(name);
   if (idx > -1) {
-    expandedImportDomains.value.splice(idx, 1);
+    expandedImportGroups.value.splice(idx, 1);
   } else {
-    expandedImportDomains.value.push(domainId);
+    expandedImportGroups.value.push(name);
   }
-}
-
-function loadImportSelection() {
-  const allItems: string[] = [];
-  for (const domain of importTreeData.value) {
-    if (!domain.children || domain.children.length === 0) {
-      allItems.push(`domain:${domain.id}`);
-    } else {
-      for (const child of domain.children) {
-        allItems.push(`asset:${child.id}`);
-      }
-    }
-  }
-  selectedImportItems.value = allItems;
-
-  const domainsWithAssets = importTreeData.value.filter(d => d.children && d.children.length > 0);
-  expandedImportDomains.value = domainsWithAssets.map(d => d.id);
 }
 
 function handleImportExcel() {
-  importDialogVisible.value = true;
-  loadImportSelection();
+  openImportDialog();
 }
 
-async function confirmImport() {
-  if (selectedImportItems.value.length === 0) {
-    ElMessage.warning('请至少选择一项导入内容');
-    return;
-  }
-
+async function openImportDialog() {
   const projectId = props.projectId;
   if (!projectId || !window.api) {
     ElMessage.error('项目ID缺失或API未初始化');
@@ -471,28 +450,60 @@ async function confirmImport() {
     ]);
     if (!fileRes.success || !fileRes.data) return;
 
-    const domainIds: string[] = [];
-    const assetIds: string[] = [];
-    for (const item of selectedImportItems.value) {
-      if (item.startsWith('domain:')) {
-        domainIds.push(item.substring(7));
-      } else if (item.startsWith('asset:')) {
-        assetIds.push(item.substring(6));
+    importFilePath.value = fileRes.data;
+    importSheets.value = [];
+    checkedSheetNames.value = [];
+    importParseError.value = '';
+    importDialogVisible.value = true;
+    importAnalyzing.value = true;
+
+    const res = await window.api.assessment.getExcelSheetInfo(projectId, fileRes.data);
+    importAnalyzing.value = false;
+
+    if (res.success && res.data) {
+      importSheets.value = res.data.sheets;
+      const importableSheets = res.data.sheets.filter(s => s.importable);
+      checkedSheetNames.value = importableSheets.map(s => s.sheetName);
+      const groupNames = [...new Set(importableSheets.map(s => s.domainName))];
+      expandedImportGroups.value = groupNames;
+      if (importableSheets.length === 0) {
+        importParseError.value = '未在文件中识别到可导入的表，请确认是否为本系统导出的测评 Excel';
       }
+    } else {
+      importDialogVisible.value = false;
+      ElMessage.error(res.error?.message || '解析 Excel 失败');
     }
+  } catch (error: any) {
+    importAnalyzing.value = false;
+    importDialogVisible.value = false;
+    ElMessage.error(error?.message || '解析 Excel 失败');
+  }
+}
 
-    importing.value = true;
-    const res = await window.api.assessment.importExcel(projectId, fileRes.data, domainIds, assetIds);
-    importing.value = false;
+async function confirmImport() {
+  if (checkedSheetNames.value.length === 0) {
+    ElMessage.warning('请至少选择一个要导入的表');
+    return;
+  }
 
+  const projectId = props.projectId;
+  if (!projectId || !window.api) {
+    ElMessage.error('项目ID缺失或API未初始化');
+    return;
+  }
+
+  importing.value = true;
+  try {
+    const res = await window.api.assessment.importExcel(projectId, importFilePath.value, checkedSheetNames.value);
     if (res.success && res.data) {
       ElMessage.success(`成功导入 ${res.data.count} 条记录`);
       importDialogVisible.value = false;
       emit('refresh');
     }
   } catch (error: any) {
-    importing.value = false;
     ElMessage.error(error.message || '导入失败');
+  } finally {
+    importing.value = false;
   }
 }
 
@@ -523,7 +534,7 @@ async function handleExportCommand(command: string) {
   gap: 5px;
   padding: 6px 12px;
   font-size: 13px;
-  border: 1px solid var(--color-border-default, #E5E7EB);
+  border: 1px solid var(--color-border-base);
   background: var(--color-bg-card);
   border-radius: 6px;
   cursor: pointer;
@@ -569,7 +580,7 @@ async function handleExportCommand(command: string) {
     }
 
     .selected-count {
-      color: #8c8c8c;
+      color: var(--color-text-tertiary);
       font-size: 13px;
     }
   }
@@ -599,7 +610,7 @@ async function handleExportCommand(command: string) {
         width: 12px;
         height: 12px;
         margin-right: 4px;
-        color: #bfbfbf;
+        color: var(--color-text-tertiary);
         transition: transform 0.2s;
 
         &.expanded {
@@ -624,7 +635,7 @@ async function handleExportCommand(command: string) {
       .item-text {
         flex: 1;
         font-size: 14px;
-        color: #333;
+        color: var(--color-text-primary);
 
         &.parent-text {
           font-weight: 500;
@@ -633,7 +644,7 @@ async function handleExportCommand(command: string) {
 
       .item-count {
         font-size: 12px;
-        color: #999;
+        color: var(--color-text-tertiary);
         margin-left: 8px;
       }
     }
@@ -661,10 +672,45 @@ async function handleExportCommand(command: string) {
 
         .item-text {
           font-size: 14px;
-          color: #333;
+          color: var(--color-text-primary);
+        }
+
+        &.leaf-disabled {
+          cursor: not-allowed;
+
+          &:hover {
+            background: transparent;
+          }
+
+          input[type="checkbox"] {
+            cursor: not-allowed;
+          }
+
+          .item-text {
+            color: var(--color-text-quaternary, var(--color-text-tertiary));
+          }
         }
       }
+
+      .leaf-warning {
+        margin: -2px 0 4px 55px;
+        font-size: 12px;
+        color: var(--color-warning);
+      }
     }
+  }
+
+  .import-parse-error {
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    font-size: 13px;
+    border-radius: 6px;
+    background: var(--color-warning-light);
+    color: var(--color-warning);
+  }
+
+  .group-disabled {
+    color: var(--color-text-quaternary, var(--color-text-tertiary));
   }
 }
 </style>
