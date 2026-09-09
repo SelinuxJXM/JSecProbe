@@ -229,6 +229,10 @@ export const aiConfigs = sqliteTable('ai_configs', {
   ocrPreprocess: integer('ocr_preprocess').notNull().default(0),
   // 当前聊天使用的云端模型 ID（null 时 fallback 到 priority=1 的启用模型）
   activeModelId: text('active_model_id'),
+  // AI 请求代理：system=跟随系统代理(Clash 等) / manual=手动代理 / none=直连
+  proxyMode: text('proxy_mode').default('system'),
+  // 手动代理地址，如 127.0.0.1:7890 或 socks5://127.0.0.1:7890
+  proxyUrl: text('proxy_url'),
   updatedAt: text('updated_at').notNull(),
   createdAt: text('created_at').notNull(),
 });

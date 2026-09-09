@@ -645,7 +645,7 @@ export interface ApiBridge {
     analyzeIssueDescription: (params: { issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; projectId?: string; itemId?: string }) => Promise<IpcResponse<{ content: string }>>;
     batchAnalyzeIssues: (params: { issues: Array<{ issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; itemId?: string }>; projectId?: string }) => Promise<IpcResponse<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }> }>>;
     getConfig: () => Promise<IpcResponse<any>>;
-    saveConfig: (config: { apiBase: string; apiKey: string; model: string; temperature: number; privacyMode?: number; sensitiveWords?: string; mode?: string; ollamaModel?: string; ollamaUrl?: string; ocrPreprocess?: boolean }) => Promise<IpcResponse<void>>;
+    saveConfig: (config: { apiBase: string; apiKey: string; model: string; temperature: number; privacyMode?: number; sensitiveWords?: string; mode?: string; ollamaModel?: string; ollamaUrl?: string; ocrPreprocess?: boolean; proxyMode?: 'system' | 'manual' | 'none'; proxyUrl?: string | null }) => Promise<IpcResponse<void>>;
     testConnection: (params?: { apiBase?: string; apiKey?: string; model?: string; mode?: string; ollamaUrl?: string }) => Promise<IpcResponse<any>>;
     getModels: () => Promise<IpcResponse<{ models: CloudModel[]; activeModelId: string | null }>>;
     createModel: (data: Omit<CloudModel, 'id'>) => Promise<IpcResponse<{ id: string }>>;

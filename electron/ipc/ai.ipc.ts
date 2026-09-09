@@ -28,6 +28,7 @@ import {
   getSharedWorker,
 } from '../services/ocr.service';
 import { extractTextFromFile } from '../utils/text-extract';
+import { aiFetch, isValidProxyMode, parseProxyUrl, syncAiProxyFromDb } from '../services/ai-net.service';
 
 const MAX_IMAGE_SIZE_MB = 20;
 const MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024;
@@ -302,7 +303,8 @@ function ensureApiUrl(baseUrl: string | null | undefined, mode?: string): string
   if (base.endsWith('/chat/completions')) {
     return raw;
   }
-  if (/\/v1(\/|$)/.test(base)) {
+  // 匹配任意版本段（/v1、/v4 等），如 /openai/v4 → /openai/v4/chat/completions
+  if (/\/v\d+(\/|$)/.test(base)) {
     return `${base}/chat/completions`;
   }
   return `${base}/v1/chat/completions`;
@@ -512,7 +514,7 @@ export function registerAIHandlers(): void {
             const bodySizeKB = Buffer.byteLength(requestBody, 'utf8') / 1024;
             log.info(`[AI故障转移] 尝试模型: ${model.name} (${model.model}), URL: ${apiUrl}, 请求体: ${bodySizeKB.toFixed(1)}KB`);
 
-            const response = await fetch(apiUrl, {
+            const response = await aiFetch(apiUrl, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -554,7 +556,7 @@ export function registerAIHandlers(): void {
           messages,
           temperature,
         });
-        const response = await fetch(apiUrl, {
+        const response = await aiFetch(apiUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -587,7 +589,7 @@ export function registerAIHandlers(): void {
         messages,
         temperature,
       });
-      const response = await fetch(apiUrl, {
+      const response = await aiFetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -670,7 +672,7 @@ export function registerAIHandlers(): void {
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(new Error('请求超时')), timeoutMs || 30000);
       try {
-        const response = await fetch(apiUrl, {
+        const response = await aiFetch(apiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ep.apiKey}` },
           body,
@@ -748,8 +750,8 @@ export function registerAIHandlers(): void {
       } else if (apiBase.endsWith('/chat/completions')) {
         apiBase = apiBase.replace(/\/chat\/completions\/?$/, '');
       }
-      if (apiBase.endsWith('/v1')) {
-        apiBase = apiBase.replace(/\/v1\/?$/, '');
+      if (/\/v\d+(\/|$)/.test(apiBase)) {
+        apiBase = apiBase.replace(/\/v\d+\/?$/, '');
       }
 
       const ollamaUrl = config.ollamaUrl || 'http://localhost:11434';
@@ -764,6 +766,22 @@ export function registerAIHandlers(): void {
         ocrPreprocess: config.ocrPreprocess !== undefined ? (config.ocrPreprocess ? 1 : 0) : (mode === 'local' ? 1 : 0),
         updatedAt: now,
       };
+
+      // 代理配置：system=跟随系统代理 / manual=手动代理 / none=直连
+      if (config.proxyMode !== undefined) {
+        const proxyMode = isValidProxyMode(config.proxyMode) ? config.proxyMode : 'system';
+        saveData.proxyMode = proxyMode;
+        if (proxyMode === 'manual') {
+          const proxyRaw = typeof config.proxyUrl === 'string' ? config.proxyUrl.trim() : '';
+          const parsed = parseProxyUrl(proxyRaw);
+          if (proxyRaw && !parsed) {
+            throw new Error('代理地址格式无效，示例：127.0.0.1:7890 或 socks5://127.0.0.1:7890');
+          }
+          saveData.proxyUrl = parsed ? `${parsed.scheme}://${parsed.rules}` : proxyRaw;
+        } else {
+          saveData.proxyUrl = null;
+        }
+      }
 
       if (mode === 'local') {
         // 本地模式：仅保存 Ollama 相关字段，不覆盖云端的 apiKey/apiBase/model
@@ -808,6 +826,9 @@ export function registerAIHandlers(): void {
       }
 
       log.info(`[保存AI配置] 模式: ${mode}, API地址: ${mode === 'cloud' ? (saveData.apiBase || '未设置') : '使用Ollama'}, 模型: ${mode === 'cloud' ? (saveData.model || '未设置') : saveData.ollamaModel || '未设置'}`);
+
+      // 代理设置有变化时立即应用，无需等待下次请求的节流同步
+      await syncAiProxyFromDb(true);
     })
   );
 
@@ -940,7 +961,7 @@ export function registerAIHandlers(): void {
       const timeout = setTimeout(() => controller.abort(), 15000);
       let response;
       try {
-        response = await fetch(apiUrl, {
+        response = await aiFetch(apiUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -954,7 +975,7 @@ export function registerAIHandlers(): void {
         const errMsg = fetchErr.name === 'AbortError' ? `连接超时(15秒): ${apiUrl}` : `网络错误: ${fetchErr.message}`;
         return sanitize({
           success: false,
-          error: { code: 'TEST_CONNECTION_ERROR', message: errMsg, apiUrl }
+          error: { code: 'TEST_CONNECTION_ERROR', message: errMsg, apiUrl, cause: fetchErr?.cause?.code || fetchErr?.cause?.message || undefined }
         });
       }
       clearTimeout(timeout);
@@ -1984,7 +2005,7 @@ ${itemsJson}
         max_tokens: 10,
       });
 
-      const response = await fetch(apiUrl, {
+      const response = await aiFetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

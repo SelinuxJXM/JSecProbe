@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.2.6'; // 版本号由 package.json 动态获取
+const TAG = 'v2.2.7'; // 版本号由 package.json 动态获取
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,7 +57,7 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.2.6 更新内容
+    body: `## v2.2.7 更新内容
 
 ### 新增功能
 - 现场核查导入支持读取 Excel 文件实际包含的 sheet，弹窗按层面分组显示、带行数，可自定义勾选要导入的表

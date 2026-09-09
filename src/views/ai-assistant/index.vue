@@ -350,6 +350,36 @@
           </el-dialog>
         </template>
 
+        <!-- 网络代理（仅云端模式生效） -->
+        <template v-if="aiSettings.mode === 'cloud'">
+          <div class="setting-item">
+            <label class="setting-label">网络代理</label>
+            <el-radio-group v-model="aiSettings.proxyMode" size="default">
+              <el-radio-button value="system">跟随系统</el-radio-button>
+              <el-radio-button value="manual">手动代理</el-radio-button>
+              <el-radio-button value="none">直连</el-radio-button>
+            </el-radio-group>
+            <el-input
+              v-if="aiSettings.proxyMode === 'manual'"
+              v-model="aiSettings.proxyUrl"
+              placeholder="127.0.0.1:7890 或 socks5://127.0.0.1:7890"
+              style="margin-top: 8px;"
+              clearable
+            />
+            <div class="setting-hint" style="margin-top: 6px;">
+              <template v-if="aiSettings.proxyMode === 'system'">
+                使用系统代理设置（如 Clash 开启系统代理模式后自动生效），本地 Ollama 请求不受影响。
+              </template>
+              <template v-else-if="aiSettings.proxyMode === 'manual'">
+                支持 HTTP/HTTPS/SOCKS5 代理，Clash 默认混合端口为 <code>7890</code>。仅云端模型请求走代理。
+              </template>
+              <template v-else>
+                所有云端请求直连，不经过任何代理。国内可直连的 API（如 DeepSeek、通义）建议选此项。
+              </template>
+            </div>
+          </div>
+        </template>
+
         <!-- 本地Ollama模式配置 -->
         <template v-else>
           <!-- Ollama服务地址 -->
@@ -833,6 +863,9 @@ const aiSettings = reactive({
   ollamaUrl: 'http://localhost:11434',
   // OCR预处理默认：云端模式关闭，本地模式开启
   ocrPreprocess: false,
+  // 网络代理：system=跟随系统代理（Clash 等） / manual=手动代理 / none=直连
+  proxyMode: 'system' as 'system' | 'manual' | 'none',
+  proxyUrl: '',
 });
 
 // 云端多模型管理
@@ -1306,6 +1339,9 @@ async function loadSettings() {
       aiSettings.apiFormat = data.apiFormat || 'openai';
       // OCR预处理配置：云端模式默认关闭，本地模式默认开启
       aiSettings.ocrPreprocess = data.ocrPreprocess !== undefined ? Boolean(data.ocrPreprocess) : (data.mode === 'local');
+      // 网络代理配置
+      aiSettings.proxyMode = ['system', 'manual', 'none'].includes(data.proxyMode) ? data.proxyMode : 'system';
+      aiSettings.proxyUrl = data.proxyUrl || '';
 
       // 加载云端模型列表
       await loadCloudModels();
@@ -1452,6 +1488,8 @@ async function saveSettings() {
       ollamaModel: aiSettings.ollamaModel,
       ollamaUrl: aiSettings.ollamaUrl,
       ocrPreprocess: aiSettings.ocrPreprocess,
+      proxyMode: aiSettings.proxyMode,
+      proxyUrl: aiSettings.proxyUrl.trim(),
     });
     if (res.success) {
       ElMessage.success('设置已保存');

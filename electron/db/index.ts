@@ -452,6 +452,14 @@ function migrateAiConfigsTable(sqlite: Database.Database): void {
       sqlite.exec("ALTER TABLE ai_configs ADD COLUMN active_model_id TEXT");
       log.info('已添加 active_model_id 列到 ai_configs 表');
     }
+    if (!columnNames.includes('proxy_mode')) {
+      sqlite.exec("ALTER TABLE ai_configs ADD COLUMN proxy_mode TEXT DEFAULT 'system'");
+      log.info('已添加 proxy_mode 列到 ai_configs 表');
+    }
+    if (!columnNames.includes('proxy_url')) {
+      sqlite.exec("ALTER TABLE ai_configs ADD COLUMN proxy_url TEXT");
+      log.info('已添加 proxy_url 列到 ai_configs 表');
+    }
 
     // 创建云端模型表
     const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ai_cloud_models'").all() as Array<{ name: string }>;
