@@ -407,6 +407,23 @@ export interface CloudModel {
   priority: number;
 }
 
+// AI 提示词信息（自定义提示词管理）
+export interface AiPromptVariable {
+  name: string;
+  description: string;
+}
+
+export interface AiPromptInfo {
+  key: string;
+  name: string;
+  description: string;
+  variables: AiPromptVariable[];
+  template: string;
+  builtinTemplate: string;
+  customized: boolean;
+  warnings: string[];
+}
+
 export interface ChatAttachment {
   name: string;
   path: string;
@@ -656,6 +673,9 @@ export interface ApiBridge {
     getProgress: () => Promise<IpcResponse<{ stage: string; message: string; percent: number; timestamp: number } | null>>;
     onAnalysisProgress: (callback: (data: { stage: string; message: string; percent: number }) => void) => () => void;
     onBatchIssueProgress: (callback: (data: { stage: string; message: string; percent: number; current: number; total: number }) => void) => () => void;
+    listPrompts: () => Promise<IpcResponse<AiPromptInfo[]>>;
+    savePrompt: (payload: { key: string; template: string }) => Promise<IpcResponse<{ success: boolean }>>;
+    resetPrompt: (payload: { key: string }) => Promise<IpcResponse<{ success: boolean }>>;
   };
   ollama: {
     getStatus: (url?: string) => Promise<IpcResponse<{ state: string; models?: any[]; error?: string }>>;

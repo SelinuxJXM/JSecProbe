@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.2.7'; // 版本号由 package.json 动态获取
+const TAG = 'v2.2.8'; // 版本号由 package.json 动态获取
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,19 +57,17 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.2.7 更新内容
+    body: `## v2.2.8 更新内容
 
 ### 新增功能
-- 现场核查导入支持读取 Excel 文件实际包含的 sheet，弹窗按层面分组显示、带行数，可自定义勾选要导入的表
-- 未识别层面的 sheet 归入「无法识别的表」灰色分组可见不可选；未匹配到资产的 sheet 标注警示「将按全局层面导入」
+- AI 助手支持自定义分析提示词：撰写现场测评记录、批量资产匹配、整改建议、问题描述四类模板均可编辑，使用 {{变量名}} 占位符，保存立即生效
+- 自定义提示词可一键恢复为内置默认模板；界面实时提示缺失变量并给出警告
+- 工作台系统状态卡片新增「备份地址」展示，点击可直接打开备份目录
+- 顶栏帮助图标接入产品白皮书站点，点击即可查看在线文档
 
-### 问题修复
-- 修复登录「记住密码」失效：safeStorage 加密密文跨 IPC 携带后写入 localStorage 发生字节损坏，现统一以 Base64 承载，解密正常回填
-- 修复「应用异常」弹窗误杀进程：处理下载迟到的错误事件与全局 unhandledRejection 分级兜底
-- 修复现场核查导出弹窗在深色模式下文字与边框颜色异常
-
-### 稳定性优化
-- 全局未捕获的 Promise 拒绝区分「网络暂态错误（仅记日志）」与「未知异常（弹窗提示）」，避免误报应用崩溃`,
+### 界面优化
+- 提示词管理迁移至 AI 助手独立抽屉面板，系统设置弹窗更加清爽
+- 提示词卡片操作按钮改为横向排列，深色模式下配色全面适配`,
     draft: false,
     prerelease: false,
   });

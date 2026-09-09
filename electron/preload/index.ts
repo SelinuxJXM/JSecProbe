@@ -39,6 +39,10 @@ const aiService = {
   deleteModel: ipc<void>('ai:deleteModel'),
   setActiveModel: ipc<void>('ai:setActiveModel'),
   testModelConnection: ipc<any>('ai:testModelConnection'),
+  // 提示词管理
+  listPrompts: ipc<any>('ai:prompts:list'),
+  savePrompt: ipc<{ success: boolean }>('ai:prompts:save'),
+  resetPrompt: ipc<{ success: boolean }>('ai:prompts:reset'),
   onAnalysisProgress: (callback: (data: { stage: string; message: string; percent: number }) => void) => {
     const handler = (_e: IpcRendererEvent, data: any) => callback(data);
     ipcRenderer.on('ai:progress', handler);

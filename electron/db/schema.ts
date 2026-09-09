@@ -251,6 +251,15 @@ export const aiCloudModels = sqliteTable('ai_cloud_models', {
   createdAt: text('created_at').notNull(),
 });
 
+// 用户自定义 AI 提示词：有记录=已自定义，无记录=使用内置默认模板
+export const aiPrompts = sqliteTable('ai_prompts', {
+  // 功能键：analyze_record / batch_match / rectify_suggestion / issue_desc
+  promptKey: text('prompt_key').primaryKey(),
+  // 完整模板，使用 {{变量名}} 占位符
+  template: text('template').notNull(),
+  updatedAt: text('updated_at'),
+});
+
 export const systemSettings = sqliteTable('system_settings', {
   id: text('id').primaryKey().default('default'),
   dbVersion: integer('db_version').notNull().default(1),

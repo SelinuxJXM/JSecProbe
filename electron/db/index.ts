@@ -481,6 +481,19 @@ function migrateAiConfigsTable(sqlite: Database.Database): void {
       `);
       log.info('已创建 ai_cloud_models 表');
     }
+
+    // 创建用户自定义提示词表
+    const promptTables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ai_prompts'").all() as Array<{ name: string }>;
+    if (promptTables.length === 0) {
+      sqlite.exec(`
+        CREATE TABLE ai_prompts (
+          prompt_key TEXT PRIMARY KEY,
+          template TEXT NOT NULL,
+          updated_at TEXT
+        );
+      `);
+      log.info('已创建 ai_prompts 表');
+    }
   } catch (err) {
     log.warn('迁移 ai_configs 表失败:', err);
   }

@@ -29,6 +29,14 @@ import {
 } from '../services/ocr.service';
 import { extractTextFromFile } from '../utils/text-extract';
 import { aiFetch, isValidProxyMode, parseProxyUrl, syncAiProxyFromDb } from '../services/ai-net.service';
+import {
+  BUILTIN_PROMPTS,
+  MAX_PROMPT_LENGTH,
+  getPromptTemplate,
+  isValidPromptKey,
+  renderTemplate as renderPromptTemplate,
+  validateTemplate,
+} from '../services/ai-prompt.service';
 
 const MAX_IMAGE_SIZE_MB = 20;
 const MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024;
@@ -914,6 +922,75 @@ export function registerAIHandlers(): void {
     })
   );
 
+  // ===== 用户自定义提示词管理 =====
+  ipcMain.handle('ai:prompts:list', async (event) =>
+    wrap(event, async () => {
+      const db = getDb();
+      const rows = await db.select().from(schema.aiPrompts).all();
+      const customMap = new Map(rows.map(r => [r.promptKey, r.template]));
+      return BUILTIN_PROMPTS.map(def => {
+        const custom = customMap.get(def.key);
+        return {
+          key: def.key,
+          name: def.name,
+          description: def.description,
+          variables: def.variables,
+          template: custom ?? def.builtinTemplate,
+          builtinTemplate: def.builtinTemplate,
+          customized: !!custom,
+          warnings: validateTemplate(def.key, custom ?? def.builtinTemplate).missing,
+        };
+      });
+    })
+  );
+
+  ipcMain.handle('ai:prompts:save', async (event, payload: { key?: string; template?: string }) =>
+    wrap(event, async () => {
+      if (!payload || !isValidPromptKey(payload.key)) {
+        throw new Error('无效的提示词功能键');
+      }
+      const key = payload.key;
+      const template = typeof payload.template === 'string' ? payload.template : '';
+      if (!template.trim()) {
+        throw new Error('提示词内容不能为空');
+      }
+      if (template.length > MAX_PROMPT_LENGTH) {
+        throw new Error(`提示词内容过长（${template.length} 字符），上限 ${MAX_PROMPT_LENGTH} 字符`);
+      }
+      const { missing } = validateTemplate(key, template);
+      if (missing.length > 0) {
+        throw new Error(`模板缺少必需变量：${missing.join('、')}，请在模板中保留这些占位符`);
+      }
+      const db = getDb();
+      const now = new Date().toISOString();
+      const existing = await db.select({ promptKey: schema.aiPrompts.promptKey })
+        .from(schema.aiPrompts)
+        .where(eq(schema.aiPrompts.promptKey, key))
+        .limit(1);
+      if (existing.length > 0) {
+        await db.update(schema.aiPrompts)
+          .set({ template, updatedAt: now })
+          .where(eq(schema.aiPrompts.promptKey, key));
+      } else {
+        await db.insert(schema.aiPrompts).values({ promptKey: key, template, updatedAt: now });
+      }
+      log.info(`[AI提示词] 已保存自定义模板: ${key}（${template.length} 字符）`);
+      return { success: true };
+    })
+  );
+
+  ipcMain.handle('ai:prompts:reset', async (event, payload: { key?: string }) =>
+    wrap(event, async () => {
+      if (!payload || !isValidPromptKey(payload.key)) {
+        throw new Error('无效的提示词功能键');
+      }
+      const db = getDb();
+      await db.delete(schema.aiPrompts).where(eq(schema.aiPrompts.promptKey, payload.key));
+      log.info(`[AI提示词] 已重置为内置默认模板: ${payload.key}`);
+      return { success: true };
+    })
+  );
+
   // 进度轮询（fallback 机制）
   ipcMain.handle('ai:getProgress', async () => {
     // 过期进度返回 null，避免读到陈旧数据
@@ -1175,37 +1252,11 @@ export function registerAIHandlers(): void {
       const controlPoint = privacyMode ? desensitizeText(params.controlPoint, extraWords) : params.controlPoint;
       const requirement = privacyMode ? desensitizeText(params.requirement, extraWords) : params.requirement;
 
-      const systemPrompt = `你是一名专业的等级保护测评师。请根据以下信息撰写现场测评记录：
-
-安全控制点：${controlPoint}
-测评项（标准条款）：${requirement}
-
-用户已在"关键证据点"中提供了核查证据（命令输出、配置信息、文件内容、截图等）。
-
-请严格基于证据，撰写一段详实的测评记录。参考以下示例格式：
-
-示例1：经核查，执行命令返回系统用户列表。root用户UID为0，存在多个系统账户。已确认/etc/shadow文件中所有用户均设置了口令，口令字段非空。身份鉴别信息具有唯一性。
-
-示例2：经核查，/etc/login.defs中配置了FAIL_MAX_ENTRIES=5，FAIL_INTERVAL=300，表示连续登录失败5次后锁定账户300秒。
-
-要求：
-- 以"经核查，"或"经访谈，"开头（根据证据来源自动选择）
-- 描述具体做了什么核查（执行了什么命令、查看了什么文件、检查了什么配置）
-- 引用具体的配置参数、数值、版本、文件名
-- 语句连贯、事实清晰，形成一段完整描述
-- 必须根据实际证据情况，对测评项给出明确的符合性判定：符合/部分符合/不符合/不适用，绝不允许输出"证据不足"等模糊判定
-- 严禁编造不存在的内容，所有结论必须有实际证据支撑
-- 结论末尾不要写"均满足二级要求"、"综合判定：符合"、"符合等保二级要求"等总结性套话
-
-请按照以下格式返回JSON结果（不要有其他说明文字）：
-{
-  "actualOutput": "从关键证据点中提取的核心内容摘要（如无相关内容则写'无相关证据'）",
-  "keyEvidencePoints": [
-    "具体描述1（仅列出与测评项相关的证据，不要用序号前缀，如: /etc/login.defs中配置了FAIL_MAX_ENTRIES=5）"
-  ],
-  "compliance": "符合/部分符合/不符合/不适用",
-  "conclusion": "经核查，执行命令返回系统用户列表。root用户UID为0，存在多个系统账户。已确认/etc/shadow文件中所有用户均设置了口令，口令字段非空。身份鉴别信息具有唯一性。"
-}`;
+      const recordTemplate = await getPromptTemplate('analyze_record');
+      const systemPrompt = renderPromptTemplate(recordTemplate, {
+        '安全控制点': controlPoint,
+        '测评项': requirement,
+      });
 
       const messages = [
         { role: 'system', content: systemPrompt },
@@ -1429,46 +1480,11 @@ export function registerAIHandlers(): void {
         evidenceDesc += `\n\n[OCR预处理提取的截图文字]\n${ocrText}`;
       }
 
-      let promptText = `你是一名专业的等级保护测评师。请根据以下截图、文档内容，智能匹配到对应的测评项，并为每个匹配到的测评项撰写现场测评记录。
-
-${evidenceDesc}
-
-测评项列表：
-${itemsJson}
-
-请逐一仔细分析每张截图和文档的具体内容（界面文字、配置项、状态信息、数据等），智能判断内容与哪些测评项相关，然后为每个匹配到的测评项撰写一段详实的测评记录。
-
-要求：
-- 以"经核查，"或"经访谈，"开头（根据证据来源自动选择）
-- 描述具体做了什么核查（执行了什么命令、查看了什么文件、检查了什么配置）
-- 引用具体的配置参数、数值、版本、文件名
-- 语句连贯、事实清晰，形成一段完整描述
-- 智能匹配：匹配时必须仔细，且当只有内容与测评项相关时才返回该测评项的分析结果
-- 如果截图/文档内容与某个测评项无关，不要返回该测评项的结果
-- 一个截图/文档可能匹配多个测评项，某个测评项也可能匹配多个截图/文档
-- 对于匹配到的测评项，必须根据实际证据情况给出明确的符合性判定：符合/部分符合/不符合
-- 严禁编造不存在的内容，所有结论必须有实际证据支撑
-- 结论末尾不要写"均满足二级要求"、"综合判定：符合"、"符合等保二级要求"等总结性套话
-- 对于每个匹配到的测评项，必须从文件列表中选出与该测评项相关的截图或文档文件名，填入attachedFiles数组
-- 如果某个文件与多个测评项相关，可以在多个测评项的attachedFiles中都列出该文件名
-
-请严格按照以下JSON格式返回结果（不要有其他说明文字）：
-{
-  "results": [
-    {
-      "itemId": "匹配到的测评项ID",
-      "keyEvidencePoints": [
-        "具体描述1（仅列出与测评项相关的证据，如: FAIL_LOGIN_ENABLED=yes）"
-      ],
-      "attachedFiles": [
-        "截图：截图文件名1.png",
-        "文档：审计日志.docx"
-      ],
-      "compliance": "符合/部分符合/不符合",
-      "conclusion": "经核查，/etc/login.defs中配置了FAIL_MAX_ENTRIES=5，FAIL_INTERVAL=300，表示连续登录失败5次后锁定账户300秒。"
-    }
-  ]
-}`;
+      const batchMatchTemplate = await getPromptTemplate('batch_match');
+      const promptText = renderPromptTemplate(batchMatchTemplate, {
+        '证据描述': evidenceDesc,
+        '测评项列表': itemsJson,
+      });
 
       userContent.push({ type: 'text', text: promptText });
 
@@ -1562,24 +1578,14 @@ ${itemsJson}
       const controlPoint = privacyMode ? desensitizeText(params.controlPoint, extraWords) : params.controlPoint;
       const controlName = privacyMode ? desensitizeText(params.controlName, extraWords) : params.controlName;
 
-      const systemPrompt = `你是一名专业的等级保护测评师。请根据以下问题信息，撰写一段连贯的整改建议：
-
-问题标题：${issueTitle}
-安全域：${securityDomain}
-控制点：${controlPoint}
-控制项：${controlName}
-问题描述：${issueDescription}
-
-要求：
-- 以"整改措施："开头
-- 描述具体的整改措施（需要执行什么操作、修改什么配置、部署什么安全机制等）
-- 引用具体的技术手段、配置命令、安全产品或防护措施
-- 包含整改优先级和注意事项
-- 语句连贯、逻辑清晰，形成一段完整的整改建议描述
-- 严禁编造不存在的内容，所有建议必须基于问题描述中的实际情况
-- 不要分点列举，保持段落形式
-
-请以纯文本形式返回整改建议（不需要JSON格式）。`;
+      const rectifyTemplate = await getPromptTemplate('rectify_suggestion');
+      const systemPrompt = renderPromptTemplate(rectifyTemplate, {
+        '问题标题': issueTitle,
+        '安全域': securityDomain,
+        '控制点': controlPoint,
+        '控制项': controlName,
+        '问题描述': issueDescription,
+      });
 
       // 使用云端模型列表做故障转移（失败自动切换下一模型）
       const runResult = await runWithFailover(config, mode, {
@@ -1664,27 +1670,14 @@ ${itemsJson}
       const controlPoint = privacyMode ? desensitizeText(params.controlPoint, extraWords) : params.controlPoint;
       const controlName = privacyMode ? desensitizeText(params.controlName, extraWords) : params.controlName;
 
-      const systemPrompt = `你是一名专业的等级保护测评师。请根据以下问题信息，提取出一句话的核心问题描述。
-
-问题标题：${issueTitle}
-安全域：${securityDomain}
-控制点：${controlPoint}
-控制项：${controlName}
-当前问题描述：${issueDescription}
-
-要求：
-- 用一句话（不超过50字）概括问题的本质
-- 直接指出安全风险或合规缺失，不要描述核查过程
-- 不要包含"经核查"、"经访谈"等前缀
-- 不要包含具体命令、路径等细节信息
-- 聚焦于"存在什么风险"或"缺少什么防护"
-
-示例：
-- "SSH登录失败锁定策略未配置，存在暴力破解风险"
-- "系统密码复杂度策略未启用，易受字典攻击"
-- "日志审计功能未开启，无法追溯安全事件"
-
-请直接返回问题描述文本，不要JSON格式，不要解释。`;
+      const issueDescTemplate = await getPromptTemplate('issue_desc');
+      const systemPrompt = renderPromptTemplate(issueDescTemplate, {
+        '问题标题': issueTitle,
+        '安全域': securityDomain,
+        '控制点': controlPoint,
+        '控制项': controlName,
+        '问题描述': issueDescription,
+      });
 
       // 使用云端模型列表做故障转移（失败自动切换下一模型）
       const runResult = await runWithFailover(config, mode, {
@@ -1795,24 +1788,14 @@ ${itemsJson}
           const controlPoint = privacyMode ? desensitizeText(issue.controlPoint, extraWords) : issue.controlPoint;
           const controlName = privacyMode ? desensitizeText(issue.controlName, extraWords) : issue.controlName;
 
-          const systemPrompt = `你是一名专业的等级保护测评师。请根据以下问题信息，撰写一段连贯的整改建议：
-
-问题标题：${issueTitle}
-安全域：${securityDomain}
-控制点：${controlPoint}
-控制项：${controlName}
-问题描述：${issueDescription}
-
-要求：
-- 以"整改措施："开头
-- 描述具体的整改措施（需要执行什么操作、修改什么配置、部署什么安全机制等）
-- 引用具体的技术手段、配置命令、安全产品或防护措施
-- 包含整改优先级和注意事项
-- 语句连贯、逻辑清晰，形成一段完整的整改建议描述
-- 严禁编造不存在的内容，所有建议必须基于问题描述中的实际情况
-- 不要分点列举，保持段落形式
-
-请以纯文本形式返回整改建议（不需要JSON格式）。`;
+          const batchRectifyTemplate = await getPromptTemplate('rectify_suggestion');
+          const systemPrompt = renderPromptTemplate(batchRectifyTemplate, {
+            '问题标题': issueTitle,
+            '安全域': securityDomain,
+            '控制点': controlPoint,
+            '控制项': controlName,
+            '问题描述': issueDescription,
+          });
 
           // 使用云端模型列表做故障转移（失败自动切换下一模型）
           const runResult = await runWithFailover(config, mode, {

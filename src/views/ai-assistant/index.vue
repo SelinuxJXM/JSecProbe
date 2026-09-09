@@ -23,6 +23,9 @@
         <el-button :icon="Setting" @click="showSettings = true">
           AI设置
         </el-button>
+        <el-button :icon="EditPen" @click="showPromptDrawer = true">
+          提示词
+        </el-button>
         <el-button type="danger" :icon="Delete" @click="clearChat" :disabled="messages.length === 0">
           清空对话
         </el-button>
@@ -650,13 +653,16 @@
           </div>
         </div>
 
-        </div>
+      </div>
 
       <template #footer>
         <el-button @click="showSettings = false">取消</el-button>
         <el-button type="primary" @click="saveSettings">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 提示词管理抽屉 -->
+    <PromptManagerDrawer v-model="showPromptDrawer" />
 
     <el-dialog v-model="showInstallGuide" title="Ollama 安装指南" width="700px" destroy-on-close @opened="installStep = 0">
       <div class="install-guide">
@@ -793,12 +799,16 @@ import {
   CircleClose,
   Monitor,
   Download,
+  EditPen,
   Refresh,
   CircleCheck,
   Iphone,
 } from '@element-plus/icons-vue';
+import PromptManagerDrawer from './components/prompt-manager-drawer.vue';
 
 const showSettings = ref(false);
+const showPromptDrawer = ref(false);
+
 const loading = ref(false);
 const messages = ref<{ id: number; role: string; content: string; suggestions?: string[]; attachments?: PendingAttachment[] }[]>([]);
 const inputMessage = ref('');
@@ -1185,8 +1195,10 @@ async function handleDialogOpened() {
 }
 
 watch(showSettings, (visible) => {
-  if (visible && aiSettings.mode === 'local') {
-    startHealthCheck();
+  if (visible) {
+    if (aiSettings.mode === 'local') {
+      startHealthCheck();
+    }
   } else {
     stopHealthCheck();
   }

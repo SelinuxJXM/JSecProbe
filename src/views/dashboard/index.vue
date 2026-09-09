@@ -113,6 +113,20 @@
               <span class="status-label">备份份数</span>
               <span class="status-value">{{ backupCount }} 份</span>
             </div>
+            <div class="status-item">
+              <span class="status-label">备份地址</span>
+              <el-tooltip
+                :content="backupDirText"
+                placement="top"
+                :show-after="300"
+                :disabled="backupDirText === '-'"
+              >
+                <span
+                  class="status-value status-value-path"
+                  @click.stop="openBackupFolder"
+                >{{ backupDirShort }}</span>
+              </el-tooltip>
+            </div>
           </div>
         </div>
       </el-col>
@@ -173,6 +187,7 @@ import { PieChart, BarChart, LineChart } from 'echarts/charts';
 import { TitleComponent, TooltipComponent, LegendComponent, GridComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 import type { UpdateStatus } from '../../../shared/types';
+import { ElMessage } from 'element-plus';
 
 use([PieChart, BarChart, LineChart, TitleComponent, TooltipComponent, LegendComponent, GridComponent, CanvasRenderer]);
 
@@ -199,6 +214,7 @@ const trendData = ref<{ months: string[]; created: number[]; cumulative: number[
 const currentVersion = ref('');
 const updateStatus = ref<UpdateStatus | null>(null);
 const backups = ref<Array<{ name: string; path: string; size: number; timestamp: string }>>([]);
+const dataPath = ref('');
 
 const isDark = ref(document.documentElement.classList.contains('dark'));
 
@@ -320,6 +336,25 @@ const lastBackupText = computed(() => {
 
 const backupCount = computed(() => backups.value.length);
 
+// 备份目录：数据目录下的 backups 子目录（与 backup.service 的 getBackupRootPath 一致）
+const backupDirText = computed(() => (dataPath.value ? `${dataPath.value}\\backups` : '-'));
+
+// 从完整路径中提取盘符后的前两级目录，中间用 … 省略
+const backupDirShort = computed(() => {
+  if (!dataPath.value) return '-';
+  const parts = backupDirText.value.split('\\').filter(Boolean);
+  if (parts.length <= 3) return backupDirText.value;
+  return `${parts[0]}\\…\\${parts[parts.length - 1]}`;
+});
+
+async function openBackupFolder() {
+  if (!backupDirText.value || backupDirText.value === '-') return;
+  const res = await window.api.shell.openPath(backupDirText.value);
+  if (res && res.success === false) {
+    ElMessage.error('打开备份目录失败：' + (res.error?.message || '目录可能不存在'));
+  }
+}
+
 function statusType(status: string) {
   const map: Record<string, string> = {
     draft: 'info',
@@ -353,13 +388,14 @@ async function loadData() {
       return;
     }
     
-    const [listRes, statsRes, trendRes, versionRes, statusRes, backupsRes] = await Promise.all([
+    const [listRes, statsRes, trendRes, versionRes, statusRes, backupsRes, infoRes] = await Promise.all([
       window.api.project.list({ page: 1, pageSize: 5 }),
       window.api.project.getStatistics(),
       window.api.project.getTrend(),
       window.api.update.getCurrentVersion(),
       window.api.update.getStatus(),
       window.api.system.listBackups(),
+      window.api.system.getInfo(),
     ]);
 
     if (listRes.success && listRes.data) {
@@ -395,6 +431,10 @@ async function loadData() {
 
     if (backupsRes.success && backupsRes.data) {
       backups.value = backupsRes.data;
+    }
+
+    if (infoRes.success && infoRes.data) {
+      dataPath.value = infoRes.data.dataPath || '';
     }
   } catch (err) {
     console.error('加载工作台数据失败:', err);
@@ -502,6 +542,18 @@ onMounted(loadData);
       font-size: var(--font-size-sm);
       color: var(--color-text-primary);
       font-weight: var(--font-weight-semibold);
+    }
+
+    .status-value-path {
+      max-width: 150px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      cursor: pointer;
+
+      &:hover {
+        color: var(--color-primary);
+      }
     }
   }
 }
