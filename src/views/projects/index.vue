@@ -141,8 +141,8 @@
           <tbody v-if="!loading && projectList.length === 0">
             <tr>
               <td colspan="11" class="empty-cell">
-                <el-empty description="暂无项目">
-                  <el-button type="primary" @click="addEmptyRow">新建第一个项目</el-button>
+                <el-empty :description="emptyStateText">
+                  <el-button v-if="activeTab === 'active' && !keyword" type="primary" @click="addEmptyRow">新建第一个项目</el-button>
                 </el-empty>
               </td>
             </tr>
@@ -254,6 +254,14 @@ const showFilter = ref(false);
 const projectList = ref<any[]>([]);
 const stats = reactive({ activeCount: 0, archivedCount: 0 });
 const currentRowIndex = ref(-1);
+
+// 空状态文案按页签与搜索词区分：新建项目为草稿态，不会出现在归档列表，故归档页签/搜索无结果时不引导新建
+const emptyStateText = computed(() => {
+  if (activeTab.value === 'archived') {
+    return keyword.value ? '未找到匹配的已归档项目' : '暂无已归档项目';
+  }
+  return keyword.value ? '未找到匹配的项目' : '暂无项目';
+});
 
 // 标准库列表（新建项目时动态加载，替代硬编码 standardSystem 下拉框）
 const standards = ref<any[]>([]);

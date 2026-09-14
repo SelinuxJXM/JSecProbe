@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.3.0'; // 版本号由 package.json 动态获取
+const TAG = 'v2.3.1'; // 发布标签，随版本升级同步修改
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,23 +57,10 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.3.0 更新内容
-
-### 新增功能
-- 标准库管理「合规差距」全面改造：子标签页式视图，合规率进度条按实际整改完成度实时显示；对照视图以第一性用户视角完成交互重设计
-- 现场核查右侧推荐升级为「推荐核查方法」：AI 输出核查/访谈/测试三类完整方法（步骤 + 命令 + 依据），与既有设备命令库推荐并行互补
+    body: `## v2.3.1 更新内容
 
 ### 缺陷修复
-- 修复对照视图「AI 解读差异」报 "An object could not be cloned" 及非标准 JSON 返回"格式异常/解析失败"的问题（结构化克隆兼容 + repairAiJson 容错修复 + 严格 JSON 提示词）
-- 修复知识库 AI 智能提问误报"问题不能为空"的问题（IPC 参数序列化修正）
-- 修复系统构成「AI 资产识别」对任意无效输入（如随意字符）误产出资产结果的问题，输入有效性校验增强
-- 修复项目资产数（assetCount）与实际资产表长期漂移的问题：项目列表每次加载自动校准
-- 修复深色模式下 AI 建议信息块显示浅底色的问题：主题色派生 light-* 在深色模式改向 #141414 混合，深浅切换时实时重算
-
-### 优化
-- 设置页组件化拆分：标准库管理抽出为独立 StandardsTab 组件，主文件瘦身约 1700 行
-- 报告配置、AI 助手、项目列表等页面硬编码色值批量替换为 CSS 变量，统一适配深浅主题
-- 项目列表新增加载中与空数据状态提示`,
+- 修复项目列表页空状态提示未区分页签的问题：「已归档项目」页签在空列表或搜索无结果时不再误显"暂无项目"及"新建第一个项目"按钮（新建项目为草稿态，不会出现在归档列表），改为「暂无已归档项目 / 未找到匹配的已归档项目」；"新建第一个项目"引导仅在未归档页签且无搜索词时显示`,
     draft: false,
     prerelease: false,
   });
