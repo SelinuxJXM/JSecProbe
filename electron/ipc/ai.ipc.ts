@@ -90,6 +90,77 @@ function sanitize<T>(obj: T): any {
   }
 }
 
+// 容错修复 LLM 常见的非标准 JSON 语法：单引号字符串→双引号、裸键名→补双引号、尾逗号→删除、注释→剔除。
+// 逐字符状态机实现，所有修复只作用于字符串外部，不会破坏字符串内容。
+function repairAiJson(raw: string): string {
+  let out = '';
+  let i = 0;
+  const n = raw.length;
+  while (i < n) {
+    const c = raw[i];
+    if (c === '"') {
+      let j = i + 1;
+      while (j < n) {
+        if (raw[j] === '\\') { j += 2; continue; }
+        if (raw[j] === '"') break;
+        j++;
+      }
+      out += raw.slice(i, Math.min(j + 1, n));
+      i = j + 1;
+      continue;
+    }
+    if (c === "'") {
+      let j = i + 1;
+      let inner = '';
+      while (j < n) {
+        if (raw[j] === '\\') {
+          inner += raw[j + 1] === "'" ? "'" : raw.slice(j, j + 2);
+          j += 2;
+          continue;
+        }
+        if (raw[j] === "'") break;
+        inner += raw[j] === '"' ? '\\"' : raw[j];
+        j++;
+      }
+      out += '"' + inner + '"';
+      i = j + 1;
+      continue;
+    }
+    if (c === '/' && raw[i + 1] === '/') {
+      while (i < n && raw[i] !== '\n') i++;
+      continue;
+    }
+    if (c === '/' && raw[i + 1] === '*') {
+      i += 2;
+      while (i < n && !(raw[i] === '*' && raw[i + 1] === '/')) i++;
+      i += 2;
+      continue;
+    }
+    if (c === ',') {
+      let j = i + 1;
+      while (j < n && /\s/.test(raw[j])) j++;
+      if (j >= n || raw[j] === '}' || raw[j] === ']') { i++; continue; }
+      out += c;
+      i++;
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(c)) {
+      const m = /^([A-Za-z_$][\w$]*)\s*:/.exec(raw.slice(i));
+      if (m) {
+        out += '"' + m[1] + '":';
+        i += m[0].length;
+        continue;
+      }
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+// 统一追加到各 AI 分析通道 userPrompt 末尾的严格 JSON 输出约束，降低模型输出非标准 JSON 的概率
+const STRICT_JSON_HINT = '\n\n【输出格式硬性要求】只输出一个合法的严格 JSON 对象：所有键名和字符串值必须使用双引号；禁止单引号、禁止尾逗号、禁止注释；不要输出 Markdown 代码块标记或 JSON 以外的任何文字。';
+
 // 从 AI 自由文本中稳健地提取顶层 JSON 对象（去代码块包裹 + 按大括号配平 + 兜底截取）
 // 避免「首个 { 到末个 }」在内容含数组/嵌套大括号时多截取导致的解析失败
 function extractAiJson(text: string, label: string): Record<string, any> {
@@ -116,10 +187,19 @@ function extractAiJson(text: string, label: string): Record<string, any> {
   }
   if (end === -1) end = s.lastIndexOf('}');
   if (end <= start) throw new Error(`${label} 返回格式异常：JSON 不完整`);
+  const candidate = s.slice(start, end + 1);
   try {
-    const obj = JSON.parse(s.slice(start, end + 1));
+    const obj = JSON.parse(candidate);
     return (obj && typeof obj === 'object') ? obj : {};
   } catch (e: any) {
+    // 严格解析失败时尝试容错修复（模型常输出单引号/裸键/尾逗号/注释等非标准 JSON），修复成功则放行
+    try {
+      const fixed = JSON.parse(repairAiJson(candidate));
+      if (fixed && typeof fixed === 'object') {
+        log.warn(`${label} 返回非严格 JSON，已通过容错修复解析成功`);
+        return fixed;
+      }
+    } catch { /* 修复后仍失败，保留原始错误信息抛出 */ }
     throw new Error(`${label} 返回格式异常：JSON 解析失败（${e?.message || ''}）`);
   }
 }
@@ -2270,7 +2350,7 @@ export function registerAIHandlers(): void {
       const config = normalizeConfig(sanitize(configs[0]));
       const mode = config.mode || 'cloud';
 
-      // 候选命令：全量加载，若提供资产信息则按匹配度排序截取，控制上下文规模
+      // 候选命令：全量加载，按"测评项语义 + 资产信息"双维打分排序截取，控制上下文规模
       const allCommands = await db.select().from(schema.knowledgeCommands);
       const assetInfo = {
         brand: String(params.brand || '').toLowerCase(),
@@ -2280,13 +2360,34 @@ export function registerAIHandlers(): void {
       };
       const hasAssetHint = !!(assetInfo.brand || assetInfo.os || assetInfo.deviceType || assetInfo.label);
 
+      // 测评项意图关键词：按标点/空白切分；中文片段展开为二元组（shingle），英文/数字片段整词参与，去重限量
+      const intentRaw = `${params.controlPoint || ''} ${params.controlName || ''} ${params.requirement || ''}`.toLowerCase();
+      const intentParts = intentRaw
+        .split(/[\s,，。.;；:：!！?？、()（）\[\]【】"'“”‘’《》\-—/]+/)
+        .map(s => s.trim())
+        .filter(s => s.length >= 2);
+      const intentGrams = new Set<string>();
+      for (const part of intentParts) {
+        if (/^[\u4e00-\u9fa5]+$/.test(part)) {
+          for (let i = 0; i + 2 <= part.length && i < 40; i++) intentGrams.add(part.slice(i, i + 2));
+        } else {
+          intentGrams.add(part);
+        }
+      }
+      const intentTokens = Array.from(intentGrams).slice(0, 80);
+
       const descLimit = 120;
       const candidates = allCommands.map(cmd => {
-        const haystack = `${cmd.brand || ''} ${cmd.os || ''} ${cmd.deviceType || ''} ${cmd.target || ''}`.toLowerCase();
+        const haystackAsset = `${cmd.brand || ''} ${cmd.os || ''} ${cmd.deviceType || ''} ${cmd.target || ''}`.toLowerCase();
+        const haystackIntent = `${cmd.name || ''} ${cmd.description || ''} ${cmd.target || ''} ${cmd.category || ''} ${cmd.subCategory || ''} ${cmd.command || ''}`.toLowerCase();
         let score = 0;
+        // 主维度：命令与测评项语义的关键词命中；资产命中仅作同分时的方言倾向参考，避免品牌劫持排序
+        for (const t of intentTokens) {
+          if (haystackIntent.includes(t)) score += 1;
+        }
         if (hasAssetHint) {
           for (const v of [assetInfo.brand, assetInfo.os, assetInfo.deviceType, assetInfo.label]) {
-            if (v && v.length >= 2 && haystack.includes(v)) score += 1;
+            if (v && v.length >= 2 && haystackAsset.includes(v)) score += 1;
           }
         }
         return {
@@ -2329,7 +2430,7 @@ export function registerAIHandlers(): void {
           body: JSON.stringify({
             model: ep.model,
             messages: [
-              { role: 'system', content: '你是一名专业的等级保护测评师，擅长为测评项匹配合适的核查命令。请严格按照要求的JSON格式返回。' },
+              { role: 'system', content: '你是一名专业的等级保护测评师，擅长为测评项推荐准确的核查方法与核查命令。请严格按照要求的JSON格式返回。' },
               { role: 'user', content: userPrompt },
             ],
             temperature: config.temperature ?? 0.3,
@@ -2355,16 +2456,58 @@ export function registerAIHandlers(): void {
       const commands = recommendedIds
         .map(id => limited.find(c => c.id === id))
         .filter((c): c is (typeof limited)[number] => !!c)
-        .map(c => ({ ...c, reason: reasons[c.id] || '' }));
+        .map(c => ({ ...c, source: 'library' as const, reason: reasons[c.id] || '' }));
+
+      // AI 补充核查方法净化：type 白名单、标题必填、步骤与命令不全为空、数量与长度受限
+      const methodTypeSet = new Set(['check', 'interview', 'test']);
+      const aiMethods: Array<{
+        type: string;
+        title: string;
+        steps: string[];
+        commands: Array<{ name: string; command: string; os: string; brand: string }>;
+        reason: string;
+        source: 'ai';
+      }> = [];
+      if (Array.isArray(parsed.aiMethods)) {
+        for (const m of parsed.aiMethods) {
+          if (aiMethods.length >= 4) break;
+          if (!m || typeof m !== 'object') continue;
+          const title = String((m as any).title || '').trim().slice(0, 100);
+          if (!title) continue;
+          const steps = (Array.isArray((m as any).steps) ? (m as any).steps : [])
+            .map((s: any) => String(s || '').trim().slice(0, 300))
+            .filter(Boolean)
+            .slice(0, 6);
+          const genCommands = (Array.isArray((m as any).commands) ? (m as any).commands : [])
+            .filter((c: any) => c && typeof c === 'object' && String(c.command || '').trim())
+            .slice(0, 3)
+            .map((c: any) => ({
+              name: String(c.name || '').trim().slice(0, 100),
+              command: String(c.command || '').trim().slice(0, 500),
+              os: String(c.os || '').trim().slice(0, 100),
+              brand: String(c.brand || '').trim().slice(0, 100),
+            }));
+          if (steps.length === 0 && genCommands.length === 0) continue;
+          const type = methodTypeSet.has(String((m as any).type || '')) ? String((m as any).type) : 'check';
+          aiMethods.push({
+            type,
+            title,
+            steps,
+            commands: genCommands,
+            reason: String((m as any).reason || '').trim().slice(0, 300),
+            source: 'ai',
+          });
+        }
+      }
 
       writeOperationLog({
         action: 'ai_recommend_commands',
         module: 'ai',
         targetName: String(params.controlPoint || '').slice(0, 50),
-        description: `AI推荐核查命令: 控制点=${params.controlPoint || ''}, 推荐${commands.length}条`,
+        description: `AI推荐核查方法: 控制点=${params.controlPoint || ''}, 库内${commands.length}条, AI方法${aiMethods.length}条`,
       });
 
-      return sanitize({ success: true, data: { commands } });
+      return sanitize({ success: true, data: { commands, aiMethods } });
     } catch (error: any) {
       log.error('[ai:recommendCommands] 错误:', error.message);
       return sanitize({
@@ -2553,6 +2696,9 @@ export function registerAIHandlers(): void {
           if (!item || typeof item !== 'object') continue;
           const name = String(item.name || '').trim();
           if (!name) continue;
+          // 防幻觉守卫：要求模型为每个资产给出描述原文依据，无依据的输出一律丢弃（仅对声明了 evidence 的模板生效，兼容旧自定义模板）
+          const evidence = String(item.evidence || '').trim();
+          if (identifyTemplate.includes('evidence') && !evidence) continue;
           const quantityNum = Number(item.quantity);
           assets.push({
             category: categoryIds.has(String(item.category)) ? String(item.category) : 'other_asset',
@@ -2562,6 +2708,9 @@ export function registerAIHandlers(): void {
             ip: String(item.ip || '').slice(0, 100),
             quantity: Number.isFinite(quantityNum) && quantityNum >= 1 ? Math.floor(quantityNum) : 1,
             importance: importanceSet.has(String(item.importance)) ? String(item.importance) : 'medium',
+            isVirtual: item.isVirtual === true || item.isVirtual === 'true' || item.isVirtual === 1,
+            dbSystem: String(item.dbSystem || '').slice(0, 100),
+            middleware: String(item.middleware || '').slice(0, 100),
             deviceUsage: String(item.deviceUsage || '').slice(0, 200),
             description: String(item.description || '').slice(0, 500),
           });
@@ -2868,7 +3017,7 @@ export function registerAIHandlers(): void {
             model: ep.model,
             messages: [
               { role: 'system', content: '你是一名专业的等级保护测评项目管理专家，擅长基于项目数据做风险态势分析与预警解读。请严格按照要求的 JSON 格式返回。' },
-              { role: 'user', content: userPrompt },
+              { role: 'user', content: userPrompt + STRICT_JSON_HINT },
             ],
             temperature: config.temperature ?? 0.3,
           }),
@@ -2925,11 +3074,13 @@ export function registerAIHandlers(): void {
   ipcMain.handle('ai:explainStandardDiff', async (_e, rawParams: any) => {
     // 并发防护：同通道串行，避免连续触发造成重复请求/结果覆盖
     if (aiLocks.get('explainStandardDiff')) {
+      log.warn('[ai:explainStandardDiff] 并发拒绝：上一次分析仍在执行中');
       return sanitize({ success: false, error: { code: 'AI_BUSY', message: '上一次 AI 分析仍在执行中，请稍候（请勿重复点击），完成后可重新触发' } });
     }
     aiLocks.set('explainStandardDiff', true);
     try {
       const params = sanitize(rawParams);
+      log.info(`[ai:explainStandardDiff] 已接收解读请求: base=${String(params.baseStandard || '').slice(0, 60)} | target=${String(params.targetStandard || '').slice(0, 60)} | rows=${Array.isArray(params.rows) ? params.rows.length : 0}`);
       const baseStandard = String(params.baseStandard || '').trim();
       const targetStandard = String(params.targetStandard || '').trim();
       const stats = params.stats || {};
@@ -2987,7 +3138,7 @@ export function registerAIHandlers(): void {
             model: ep.model,
             messages: [
               { role: 'system', content: '你是一名精通网络安全等级保护标准体系的测评专家，擅长标准差异解读与合规影响分析。请严格按照要求的 JSON 格式返回。' },
-              { role: 'user', content: userPrompt },
+              { role: 'user', content: userPrompt + STRICT_JSON_HINT },
             ],
             temperature: config.temperature ?? 0.3,
           }),
@@ -3043,11 +3194,13 @@ export function registerAIHandlers(): void {
   ipcMain.handle('ai:standardComplianceGap', async (_e, rawParams: any) => {
     // 并发防护：同通道串行，避免连续触发造成重复请求/结果覆盖
     if (aiLocks.get('standardComplianceGap')) {
+      log.warn('[ai:standardComplianceGap] 并发拒绝：上一次分析仍在执行中');
       return sanitize({ success: false, error: { code: 'AI_BUSY', message: '上一次 AI 分析仍在执行中，请稍候（请勿重复点击），完成后可重新触发' } });
     }
     aiLocks.set('standardComplianceGap', true);
     try {
       const params = sanitize(rawParams);
+      log.info(`[ai:standardComplianceGap] 已接收分析请求: projectId=${String(params.projectId || '').slice(0, 40)} | standardId=${String(params.standardId || '').slice(0, 40)} | precomputed=${params.precomputed ? 'yes' : 'no'}`);
       const projectId = String(params.projectId || '').trim();
       const standardId = String(params.standardId || '').trim();
       if (!projectId) throw new Error('缺少项目 ID');
@@ -3121,7 +3274,7 @@ export function registerAIHandlers(): void {
             model: ep.model,
             messages: [
               { role: 'system', content: '你是一名专业的等级保护测评师，擅长合规差距分析与整改优先级评估。请严格按照要求的 JSON 格式返回。' },
-              { role: 'user', content: userPrompt },
+              { role: 'user', content: userPrompt + STRICT_JSON_HINT },
             ],
             temperature: config.temperature ?? 0.3,
           }),

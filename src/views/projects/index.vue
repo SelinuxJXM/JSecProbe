@@ -52,7 +52,7 @@
       </div>
 
       <!-- 数据表格 -->
-      <div class="table-wrapper">
+      <div class="table-wrapper" v-loading="loading" element-loading-text="正在加载项目列表...">
         <table class="data-table">
           <thead>
             <tr>
@@ -135,6 +135,15 @@
                 <button class="action-btn delete" @click.stop="handleDelete(row)" title="删除">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                 </button>
+              </td>
+            </tr>
+          </tbody>
+          <tbody v-if="!loading && projectList.length === 0">
+            <tr>
+              <td colspan="11" class="empty-cell">
+                <el-empty description="暂无项目">
+                  <el-button type="primary" @click="addEmptyRow">新建第一个项目</el-button>
+                </el-empty>
               </td>
             </tr>
           </tbody>
@@ -627,8 +636,8 @@ onUnmounted(() => {
 .status-floating-dropdown {
   position: fixed;
   z-index: 9999;
-  background: #fff;
-  border: 1px solid #E5E7EB;
+  background: var(--color-bg-card, #fff);
+  border: 1px solid var(--color-border-base, #E2E6ED);
   border-radius: 6px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
   padding: 4px;
@@ -643,7 +652,7 @@ onUnmounted(() => {
     transition: background 0.1s;
 
     &:hover {
-      background: #F3F4F6;
+      background: var(--color-bg-hover, #F0F4F9);
     }
 
     &.active {
@@ -795,6 +804,11 @@ onUnmounted(() => {
 
 .table-wrapper {
   overflow-x: auto;
+
+  .empty-cell {
+    padding: 48px 0;
+    text-align: center;
+  }
 
   .data-table {
     width: 100%;

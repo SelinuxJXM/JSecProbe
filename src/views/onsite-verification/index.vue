@@ -225,7 +225,7 @@
         </div>
 
         <!-- Excel表格 -->
-        <div class="table-container" @click="tableCellSelection.handleTableContainerClick($event)">
+        <div class="table-container" v-loading="pageLoading" element-loading-text="正在加载测评数据..." @click="tableCellSelection.handleTableContainerClick($event)">
           <table class="excel-table">
             <colgroup>
               <col style="width: 130px">
@@ -275,6 +275,16 @@
                   <button class="action-btn ai" @click.stop="aiAnalysisRef?.aiAnalyze(row)" title="AI分析此行">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/><path d="M16 14H8a6 6 0 0 0-6 6v1h20v-1a6 6 0 0 0-6-6z"/></svg>
                   </button>
+                </td>
+              </tr>
+            </tbody>
+            <tbody v-if="!pageLoading && tableRows.length === 0">
+              <tr>
+                <td colspan="6" class="empty-cell">
+                  <el-empty v-if="!hasAnyAsset" description="项目还没有测评资产，请先在「系统构成」中录入">
+                    <el-button type="primary" @click="goToPhase('assets')">前往系统构成</el-button>
+                  </el-empty>
+                  <el-empty v-else description="当前对象暂无测评项，请在左侧选择其他测评对象" />
                 </td>
               </tr>
             </tbody>
@@ -352,6 +362,8 @@ const router = useRouter();
 
 // ==================== 核心状态 ====================
 const project = ref<any>(null);
+// 页面初始加载状态（项目/标准域/资产树全部就绪前显示表格加载遮罩）
+const pageLoading = ref(true);
 const treeSearch = ref('');
 const expandedDomains = ref<string[]>([]);
 
@@ -482,6 +494,11 @@ const sectionTitle = computed(() => {
   }
   return '请选择测评对象';
 });
+
+// 项目是否已有任意测评资产（空态引导用）
+const hasAnyAsset = computed(() =>
+  treeData.value.some((d: any) => d.children && d.children.length > 0)
+);
 
 // 表格数据
 const tableRows = ref<any[]>([]);
@@ -1245,10 +1262,14 @@ const handleBeforeUnload = (e: BeforeUnloadEvent) => {
 let removeAnalysisProgress: (() => void) | undefined;
 
 onMounted(async () => {
-  await loadProject();
-  await loadStandardDomains();
-  await loadAssetTree();
-  await loadProgress();
+  try {
+    await loadProject();
+    await loadStandardDomains();
+    await loadAssetTree();
+    await loadProgress();
+  } finally {
+    pageLoading.value = false;
+  }
   clipboardHandler.setupGlobalPasteHandler();
 
   removeAnalysisProgress = window.api?.ai.onAnalysisProgress((data: any) => {
@@ -1957,8 +1978,13 @@ onUpdated(() => {
   flex: 1;
   overflow: auto;
   padding: 0;
-  border: 1px solid #D1D5DB;
+  border: 1px solid var(--color-border-base, #D1D5DB);
   background: var(--color-bg-card);
+
+  .empty-cell {
+    padding: 48px 0;
+    text-align: center;
+  }
 }
 
 // Excel表格

@@ -155,9 +155,31 @@ async function calcProjectProgress(projectId: string): Promise<number> {
   }
 }
 
+/**
+ * 校准全部项目的 assetCount 冗余字段。
+ * 该字段此前仅在备份恢复时写入，日常增删资产从不更新，导致列表/仪表盘统计漂移。
+ * 采用单条 UPDATE 子查询按 assets 表实际计数回写，项目列表每次加载时调用一次。
+ */
+export async function recalculateProjectAssetCounts(): Promise<void> {
+  try {
+    const db = getDb();
+    await db.run(sql`
+      UPDATE projects
+      SET asset_count = (
+        SELECT COUNT(*) FROM assets
+        WHERE assets.project_id = projects.id AND assets.is_assessment_target = 1
+      )
+    `);
+  } catch (error) {
+    log.warn('校准项目资产数失败:', error);
+  }
+}
+
 export function registerProjectHandlers(): void {
   ipcMain.handle('project:list', wrap(async (_event, params: ProjectListParams) => {
       const db = getDb();
+      // 每次列表加载前校准 assetCount 冗余字段，杜绝与 assets 表漂移
+      await recalculateProjectAssetCounts();
       const { page = 1, pageSize = 20, keyword, status, level, excludeArchived } = params;
 
       const conditions = [];

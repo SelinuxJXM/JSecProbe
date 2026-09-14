@@ -6,8 +6,10 @@
  * 2. --primary-color 别名（AI 助手聊天 UI 等处引用）
  * 3. --el-color-primary 系列（Element Plus 组件：按钮、开关、单选框、菜单高亮等）
  *
- * 派生色由主题色实时计算得出，与明暗主题无关（明暗主题的默认值仅在没有
- * 用户自定义色时生效）。
+ * 派生色由主题色实时计算得出，并感知当前明暗模式：浅色模式 light-N 向白色混合，
+ * 深色模式改向深色底（#141414，与 Element Plus 深色派生一致）混合。
+ * 若忽略明暗，内联 style 优先级最高，会把浅色 light-N 强压到深色模式之上，
+ * 导致深色界面出现米白色信息块（html.dark / html[data-theme="dark"] 均无法覆盖）。
  */
 
 const STORAGE_KEY = 'primaryColor';
@@ -97,6 +99,11 @@ function withAlpha({ r, g, b }: Rgb, alpha: number): string {
   return `rgba(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}, ${alpha})`;
 }
 
+/** 当前是否处于深色模式（html 的 dark class 与 data-theme 属性总是同步切换） */
+function isDarkMode(): boolean {
+  return document.documentElement.classList.contains('dark');
+}
+
 export function applyPrimaryColor(color: string): boolean {
   const rgb = parseColor(color);
   if (!rgb) return false;
@@ -104,6 +111,9 @@ export function applyPrimaryColor(color: string): boolean {
   const white: Rgb = { r: 255, g: 255, b: 255 };
   const black: Rgb = { r: 0, g: 0, b: 0 };
   const html = document.documentElement;
+  // light-N 的混合目标随明暗模式切换：深色模式向 EP 深色底 #141414 混合，
+  // 保证信息条/浅底背景在深色界面下仍是深色；hover 保持提亮（深/浅色反馈一致）
+  const tintTarget: Rgb = isDarkMode() ? { r: 0x14, g: 0x14, b: 0x14 } : white;
 
   html.style.setProperty('--primary-color', base);
   html.style.setProperty('--color-primary', base);
@@ -115,17 +125,23 @@ export function applyPrimaryColor(color: string): boolean {
   html.style.setProperty('--color-bg-active', withAlpha(rgb, 0.12));
 
   html.style.setProperty('--el-color-primary', base);
-  html.style.setProperty('--el-color-primary-light-3', mix(rgb, white, 0.3));
-  html.style.setProperty('--el-color-primary-light-5', mix(rgb, white, 0.5));
-  html.style.setProperty('--el-color-primary-light-7', mix(rgb, white, 0.7));
-  html.style.setProperty('--el-color-primary-light-8', mix(rgb, white, 0.8));
-  html.style.setProperty('--el-color-primary-light-9', mix(rgb, white, 0.9));
+  html.style.setProperty('--el-color-primary-light-3', mix(rgb, tintTarget, 0.3));
+  html.style.setProperty('--el-color-primary-light-5', mix(rgb, tintTarget, 0.5));
+  html.style.setProperty('--el-color-primary-light-7', mix(rgb, tintTarget, 0.7));
+  html.style.setProperty('--el-color-primary-light-8', mix(rgb, tintTarget, 0.8));
+  html.style.setProperty('--el-color-primary-light-9', mix(rgb, tintTarget, 0.9));
   html.style.setProperty('--el-color-primary-dark-2', mix(rgb, black, 0.2));
   return true;
 }
 
 /** 启动时调用：恢复用户保存的主题色 */
 export function restorePrimaryColor(): void {
+  const saved = getSavedPrimaryColor();
+  if (saved) applyPrimaryColor(saved);
+}
+
+/** 明暗主题切换时调用：派生色依赖当前模式，需按新深浅底重新计算自定义主题色 */
+export function reapplyPrimaryColor(): void {
   const saved = getSavedPrimaryColor();
   if (saved) applyPrimaryColor(saved);
 }

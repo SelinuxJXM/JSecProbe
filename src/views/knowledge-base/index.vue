@@ -1002,7 +1002,7 @@ async function handleAiAsk() {
   aiQaDocs.value = [];
   aiQaModel.value = '';
   try {
-    const res = await window.api.ai.searchKnowledge(q);
+    const res = await window.api.ai.searchKnowledge({ question: q });
     if (res.success && res.data) {
       aiQaAnswer.value = res.data.content;
       aiQaDocs.value = res.data.referencedDocs || [];

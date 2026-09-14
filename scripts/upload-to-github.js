@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.2.9'; // 版本号由 package.json 动态获取
+const TAG = 'v2.3.0'; // 版本号由 package.json 动态获取
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,17 +57,23 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.2.9 更新内容
+    body: `## v2.3.0 更新内容
 
 ### 新增功能
-- 工作台新增「AI 洞察」：自动汇总全量项目统计，内置 5 条确定性预警规则（冷项目、逾期整改、高风险未处置等，窗口扩至近 6 个月），结合 AI 生成洞察、建议与可执行行动项
-- 标准管理新增「AI 三件套」：合规统计（10 大安全域分布/覆盖率/合规率）、AI 分析差距、AI 解读标准版本差异，三者互斥锁防重复触发，操作日志自动记录当前操作者身份
-- 系统构成「AI 资产识别」支持图片与文档附件：截图/拓扑图走多模态通道（隐私模式自动 OCR 脱敏），PDF/Word/Excel 自动提取文本，OCR 预处理跟随系统配置开关
-- 产品白皮书（docs/docs.html）同步更新 5 项 AI 功能说明，目录扩展为可折叠二级目录树
+- 标准库管理「合规差距」全面改造：子标签页式视图，合规率进度条按实际整改完成度实时显示；对照视图以第一性用户视角完成交互重设计
+- 现场核查右侧推荐升级为「推荐核查方法」：AI 输出核查/访谈/测试三类完整方法（步骤 + 命令 + 依据），与既有设备命令库推荐并行互补
+
+### 缺陷修复
+- 修复对照视图「AI 解读差异」报 "An object could not be cloned" 及非标准 JSON 返回"格式异常/解析失败"的问题（结构化克隆兼容 + repairAiJson 容错修复 + 严格 JSON 提示词）
+- 修复知识库 AI 智能提问误报"问题不能为空"的问题（IPC 参数序列化修正）
+- 修复系统构成「AI 资产识别」对任意无效输入（如随意字符）误产出资产结果的问题，输入有效性校验增强
+- 修复项目资产数（assetCount）与实际资产表长期漂移的问题：项目列表每次加载自动校准
+- 修复深色模式下 AI 建议信息块显示浅底色的问题：主题色派生 light-* 在深色模式改向 #141414 混合，深浅切换时实时重算
 
 ### 优化
-- 合规差距分析前强制重算统计，消除数据漂移风险
-- 重复点击 AI 按钮时的 busy 提示文案明确化，防止误以为无响应`,
+- 设置页组件化拆分：标准库管理抽出为独立 StandardsTab 组件，主文件瘦身约 1700 行
+- 报告配置、AI 助手、项目列表等页面硬编码色值批量替换为 CSS 变量，统一适配深浅主题
+- 项目列表新增加载中与空数据状态提示`,
     draft: false,
     prerelease: false,
   });

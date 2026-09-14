@@ -664,8 +664,18 @@ export interface ApiBridge {
     analyzeIssue: (params: { issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; projectId?: string; itemId?: string }) => Promise<IpcResponse<{ content: string }>>;
     analyzeIssueDescription: (params: { issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; projectId?: string; itemId?: string }) => Promise<IpcResponse<{ content: string }>>;
     batchAnalyzeIssues: (params: { issues: Array<{ issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; itemId?: string }>; projectId?: string }) => Promise<IpcResponse<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }> }>>;
-    searchKnowledge: (question: string) => Promise<IpcResponse<{ content: string; modelName?: string; referencedDocs: Array<{ id: string; title: string }> }>>;
-    recommendCommands: (params: { controlPoint?: string; controlName?: string; requirement?: string; assetLabel?: string; brand?: string; os?: string; deviceType?: string }) => Promise<IpcResponse<{ commands: Array<Record<string, any> & { reason?: string }> }>>;
+    searchKnowledge: (params: { question: string }) => Promise<IpcResponse<{ content: string; modelName?: string; referencedDocs: Array<{ id: string; title: string }> }>>;
+    recommendCommands: (params: { controlPoint?: string; controlName?: string; requirement?: string; assetLabel?: string; brand?: string; os?: string; deviceType?: string }) => Promise<IpcResponse<{
+      commands: Array<Record<string, any> & { reason?: string; source?: 'library' }>;
+      aiMethods: Array<{
+        type: 'check' | 'interview' | 'test';
+        title: string;
+        steps: string[];
+        commands: Array<{ name: string; command: string; os: string; brand: string }>;
+        reason: string;
+        source: 'ai';
+      }>;
+    }>>;
     identifyAssets: (params: { projectId?: string; systemName?: string; description?: string; imagePaths?: string[]; documents?: string[]; ocrPreprocess?: boolean }) => Promise<IpcResponse<{ assets: Array<Record<string, any>> }>>;
     checkMissingAssets: (params: { projectId?: string; systemName?: string }) => Promise<IpcResponse<{ missing: Array<{ category: string; risk: string; suggestion: string }> }>>;
     dashboardInsight: () => Promise<IpcResponse<{

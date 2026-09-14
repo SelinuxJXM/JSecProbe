@@ -541,16 +541,6 @@ async function runAiInsight() {
   aiInsightLoading.value = true;
   aiInsightError.value = '';
   try {
-    const cfgRes = await window.api.ai.getConfig();
-    if (cfgRes.success && cfgRes.data) {
-      const cfg: any = cfgRes.data;
-      const hasKey = !!(cfg.apiKey && cfg.apiBase && cfg.model);
-      const hasLocal = cfg.mode === 'local' && !!(cfg.localEngine);
-      if (!hasKey && !hasLocal) {
-        aiInsightError.value = '尚未配置 AI 服务，请前往「系统设置 → AI 服务」完成配置后再试';
-        return;
-      }
-    }
     const res = await window.api.ai.dashboardInsight();
     if (res.success && res.data) {
       aiInsightData.value = res.data;

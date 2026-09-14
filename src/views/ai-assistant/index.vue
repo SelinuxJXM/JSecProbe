@@ -2380,7 +2380,7 @@ onActivated(() => {
     background: rgba(0, 0, 0, 0.05);
     border-radius: 2px;
     font-size: 11px;
-    color: #666;
+    color: var(--color-text-secondary, #666);
     word-break: break-all;
     white-space: pre-wrap;
   }
@@ -2512,7 +2512,7 @@ onActivated(() => {
   padding: 0.3em 0.8em;
   border-left: 3px solid #409eff;
   background: rgba(64, 158, 255, 0.05);
-  color: #666;
+  color: var(--color-text-secondary, #666);
   font-size: 0.9em;
 }
 

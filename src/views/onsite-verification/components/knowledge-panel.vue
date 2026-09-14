@@ -43,7 +43,7 @@
     <div v-if="knowledgeTab === 'command' && matchedIndustry" class="industry-hint" :title="`当前标准行业：${matchedIndustry}，命令列表已自动包含「行业专属」与「通用命令」`">
       🎯 已按项目行业筛选：<b>{{ matchedIndustry }}</b>
     </div>
-    <!-- AI 智能推荐命令入口 -->
+    <!-- AI 智能推荐核查方法入口 -->
     <button
       v-if="knowledgeTab === 'command'"
       class="ai-recommend-btn"
@@ -53,7 +53,7 @@
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z" />
       </svg>
-      {{ aiRecommendLoading ? 'AI 分析中...' : 'AI 智能推荐命令' }}
+      {{ aiRecommendLoading ? 'AI 分析中...' : 'AI 智能推荐核查方法' }}
     </button>
     <div class="knowledge-list">
       <!-- 核查命令卡片 -->
@@ -126,29 +126,77 @@
     <!-- 文件预览对话框 -->
     <FilePreviewDialog ref="previewDialogRef" />
 
-    <!-- AI 推荐命令结果对话框 -->
+    <!-- AI 推荐核查方法结果对话框 -->
     <el-dialog
       v-model="aiRecommendVisible"
-      title="AI 智能推荐核查命令"
-      width="540px"
+      title="AI 智能推荐核查方法"
+      width="560px"
       append-to-body
       :close-on-click-modal="false"
     >
       <div v-if="aiRecommendLoading" class="ai-rc-loading">
         <div class="ai-rc-spinner"></div>
-        <span>正在根据测评项与资产信息匹配命令...</span>
+        <span>正在根据测评项与资产信息匹配核查方法与命令...</span>
       </div>
       <template v-else>
-        <div v-if="aiRecommendResults.length === 0" class="ai-rc-empty">未获得推荐结果</div>
-        <div v-else class="ai-rc-list">
-          <div v-for="item in aiRecommendResults" :key="item.id" class="ai-rc-item">
-            <div class="ai-rc-item-head">
-              <span class="ai-rc-name">{{ item.name }}</span>
-              <button class="ai-rc-quote" @click="quoteRecommended(item)">引用</button>
+        <div
+          v-if="aiRecommendResults.length === 0 && aiRecommendMethods.length === 0"
+          class="ai-rc-empty"
+        >未获得推荐结果</div>
+        <div v-else class="ai-rc-body">
+          <template v-if="aiRecommendResults.length > 0">
+            <div class="ai-rc-section-title">命令库推荐</div>
+            <div class="ai-rc-list">
+              <div v-for="item in aiRecommendResults" :key="item.id" class="ai-rc-item">
+                <div class="ai-rc-item-head">
+                  <span class="ai-rc-name">{{ item.name }}</span>
+                  <button class="ai-rc-quote" @click="quoteRecommended(item)">引用</button>
+                </div>
+                <div class="ai-rc-code">{{ item.command }}</div>
+                <div v-if="item.reason" class="ai-rc-reason">{{ item.reason }}</div>
+              </div>
             </div>
-            <div class="ai-rc-code">{{ item.command }}</div>
-            <div v-if="item.reason" class="ai-rc-reason">{{ item.reason }}</div>
-          </div>
+          </template>
+          <template v-if="aiRecommendMethods.length > 0">
+            <div class="ai-rc-section-title">
+              AI 补充核查方法
+              <span class="ai-rc-ai-hint">命令库未覆盖部分由 AI 生成，请人工核实后使用</span>
+            </div>
+            <div class="ai-rc-list">
+              <div v-for="(m, mi) in aiRecommendMethods" :key="mi" class="ai-rc-item ai-method-item">
+                <div class="ai-rc-item-head">
+                  <span class="ai-method-title">
+                    <span class="ai-method-type" :class="`type-${m.type}`">{{ methodTypeLabel(m.type) }}</span>
+                    {{ m.title }}
+                  </span>
+                </div>
+                <ol v-if="m.steps && m.steps.length" class="ai-method-steps">
+                  <li v-for="(s, si) in m.steps" :key="si">{{ s }}</li>
+                </ol>
+                <div v-for="(c, ci) in m.commands || []" :key="`cmd-${ci}`" class="ai-method-cmd">
+                  <div class="ai-method-cmd-head">
+                    <span class="ai-method-cmd-name">
+                      {{ c.name || '核查命令' }}
+                      <span class="ai-gen-badge">AI 生成</span>
+                    </span>
+                    <span class="ai-method-cmd-actions">
+                      <button class="ai-rc-quote" @click="quoteAiCommand(m, c)">引用</button>
+                      <button
+                        class="ai-rc-save"
+                        :class="{ saved: savedAiCommands.has(`${mi}-${ci}`) }"
+                        :disabled="savedAiCommands.has(`${mi}-${ci}`)"
+                        @click="saveAiCommand(m, c, mi, ci)"
+                      >
+                        {{ savedAiCommands.has(`${mi}-${ci}`) ? '已存库' : '存入命令库' }}
+                      </button>
+                    </span>
+                  </div>
+                  <div class="ai-rc-code">{{ c.command }}</div>
+                </div>
+                <div v-if="m.reason" class="ai-rc-reason">{{ m.reason }}</div>
+              </div>
+            </div>
+          </template>
         </div>
       </template>
     </el-dialog>
@@ -315,10 +363,17 @@ function handleQuoteCommand(cmd: CommandItem) {
   emit('quote', cmd);
 }
 
-// AI 智能推荐命令
+// AI 智能推荐核查方法
 const aiRecommendVisible = ref(false);
 const aiRecommendLoading = ref(false);
 const aiRecommendResults = ref<any[]>([]);
+const aiRecommendMethods = ref<any[]>([]);
+const savedAiCommands = ref<Set<string>>(new Set());
+
+// 核查方法类型中文标签
+function methodTypeLabel(type: string) {
+  return type === 'interview' ? '访谈' : type === 'test' ? '测试' : '检查';
+}
 
 // 组装推荐参数：当前测评行（控制点/测评项内容）+ 当前资产（品牌/系统/设备类型）
 function buildRecommendParams() {
@@ -348,11 +403,16 @@ async function openAiRecommend() {
   aiRecommendVisible.value = true;
   aiRecommendLoading.value = true;
   aiRecommendResults.value = [];
+  aiRecommendMethods.value = [];
+  savedAiCommands.value = new Set();
   try {
     const res = await window.api.ai.recommendCommands(params);
     if (res.success && res.data) {
       aiRecommendResults.value = res.data.commands || [];
-      if (aiRecommendResults.value.length === 0) ElMessage.info('AI 未推荐匹配的命令');
+      aiRecommendMethods.value = res.data.aiMethods || [];
+      if (aiRecommendResults.value.length === 0 && aiRecommendMethods.value.length === 0) {
+        ElMessage.info('AI 未返回可用的核查方法或命令');
+      }
     } else {
       ElMessage.error(res.error?.message || 'AI 推荐失败');
     }
@@ -378,6 +438,56 @@ function quoteRecommended(item: any) {
     industry: item.industry || '',
   });
   aiRecommendVisible.value = false;
+}
+
+// 引用 AI 生成的命令（同一方法下可能有多条命令，弹窗保持打开便于连续引用）
+function quoteAiCommand(m: any, c: any) {
+  if (props.tableRows.length === 0) {
+    ElMessage.warning('无可用行');
+    return;
+  }
+  emit('quote', {
+    id: `ai-gen-${Date.now()}`,
+    title: c.name || m.title || '',
+    command: c.command || '',
+    content: `AI 生成命令（核查方法：${m.title || ''}），使用前请人工核实`,
+    target: '',
+    os: c.os || '',
+    brand: c.brand || '',
+    category: '',
+    subCategory: '',
+    industry: '',
+  });
+}
+
+// 将 AI 生成的命令存入本地命令库，便于沉淀复用
+async function saveAiCommand(m: any, c: any, mi: number, ci: number) {
+  if (!window.api) return;
+  const key = `${mi}-${ci}`;
+  if (savedAiCommands.value.has(key)) return;
+  try {
+    const res = await window.api.knowledge.createCommand({
+      name: (c.name || m.title || 'AI生成核查命令').slice(0, 100),
+      target: '',
+      command: c.command || '',
+      description: `AI 生成（核查方法：${m.title || ''}），使用前请人工核实`,
+      os: c.os || '',
+      brand: c.brand || '',
+      deviceType: '',
+      category: '',
+      subCategory: '',
+      industry: '',
+    });
+    if (res.success) {
+      savedAiCommands.value.add(key);
+      ElMessage.success('已存入命令库');
+      if (knowledgeTab.value === 'command') loadKnowledgeBase();
+    } else {
+      ElMessage.error(res.error?.message || '存入命令库失败');
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || '存入命令库失败');
+  }
 }
 
 // 初始化加载
@@ -936,6 +1046,133 @@ loadKnowledgeBase();
 
 .ai-rc-reason::before {
   content: '💡 ';
+}
+
+/* AI 核查方法分组渲染 */
+.ai-rc-body .ai-rc-list {
+  margin-bottom: 4px;
+}
+
+.ai-rc-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 14px 0 8px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--color-border-light, #f0f0f3);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary, #4b5563);
+}
+
+.ai-rc-body .ai-rc-section-title:first-child {
+  margin-top: 0;
+}
+
+.ai-rc-ai-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: #d97706;
+}
+
+.ai-method-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary, #111827);
+}
+
+.ai-method-type {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.ai-method-type.type-check {
+  color: var(--color-primary, #1b5fd9);
+  background: var(--color-primary-light, rgba(27, 95, 217, 0.08));
+}
+
+.ai-method-type.type-interview {
+  color: #059669;
+  background: rgba(5, 150, 105, 0.1);
+}
+
+.ai-method-type.type-test {
+  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.1);
+}
+
+.ai-method-steps {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary, #4b5563);
+}
+
+.ai-method-cmd {
+  margin-top: 8px;
+}
+
+.ai-method-cmd-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.ai-method-cmd-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-text-primary, #111827);
+}
+
+.ai-gen-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: #d97706;
+  background: rgba(217, 119, 6, 0.1);
+  border: 1px dashed rgba(217, 119, 6, 0.45);
+}
+
+.ai-method-cmd-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ai-rc-save {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--color-primary, #1b5fd9);
+  background: transparent;
+  color: var(--color-primary, #1b5fd9);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ai-rc-save:hover:not(:disabled) {
+  background: var(--color-primary-light, rgba(27, 95, 217, 0.06));
+}
+
+.ai-rc-save.saved {
+  border-color: var(--color-border-default, #e5e7eb);
+  color: var(--color-text-tertiary, #9ca3af);
+  cursor: not-allowed;
 }
 
 /* AI 推荐对话框深色主题 */

@@ -431,7 +431,7 @@
     <!-- AI 资产识别对话框 -->
     <el-dialog v-model="aiIdentifyVisible" title="AI 资产识别" width="720px" :close-on-click-modal="false" append-to-body>
       <div v-if="aiIdentifyResults.length === 0">
-        <div class="ai-tip">粘贴系统描述信息（如网络拓扑描述、建设方案节选、资产清单文字等），或添加图片/文档附件（截图、照片、拓扑图、PDF/Word/Excel 等），AI 将识别出应纳入测评范围的资产生成预览清单，勾选确认后导入系统构成。</div>
+        <div class="ai-tip">粘贴系统描述信息（如网络拓扑描述、建设方案节选、资产清单文字等），或添加图片/文档附件（截图、照片、拓扑图、PDF/Word/Excel 等），AI 将识别出应纳入测评范围的资产生成预览清单，勾选确认后导入系统构成。AI 仅提取您提供内容有明确依据的资产，不会凭经验猜测补充；若描述无实质内容将返回空清单。</div>
         <el-input
           v-model="aiIdentifyDescription"
           type="textarea"
@@ -496,18 +496,63 @@
           <el-button text type="primary" @click="aiIdentifyResults = []">重新识别</el-button>
         </div>
         <div class="ai-id-list">
-          <div v-for="(item, idx) in aiIdentifyResults" :key="idx" class="ai-id-item" :class="{ checked: item.selected }">
-            <el-checkbox v-model="item.selected" />
-            <el-select v-model="item.category" size="small" class="ai-id-cat" filterable>
-              <el-option v-for="cat in ASSET_CATEGORIES" :key="cat.id" :label="cat.name" :value="cat.id" />
-            </el-select>
-            <el-input v-model="item.name" size="small" class="ai-id-name" placeholder="资产名称" />
-            <el-select v-model="item.importance" size="small" class="ai-id-imp">
-              <el-option label="关键" value="high" />
-              <el-option label="重要" value="medium" />
-              <el-option label="一般" value="low" />
-            </el-select>
-            <span class="ai-id-usage" :title="item.deviceUsage">{{ item.deviceUsage || '—' }}</span>
+          <div v-for="(item, idx) in aiIdentifyResults" :key="idx" class="ai-id-item" :class="{ checked: item.selected, expanded: item.expanded }">
+            <div class="ai-id-row">
+              <el-checkbox v-model="item.selected" />
+              <el-select v-model="item.category" size="small" class="ai-id-cat" filterable>
+                <el-option v-for="cat in ASSET_CATEGORIES" :key="cat.id" :label="cat.name" :value="cat.id" />
+              </el-select>
+              <el-input v-model="item.name" size="small" class="ai-id-name" placeholder="资产名称" @click.stop />
+              <el-select v-model="item.importance" size="small" class="ai-id-imp">
+                <el-option label="关键" value="high" />
+                <el-option label="重要" value="medium" />
+                <el-option label="一般" value="low" />
+              </el-select>
+              <span class="ai-id-usage" :title="item.deviceUsage">{{ item.deviceUsage || '—' }}</span>
+              <el-button text size="small" class="ai-id-toggle" @click.stop="item.expanded = !item.expanded">
+                详情{{ item.expanded ? ' ▲' : ' ▼' }}
+              </el-button>
+            </div>
+            <div v-show="item.expanded" class="ai-id-detail">
+              <div class="ai-id-detail-grid">
+                <div class="ai-id-field">
+                  <label>操作系统</label>
+                  <el-input v-model="item.os" size="small" placeholder="如 Windows Server 2016 / CentOS 7.9" />
+                </div>
+                <div class="ai-id-field">
+                  <label>版本</label>
+                  <el-input v-model="item.version" size="small" placeholder="如 V3R5 / 11g" />
+                </div>
+                <div class="ai-id-field">
+                  <label>IP 地址</label>
+                  <el-input v-model="item.ip" size="small" placeholder="如 192.168.1.10 或 192.168.1.0/24" />
+                </div>
+                <div class="ai-id-field">
+                  <label>数量</label>
+                  <el-input-number v-model="item.quantity" size="small" :min="1" :max="999" />
+                </div>
+                <div class="ai-id-field">
+                  <label>虚拟设备</label>
+                  <el-switch v-model="item.isVirtual" size="small" />
+                </div>
+                <div class="ai-id-field">
+                  <label>数据库系统</label>
+                  <el-input v-model="item.dbSystem" size="small" placeholder="如 Oracle 11g（数据库类资产填写）" />
+                </div>
+                <div class="ai-id-field">
+                  <label>中间件</label>
+                  <el-input v-model="item.middleware" size="small" placeholder="如 Tomcat 9.0（承载中间件时填写）" />
+                </div>
+                <div class="ai-id-field ai-id-field-full">
+                  <label>用途说明</label>
+                  <el-input v-model="item.deviceUsage" size="small" placeholder="一句话说明资产用途" />
+                </div>
+                <div class="ai-id-field ai-id-field-full">
+                  <label>备注描述</label>
+                  <el-input v-model="item.description" type="textarea" :rows="2" maxlength="500" show-word-limit placeholder="补充说明信息" />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1084,7 +1129,9 @@ async function handleImportIdentified() {
           quantity: a.quantity || 1,
           ip: a.ip || '',
           importance: a.importance || 'medium',
-          isVirtual: false,
+          isVirtual: a.isVirtual === true,
+          dbSystem: a.dbSystem || '',
+          middleware: a.middleware || '',
           isAssessmentTarget: !isNonTargetCategory(a.category),
         });
       } catch {
@@ -1097,9 +1144,7 @@ async function handleImportIdentified() {
       ElMessage.success(`成功导入 ${selected.length} 个资产`);
     }
     aiIdentifyVisible.value = false;
-    if (selected.some(a => a.category === currentCategory.value)) {
-      loadAssets();
-    }
+    loadAssets();
   } finally {
     aiImportLoading.value = false;
   }
@@ -1980,8 +2025,8 @@ onUnmounted(() => {
 
   .ai-id-item {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    flex-direction: column;
+    gap: 6px;
     padding: 8px 10px;
     border: 1px solid var(--color-border-base);
     border-radius: 8px;
@@ -1990,6 +2035,12 @@ onUnmounted(() => {
     &.checked {
       background: rgba(139, 92, 246, 0.04);
       border-color: rgba(139, 92, 246, 0.35);
+    }
+
+    .ai-id-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
 
     .ai-id-cat {
@@ -2015,6 +2066,38 @@ onUnmounted(() => {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .ai-id-toggle {
+      flex-shrink: 0;
+      padding: 0 4px;
+      font-size: 12px;
+    }
+
+    .ai-id-detail {
+      padding: 8px 4px 2px;
+      border-top: 1px dashed var(--color-border-base);
+    }
+
+    .ai-id-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px 12px;
+    }
+
+    .ai-id-field {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+
+      label {
+        font-size: 12px;
+        color: var(--color-text-tertiary);
+      }
+
+      &.ai-id-field-full {
+        grid-column: 1 / -1;
+      }
     }
   }
 }

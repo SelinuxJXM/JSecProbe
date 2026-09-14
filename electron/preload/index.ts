@@ -29,7 +29,7 @@ const aiService = {
   analyzeIssueDescription: ipc<{ content: string }>('ai:analyzeIssueDescription'),
   batchAnalyzeIssues: ipc<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }> }>('ai:batchAnalyzeIssues'),
   searchKnowledge: ipc<{ content: string; modelName?: string; referencedDocs: Array<{ id: string; title: string }> }>('ai:searchKnowledge'),
-  recommendCommands: ipc<{ commands: any[] }>('ai:recommendCommands'),
+  recommendCommands: ipc<{ commands: any[]; aiMethods: any[] }>('ai:recommendCommands'),
   identifyAssets: ipc<{ assets: any[] }>('ai:identifyAssets'),
   checkMissingAssets: ipc<{ missing: any[] }>('ai:checkMissingAssets'),
   dashboardInsight: ipc<{
