@@ -56,16 +56,21 @@ async function main() {
       local: path.join(DIST_DIR, `JSecProbe Setup ${version}.exe`),
       remote: `JSecProbe-Setup-${version}.exe`,
       contentType: 'application/octet-stream',
+      cacheControl: 'public, max-age=31536000, immutable',
     },
     {
       local: path.join(DIST_DIR, `JSecProbe Setup ${version}.exe.blockmap`),
       remote: `JSecProbe-Setup-${version}.exe.blockmap`,
       contentType: 'application/json',
+      cacheControl: 'public, max-age=31536000, immutable',
     },
     {
+      // 更新元数据必须每次回源校验：不设 no-cache 会被 Cloudflare 边缘按默认 TTL 缓存，
+      // 版本覆盖后回退源客户端会长时间读到旧 latest.yml（v2.3.1 发布时实测复现）
       local: path.join(DIST_DIR, 'latest.yml'),
       remote: 'latest.yml',
       contentType: 'text/yaml',
+      cacheControl: 'no-cache',
     },
   ];
 
@@ -85,6 +90,7 @@ async function main() {
         Key: file.remote,
         Body: fileBuffer,
         ContentType: file.contentType,
+        CacheControl: file.cacheControl,
       }));
       console.log('✅');
     } catch (err) {
