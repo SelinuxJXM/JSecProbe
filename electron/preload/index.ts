@@ -28,6 +28,27 @@ const aiService = {
   analyzeIssue: ipc<{ content: string }>('ai:analyzeIssue'),
   analyzeIssueDescription: ipc<{ content: string }>('ai:analyzeIssueDescription'),
   batchAnalyzeIssues: ipc<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }> }>('ai:batchAnalyzeIssues'),
+  searchKnowledge: ipc<{ content: string; modelName?: string; referencedDocs: Array<{ id: string; title: string }> }>('ai:searchKnowledge'),
+  recommendCommands: ipc<{ commands: any[] }>('ai:recommendCommands'),
+  identifyAssets: ipc<{ assets: any[] }>('ai:identifyAssets'),
+  checkMissingAssets: ipc<{ missing: any[] }>('ai:checkMissingAssets'),
+  dashboardInsight: ipc<{
+    insight: string;
+    alerts: Array<{ key: string; severity: string; title: string; detail: string }>;
+    alertAdvices: Array<{ key: string; advice: string }>;
+  }>('ai:dashboardInsight'),
+  explainStandardDiff: ipc<{
+    summary: string;
+    keyDiffs: Array<{ domain: string; point: string; impact: string }>;
+    advice: string;
+  }>('ai:explainStandardDiff'),
+  standardComplianceGap: ipc<{
+    summary: string;
+    gaps: Array<{ domain: string; gap: string; risk: string; priority: string; suggestion: string }>;
+    domains: Array<Record<string, any>>;
+    nonCompliantSamples: Array<Record<string, any>>;
+    stats: Record<string, any>;
+  }>('ai:standardComplianceGap'),
   getConfig: ipc<any>('ai:getConfig'),
   saveConfig: ipc<void>('ai:saveConfig'),
   testConnection: ipc<any>('ai:testConnection'),
@@ -104,6 +125,7 @@ const api = {
     exportExcel: ipc<any>('standard:exportExcel'),
     downloadTemplate: ipc<any>('standard:downloadTemplate'),
     compare: ipc<any>('standard:compare'),
+    getComplianceStats: ipc<any>('standard:getComplianceStats'),
   },
   assessment: {
     getItems: ipc<any>('assessment:getItems'),

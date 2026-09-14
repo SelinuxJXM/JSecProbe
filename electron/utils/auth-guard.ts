@@ -27,13 +27,16 @@ export function requireAuth(event: IpcMainInvokeEvent): void {
     throw new Error("未授权：无法识别调用来源");
   }
   const url = frame.url || "";
-  const isPackaged = app.isPackaged;
-  const isTrusted = isPackaged
-    ? url.startsWith("file://") || url.startsWith("app://")
-    : url.startsWith("http://localhost") || url.startsWith("file://");
+  // dev 态判定与 main/index.ts 的窗口加载逻辑保持一致（NODE_ENV），不能只依赖
+  // app.isPackaged：IDE（本身是 Electron 应用）可能向子进程注入
+  // ELECTRON_FORCE_IS_PACKAGED=true，导致 dev 模式被误判为打包态而拒绝 localhost 来源
+  const isDev = !app.isPackaged || process.env.NODE_ENV === "development";
+  const isTrusted = isDev
+    ? url.startsWith("http://localhost") || url.startsWith("file://")
+    : url.startsWith("file://") || url.startsWith("app://");
 
   if (!isTrusted) {
-    logger.error("[auth-guard] 拒绝非受信来源的 IPC 调用", { url, isPackaged });
+    logger.error("[auth-guard] 拒绝非受信来源的 IPC 调用", { url, isPackaged: app.isPackaged });
     throw new Error("未授权：调用来源不受信任");
   }
 }

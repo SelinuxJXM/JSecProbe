@@ -40,6 +40,10 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
             保存修改
           </button>
+          <button v-if="activeTab === 'documents'" class="kb-btn kb-btn-ai" @click="openAiQa" title="基于知识库的 AI 智能问答">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg>
+            AI 问答
+          </button>
           <div v-if="activeTab === 'documents'" class="kb-search-box">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="kb-search-icon"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             <input v-model="searchKeyword" type="text" placeholder="搜索文档..." class="kb-search-input" @keyup.enter="handleSearch" @input="debounceSearch">
@@ -569,6 +573,37 @@
         删除分类
       </div>
     </div>
+
+    <!-- AI 智能问答对话框 -->
+    <el-dialog v-model="aiQaVisible" title="AI 智能问答" width="680px" :close-on-click-modal="false">
+      <div class="ai-qa-body">
+        <div class="ai-qa-input-row">
+          <el-input
+            v-model="aiQaQuestion"
+            type="textarea"
+            :rows="2"
+            maxlength="1000"
+            resize="none"
+            placeholder="输入问题，AI 将基于知识库文档回答，例如：等保三级对数据库审计的具体要求是什么？"
+            @keydown.enter.exact.prevent="handleAiAsk"
+          />
+          <el-button type="primary" :loading="aiQaLoading" @click="handleAiAsk">提问</el-button>
+        </div>
+        <div v-if="aiQaLoading" class="ai-qa-loading">
+          <div class="ai-qa-spinner"></div>
+          <span>正在检索知识库并生成回答...</span>
+        </div>
+        <div v-else-if="aiQaAnswer" class="ai-qa-answer">
+          <div class="ai-qa-answer-text">{{ aiQaAnswer }}</div>
+          <div v-if="aiQaDocs.length" class="ai-qa-docs">
+            <span class="ai-qa-docs-label">参考文档：</span>
+            <span v-for="d in aiQaDocs" :key="d.id" class="ai-qa-doc-tag" :title="d.title">{{ d.title }}</span>
+          </div>
+          <div v-if="aiQaModel" class="ai-qa-model">回答模型：{{ aiQaModel }}</div>
+        </div>
+        <div v-else class="ai-qa-empty">输入问题后点击「提问」，AI 将基于知识库文档内容生成回答</div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -659,6 +694,14 @@ const importGuideForm = reactive({
   version: 'V2.0',
   tags: '测评指导书,等级保护',
 });
+
+// AI 智能问答
+const aiQaVisible = ref(false);
+const aiQaQuestion = ref('');
+const aiQaLoading = ref(false);
+const aiQaAnswer = ref('');
+const aiQaDocs = ref<Array<{ id: string; title: string }>>([]);
+const aiQaModel = ref('');
 
 const sortField = ref('uploadDate');
 const sortOrder = ref('desc');
@@ -937,6 +980,41 @@ function debounceCommandSearch() {
 function handleSearch() {
   pagination.page = 1;
   loadDocuments();
+}
+
+// AI 智能问答：基于知识库文档回答问题
+function openAiQa() {
+  aiQaVisible.value = true;
+  aiQaAnswer.value = '';
+  aiQaDocs.value = [];
+  aiQaModel.value = '';
+}
+
+async function handleAiAsk() {
+  const q = aiQaQuestion.value.trim();
+  if (!q) {
+    ElMessage.warning('请输入问题');
+    return;
+  }
+  if (aiQaLoading.value) return;
+  aiQaLoading.value = true;
+  aiQaAnswer.value = '';
+  aiQaDocs.value = [];
+  aiQaModel.value = '';
+  try {
+    const res = await window.api.ai.searchKnowledge(q);
+    if (res.success && res.data) {
+      aiQaAnswer.value = res.data.content;
+      aiQaDocs.value = res.data.referencedDocs || [];
+      aiQaModel.value = res.data.modelName || '';
+    } else {
+      ElMessage.error(res.error?.message || 'AI 问答失败');
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || 'AI 问答失败');
+  } finally {
+    aiQaLoading.value = false;
+  }
 }
 
 async function loadCategories() {
@@ -2665,6 +2743,141 @@ $info-light: var(--color-primary-light);
     &:hover {
       background: var(--color-danger-light) !important;
     }
+  }
+}
+
+/* AI 智能问答 */
+.kb-btn-ai {
+  color: #7c3aed;
+  border-color: #c4b5fd;
+  background: rgba(124, 58, 237, 0.06);
+
+  &:hover {
+    color: #fff;
+    background: #7c3aed;
+    border-color: #7c3aed;
+  }
+}
+
+.ai-qa-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ai-qa-input-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+
+  .el-textarea {
+    flex: 1;
+  }
+}
+
+.ai-qa-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 36px 0;
+  color: var(--color-text-secondary, #4b5563);
+  font-size: 13px;
+}
+
+.ai-qa-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--color-border-light, #e5e7eb);
+  border-top-color: #7c3aed;
+  border-radius: 50%;
+  animation: ai-qa-spin 0.8s linear infinite;
+}
+
+@keyframes ai-qa-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ai-qa-answer {
+  border: 1px solid var(--color-border-light, #f0f0f3);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: var(--color-bg-page, #f9fafb);
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.ai-qa-answer-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--color-text-primary, #111827);
+}
+
+.ai-qa-docs {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--color-border-default, #e5e7eb);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-qa-docs-label {
+  font-size: 12px;
+  color: var(--color-text-tertiary, #9ca3af);
+}
+
+.ai-qa-doc-tag {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(124, 58, 237, 0.08);
+  color: #7c3aed;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-qa-model {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--color-text-tertiary, #9ca3af);
+}
+
+.ai-qa-empty {
+  padding: 24px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--color-text-tertiary, #9ca3af);
+}
+
+// AI 问答深色主题覆盖
+:root.dark {
+  .kb-btn-ai {
+    color: #a78bfa;
+    border-color: #6d28d9;
+    background: rgba(124, 58, 237, 0.12);
+
+    &:hover {
+      color: #fff;
+      background: #7c3aed;
+    }
+  }
+
+  .ai-qa-answer {
+    background: var(--color-bg-hover);
+    border-color: var(--color-border-base);
+  }
+
+  .ai-qa-doc-tag {
+    background: rgba(124, 58, 237, 0.2);
+    color: #c4b5fd;
   }
 }
 </style>

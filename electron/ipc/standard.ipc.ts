@@ -7,9 +7,12 @@ import { ASSET_CATEGORIES, SECURE_COMPUTING_ASSET_KEYS } from '../../shared/asse
 import { writeOperationLog } from '../utils/operation-log';
 import { randomUUID } from 'crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import log from 'electron-log';
 import ExcelJS from 'exceljs';
 import AdmZip from 'adm-zip';
+import { computeComplianceStats } from '../services/compliance-stats';
+import { getDbPath } from '../main/paths';
 import {
   PROBE_THEME,
   BORDER_MUTED,
@@ -39,6 +42,21 @@ const DOMAIN_NAMES: Record<string, { name: string; icon: string }> = {
 const DOMAIN_NAME_TO_ID: Record<string, string> = Object.fromEntries(
   Object.entries(DOMAIN_NAMES).map(([id, v]) => [v.name, id]),
 );
+
+// 获取当前操作者身份（用于操作日志溯源）
+// 单用户桌面应用：主进程把活动会话持久化到 session.json（与 AuthService 同一数据源），
+// 文件内已含 userId 与 username，直接读取即可，无需再查 users 表二次解析。
+function getCurrentOperator(): { username?: string; userId?: string } | null {
+  try {
+    const sessionFile = path.join(path.dirname(getDbPath()), 'session.json');
+    if (!fs.existsSync(sessionFile)) return null;
+    const raw = JSON.parse(fs.readFileSync(sessionFile, 'utf-8'));
+    if (!raw?.username) return null;
+    return { userId: raw.userId, username: raw.username };
+  } catch {
+    return null;
+  }
+}
 
 // 资产类型定义（与 src/views/onsite-verification/system-composition.vue CATEGORY_NAMES 对齐）
 // - key：落库键名（assessment_items.preset_by_type 的键、asset.category 的取值）
@@ -1969,6 +1987,41 @@ export function registerStandardHandlers(): void {
       content: outBuffer.toString('base64'),
       fileCount: fileBuffers.length,
       warnings: mergedWarnings.length ? mergedWarnings.slice(0, 200) : undefined,
+    };
+  }));
+
+  // ====== 项目合规差距统计（选定项目 × 选定标准，按安全域统计测评覆盖与符合情况）======
+  // 口径说明：
+  //   - 适用条目：standardId 下 minLevel ≤ 项目等级 ≤ maxLevel，且 extensionType 为 general 或与项目扩展类型一致
+  //   - 条目级判定：一条条目可能对应多资产多条记录，按"最不利"原则聚合：
+  //     任一资产不符合→不符合；任一部分符合→部分符合；有符合→符合；全部记录均为不适用→不适用；无已判定记录→未测评
+  //   - coverageRate = 已有判定的条目（含不适用）/ 适用条目总数；complianceRate = 符合 / (已判定 − 不适用)，分母为 0 时取 0
+  ipcMain.handle('standard:getComplianceStats', wrap(async (_event, params: { projectId?: string; standardId?: string }) => {
+    const db = getDb();
+    const projectId = String(params?.projectId || '').trim();
+    const standardId = String(params?.standardId || '').trim();
+    if (!projectId) throw new Error('缺少项目 ID');
+    if (!standardId) throw new Error('缺少标准 ID');
+
+    // 复用共享统计模块（与 ai:standardComplianceGap 统一口径 + 域名解析）
+    const stats = await computeComplianceStats(projectId, standardId);
+
+    const proj = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
+    const std = await db.query.standards.findFirst({ where: eq(schema.standards.id, standardId) });
+
+    const operator = getCurrentOperator();
+    await writeOperationLog({
+      action: 'getComplianceStats', module: 'standard', targetId: standardId,
+      description: `合规差距统计：项目 ${proj?.name || projectId} × 标准 ${std?.code || standardId}（适用条目 ${stats.summary.totalItems}，不符合 ${stats.summary.nonCompliant}）`,
+      ...(operator?.userId ? { userId: operator.userId, username: operator.username } : {}),
+    });
+
+    return {
+      project: { id: projectId, name: proj?.name || '', systemName: proj?.systemName || '', level: proj?.level, assessedUnit: proj?.assessedUnit || '' },
+      standard: { id: standardId, name: std?.name || '', code: std?.code || '', version: std?.version },
+      domains: stats.domains,
+      summary: stats.summary,
+      nonCompliantSamples: stats.nonCompliantSamples,
     };
   }));
 }

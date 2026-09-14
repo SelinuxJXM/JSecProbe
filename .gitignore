@@ -46,6 +46,7 @@ upload.ps1
 upload-release.ps1
 scripts/upload-release.js
 passwd.md
+项目提示词.txt
 
 # Local data directory
 JSecProbeData

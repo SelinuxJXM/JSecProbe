@@ -85,6 +85,9 @@ function validateOllamaUrl(url: string): { valid: boolean; error?: string } {
   }
 }
 
+// 导出给 Herdsman 等兼容引擎复用（校验逻辑与 Ollama 相同）
+export { validateOllamaUrl as validateLocalUrl };
+
 async function fetchOllama(url: string, endpoint: string, options?: RequestInit): Promise<any> {
   const validation = validateOllamaUrl(url);
   if (!validation.valid) {

@@ -167,6 +167,75 @@
         </div>
       </el-col>
     </el-row>
+
+    <!-- AI 工作台洞察卡片 -->
+    <el-row :gutter="16" class="content-row">
+      <el-col :span="24">
+        <div class="card p-md ai-insight-card">
+          <div class="card-header">
+            <span class="card-title">AI 工作台洞察</span>
+            <el-button
+              v-if="!aiInsightLoading && !aiInsightData"
+              type="primary"
+              size="small"
+              :disabled="aiInsightDisabled"
+              @click="runAiInsight"
+            >生成洞察</el-button>
+            <el-button
+              v-if="aiInsightLoading"
+              type="primary"
+              size="small"
+              loading
+            >生成中…</el-button>
+            <el-button
+              v-if="aiInsightData && !aiInsightLoading"
+              type="primary"
+              size="small"
+              link
+              @click="runAiInsight"
+            >重新生成</el-button>
+          </div>
+
+          <div v-if="aiInsightLoading" class="ai-insight-loading">
+            <el-skeleton :rows="4" animated />
+          </div>
+
+          <div v-else-if="aiInsightError" class="ai-insight-error">
+            <el-alert :title="aiInsightError" type="error" :closable="false" show-icon />
+          </div>
+
+          <div v-else-if="aiInsightData" class="ai-insight-body">
+            <div class="ai-insight-text" v-html="highlightInsight(aiInsightData.insight)" />
+            <div v-if="aiInsightData.alerts.length > 0" class="ai-alerts">
+              <div class="ai-alerts-title">异常预警（{{ aiInsightData.alerts.length }} 条）</div>
+              <div
+                v-for="alert in aiInsightData.alerts"
+                :key="alert.key"
+                class="ai-alert-item"
+                :class="`ai-alert-${alert.severity}`"
+              >
+                <el-tag :type="alert.severity === 'high' ? 'danger' : alert.severity === 'medium' ? 'warning' : 'info'" size="small">
+                  {{ alert.severity === 'high' ? '高' : alert.severity === 'medium' ? '中' : '低' }}
+                </el-tag>
+                <div class="ai-alert-content">
+                  <div class="ai-alert-title">{{ alert.title }}</div>
+                  <div class="ai-alert-detail">{{ alert.detail }}</div>
+                  <div v-if="getAlertAdvice(alert.key)" class="ai-alert-advice">
+                    <span class="ai-alert-advice-label">AI 建议：</span>{{ getAlertAdvice(alert.key) }}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-else class="ai-alerts-none">当前无命中异常预警</div>
+          </div>
+
+          <div v-else class="ai-insight-empty">
+            <el-empty description="点击「生成洞察」按钮，AI 将基于当前项目、问题数据为您生成总体态势分析与异常预警解读" :image-size="64" />
+          </div>
+        </div>
+      </el-col>
+    </el-row>
+
   </div>
 </template>
 
@@ -443,6 +512,75 @@ async function loadData() {
   }
 }
 
+// ===== AI 工作台洞察 =====
+interface AiInsightAlert {
+  key: string;
+  severity: string;
+  title: string;
+  detail: string;
+}
+interface AiInsightData {
+  insight: string;
+  alerts: AiInsightAlert[];
+  alertAdvices: Array<{ key: string; advice: string }>;
+}
+const aiInsightData = ref<AiInsightData | null>(null);
+const aiInsightLoading = ref(false);
+const aiInsightError = ref('');
+
+const aiInsightDisabled = computed(() => {
+  if (!window.api?.ai) return true;
+  return false;
+});
+
+async function runAiInsight() {
+  if (!window.api?.ai) {
+    aiInsightError.value = 'AI 通道未就绪，请检查窗口是否完整加载';
+    return;
+  }
+  aiInsightLoading.value = true;
+  aiInsightError.value = '';
+  try {
+    const cfgRes = await window.api.ai.getConfig();
+    if (cfgRes.success && cfgRes.data) {
+      const cfg: any = cfgRes.data;
+      const hasKey = !!(cfg.apiKey && cfg.apiBase && cfg.model);
+      const hasLocal = cfg.mode === 'local' && !!(cfg.localEngine);
+      if (!hasKey && !hasLocal) {
+        aiInsightError.value = '尚未配置 AI 服务，请前往「系统设置 → AI 服务」完成配置后再试';
+        return;
+      }
+    }
+    const res = await window.api.ai.dashboardInsight();
+    if (res.success && res.data) {
+      aiInsightData.value = res.data;
+    } else {
+      aiInsightError.value = res.error?.message || 'AI 生成洞察失败，请稍后重试';
+    }
+  } catch (err: any) {
+    aiInsightError.value = err?.message || 'AI 生成洞察失败，请稍后重试';
+  } finally {
+    aiInsightLoading.value = false;
+  }
+}
+
+function getAlertAdvice(key: string): string {
+  if (!aiInsightData.value) return '';
+  const found = aiInsightData.value.alertAdvices.find((a) => a.key === key);
+  return found ? found.advice : '';
+}
+
+function highlightInsight(text: string): string {
+  if (!text) return '';
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>');
+  html = html.replace(/(项目总数|进行中|已完成|草稿|已归档|高风险|中风险|低风险|问题总数|整改|归档|趋势|停滞)/g, '<strong>$1</strong>');
+  return html;
+}
+
 onMounted(loadData);
 </script>
 
@@ -593,5 +731,106 @@ onMounted(loadData);
 .chart {
   height: 260px;
   width: 100%;
+}
+
+/* ===== AI 洞察卡片 ===== */
+.ai-insight-card {
+  .ai-insight-loading {
+    padding: var(--spacing-md) 0;
+  }
+
+  .ai-insight-error {
+    margin: var(--spacing-sm) 0;
+  }
+
+  .ai-insight-body {
+    .ai-insight-text {
+      font-size: var(--font-size-sm);
+      color: var(--color-text-primary);
+      line-height: 1.8;
+      margin-bottom: var(--spacing-md);
+    }
+
+    .ai-alerts {
+      margin-top: var(--spacing-md);
+
+      .ai-alerts-title {
+        font-size: var(--font-size-sm);
+        font-weight: var(--font-weight-semibold);
+        color: var(--color-text-secondary);
+        margin-bottom: var(--spacing-sm);
+      }
+
+      .ai-alert-item {
+        display: flex;
+        align-items: flex-start;
+        gap: var(--spacing-sm);
+        padding: var(--spacing-sm) var(--spacing-md);
+        border-radius: var(--radius-sm);
+        margin-bottom: var(--spacing-xs);
+        border: 1px solid var(--color-border-light);
+
+        &.ai-alert-high {
+          background: var(--color-danger-light);
+          border-color: var(--color-danger-light);
+        }
+        &.ai-alert-medium {
+          background: var(--color-warning-light);
+          border-color: var(--color-warning-light);
+        }
+        &.ai-alert-low {
+          background: var(--color-info-light);
+          border-color: var(--color-info-light);
+        }
+
+        .el-tag {
+          flex-shrink: 0;
+          margin-top: 2px;
+        }
+
+        .ai-alert-content {
+          flex: 1;
+
+          .ai-alert-title {
+            font-size: var(--font-size-sm);
+            font-weight: var(--font-weight-semibold);
+            color: var(--color-text-primary);
+            margin-bottom: 2px;
+          }
+
+          .ai-alert-detail {
+            font-size: var(--font-size-xs);
+            color: var(--color-text-secondary);
+            line-height: 1.5;
+          }
+
+          .ai-alert-advice {
+            margin-top: var(--spacing-xs);
+            font-size: var(--font-size-xs);
+            color: var(--color-text-primary);
+            line-height: 1.5;
+            padding: var(--spacing-xs) var(--spacing-sm);
+            background: var(--color-bg-hover);
+            border-radius: var(--radius-sm);
+
+            .ai-alert-advice-label {
+              font-weight: var(--font-weight-semibold);
+              color: var(--color-primary);
+            }
+          }
+        }
+      }
+    }
+
+    .ai-alerts-none {
+      font-size: var(--font-size-sm);
+      color: var(--color-text-tertiary);
+      padding: var(--spacing-sm);
+    }
+  }
+
+  .ai-insight-empty {
+    padding: var(--spacing-md) 0;
+  }
 }
 </style>

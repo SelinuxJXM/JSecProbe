@@ -345,6 +345,9 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
       mode TEXT DEFAULT 'cloud',
       ollama_model TEXT,
       ollama_url TEXT DEFAULT 'http://localhost:11434',
+      local_engine TEXT DEFAULT 'ollama',
+      herdsman_url TEXT DEFAULT 'http://localhost:8080',
+      herdsman_model TEXT,
       ocr_preprocess INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       created_at TEXT NOT NULL
@@ -459,6 +462,18 @@ function migrateAiConfigsTable(sqlite: Database.Database): void {
     if (!columnNames.includes('proxy_url')) {
       sqlite.exec("ALTER TABLE ai_configs ADD COLUMN proxy_url TEXT");
       log.info('已添加 proxy_url 列到 ai_configs 表');
+    }
+    if (!columnNames.includes('local_engine')) {
+      sqlite.exec("ALTER TABLE ai_configs ADD COLUMN local_engine TEXT DEFAULT 'ollama'");
+      log.info('已添加 local_engine 列到 ai_configs 表');
+    }
+    if (!columnNames.includes('herdsman_url')) {
+      sqlite.exec("ALTER TABLE ai_configs ADD COLUMN herdsman_url TEXT DEFAULT 'http://localhost:8080'");
+      log.info('已添加 herdsman_url 列到 ai_configs 表');
+    }
+    if (!columnNames.includes('herdsman_model')) {
+      sqlite.exec('ALTER TABLE ai_configs ADD COLUMN herdsman_model TEXT');
+      log.info('已添加 herdsman_model 列到 ai_configs 表');
     }
 
     // 创建云端模型表

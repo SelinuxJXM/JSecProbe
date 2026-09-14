@@ -126,7 +126,7 @@
                 <span v-else>请先在设置中添加云端模型</span>
               </template>
               <template v-else>
-                {{ isConfigured ? `本地Ollama · ${aiSettings.ollamaModel}` : '请先在设置中选择本地模型' }}
+                {{ isConfigured ? `本地${localEngineLabel} · ${localEngineModel}` : '请先在设置中选择本地模型' }}
               </template>
             </div>
           </div>
@@ -245,7 +245,7 @@
             <ul>
               <li>已获得被测评单位的数据处理授权</li>
               <li>您配置的AI服务符合数据安全与隐私保护要求</li>
-              <li>对于等保三级及以上项目，建议使用本地部署的LLM（如Ollama、vLLM等）</li>
+              <li>对于等保三级及以上项目，建议使用本地部署的LLM（如Ollama、Herdsman、vLLM等）</li>
             </ul>
             <p class="compliance-notice-footer">如涉及敏感数据，建议开启下方的「隐私模式」（截图自动遮盖IP地址，文本自动脱敏处理）。</p>
           </div>
@@ -256,11 +256,11 @@
           <label class="setting-label"><span class="required">*</span>接入模式</label>
           <el-radio-group v-model="aiSettings.mode" size="default">
             <el-radio-button value="cloud">云端服务</el-radio-button>
-            <el-radio-button value="local">本地 Ollama</el-radio-button>
+            <el-radio-button value="local">本地部署</el-radio-button>
           </el-radio-group>
           <div class="setting-hint" style="margin-top: 8px;">
             <span v-if="aiSettings.mode === 'cloud'">使用云端AI服务（如OpenAI、Claude等），需要API Key和网络连接</span>
-            <span v-else>使用本地部署的Ollama运行大模型，数据不出本地，保护隐私安全</span>
+            <span v-else>使用本地部署的大模型引擎（Ollama / Herdsman）运行大模型，数据不出本地，保护隐私安全</span>
           </div>
         </div>
 
@@ -371,7 +371,7 @@
             />
             <div class="setting-hint" style="margin-top: 6px;">
               <template v-if="aiSettings.proxyMode === 'system'">
-                使用系统代理设置（如 Clash 开启系统代理模式后自动生效），本地 Ollama 请求不受影响。
+                使用系统代理设置（如 Clash 开启系统代理模式后自动生效），本地引擎（Ollama / Herdsman）请求不受影响。
               </template>
               <template v-else-if="aiSettings.proxyMode === 'manual'">
                 支持 HTTP/HTTPS/SOCKS5 代理，Clash 默认混合端口为 <code>7890</code>。仅云端模型请求走代理。
@@ -383,24 +383,37 @@
           </div>
         </template>
 
-        <!-- 本地Ollama模式配置 -->
+        <!-- 本地引擎模式配置（Ollama / Herdsman） -->
         <template v-else>
-          <!-- Ollama服务地址 -->
+          <!-- 本地引擎选择 -->
           <div class="setting-item">
-            <label class="setting-label"><span class="required">*</span>Ollama 服务地址</label>
+            <label class="setting-label"><span class="required">*</span>本地引擎</label>
+            <el-select v-model="aiSettings.localEngine" style="width: 100%;">
+              <el-option label="Ollama" value="ollama" />
+              <el-option label="Herdsman（牧马人）" value="herdsman" />
+            </el-select>
+            <div class="setting-hint" style="margin-top: 4px;">
+              Ollama 默认端口 11434；Herdsman 默认端口 8080。两种引擎可共存、随时切换，配置互不干扰。
+            </div>
+          </div>
+
+          <!-- 引擎服务地址 -->
+          <div class="setting-item">
+            <label class="setting-label"><span class="required">*</span>{{ localEngineLabel }} 服务地址</label>
             <el-input
-              v-model="aiSettings.ollamaUrl"
-              placeholder="http://localhost:11434"
+              v-model="localUrlModel"
+              :placeholder="isHerdsman ? 'http://localhost:8080' : 'http://localhost:11434'"
             />
             <div class="setting-hint" style="margin-top: 4px;">
-              Ollama 默认运行在 http://localhost:11434，如已修改请填写实际地址
+              <template v-if="isHerdsman">Herdsman 网关默认运行在 http://localhost:8080，如已修改请填写实际地址</template>
+              <template v-else>Ollama 默认运行在 http://localhost:11434，如已修改请填写实际地址</template>
             </div>
           </div>
 
           <!-- Ollama状态面板 -->
           <div class="ollama-status-panel">
             <div class="ollama-status-header">
-              <span class="ollama-status-title">Ollama 服务状态</span>
+              <span class="ollama-status-title">{{ localEngineLabel }} 服务状态</span>
               <el-button 
                 type="primary" 
                 plain 
@@ -416,8 +429,8 @@
             <div v-if="ollamaStatus?.state === 'not_installed'" class="ollama-status-content">
               <div class="ollama-status-icon not-installed">📦</div>
               <div class="ollama-status-text">
-                <div class="ollama-status-label">Ollama 未安装</div>
-                <div class="ollama-status-desc">请下载并安装 Ollama 以使用本地大模型功能</div>
+                <div class="ollama-status-label">{{ localEngineLabel }} 未安装</div>
+                <div class="ollama-status-desc">请下载并安装 {{ localEngineLabel }} 以使用本地大模型功能</div>
               </div>
               <el-button type="primary" size="small" @click="showInstallGuide = true">
                 查看安装指南
@@ -428,8 +441,8 @@
             <div v-else-if="ollamaStatus?.state === 'not_running'" class="ollama-status-content">
               <div class="ollama-status-icon not-running">⏸️</div>
               <div class="ollama-status-text">
-                <div class="ollama-status-label">Ollama 未运行</div>
-                <div class="ollama-status-desc">Ollama 已安装但未启动，请点击下方按钮启动</div>
+                <div class="ollama-status-label">{{ localEngineLabel }} 未运行</div>
+                <div class="ollama-status-desc">{{ localEngineLabel }} 已安装但未启动，请点击下方按钮启动</div>
               </div>
               <el-button 
                 type="success" 
@@ -437,7 +450,7 @@
                 :loading="ollamaLoading"
                 @click="handleStartOllama"
               >
-                启动 Ollama
+                启动 {{ localEngineLabel }}
               </el-button>
             </div>
 
@@ -445,7 +458,7 @@
             <div v-else-if="ollamaStatus?.state === 'running'" class="ollama-status-content">
               <div class="ollama-status-icon running">✅</div>
               <div class="ollama-status-text">
-                <div class="ollama-status-label">Ollama 运行中</div>
+                <div class="ollama-status-label">{{ localEngineLabel }} 运行中</div>
                 <div class="ollama-status-desc">
                   已加载 {{ ollamaStatus?.models?.length || 0 }} 个模型
                 </div>
@@ -469,14 +482,15 @@
                 v-for="model in ollamaStatus?.models" 
                 :key="model.name"
                 class="model-item"
-                :class="{ selected: aiSettings.ollamaModel === model.name }"
-                @click="aiSettings.ollamaModel = model.name"
+                :class="{ selected: localEngineModel === model.name }"
+                @click="selectLocalModel(model.name)"
               >
                 <div class="model-info">
                   <div class="model-name">{{ model.name }}</div>
                   <div class="model-size">{{ formatModelSize(model.size) }}</div>
                 </div>
                 <el-button 
+                  v-if="!isHerdsman"
                   type="danger" 
                   plain 
                   size="small"
@@ -484,17 +498,21 @@
                 >
                   删除
                 </el-button>
+                <el-tag v-else size="small" type="info">Herdsman 客户端管理</el-tag>
               </div>
             </div>
           </div>
 
-          <!-- 使用建议 -->
+          <!-- 使用建议 / 模型管理引导（按引擎区分） -->
           <div class="setting-item">
-            <label class="setting-label">使用建议</label>
-            <div class="setting-hint" style="margin-bottom: 12px;">
+            <label class="setting-label">{{ isHerdsman ? '模型管理' : '使用建议' }}</label>
+            <div v-if="isHerdsman" class="setting-hint" style="margin-bottom: 12px;">
+              Herdsman 的模型下载/删除请在 Herdsman 客户端「模型库」中完成；模型下载完成后，在上方「已安装的模型」列表中选择即可使用。
+            </div>
+            <div v-else class="setting-hint" style="margin-bottom: 12px;">
               请根据本地电脑配置选用模型或前往ollama模型仓库自行挑选合适模型
             </div>
-            <div class="model-list">
+            <div v-if="!isHerdsman" class="model-list">
               <div 
                 v-for="model in recommendedModels" 
                 :key="model.name"
@@ -548,10 +566,10 @@
               @click="handleTestOllamaConnection"
               style="width: 100%"
             >
-              {{ localTestLoading ? '测试中...' : '🔌 测试 Ollama 连接' }}
+              {{ localTestLoading ? '测试中...' : `🔌 测试 ${localEngineLabel} 连接` }}
             </el-button>
             <div v-if="localTestResult" class="test-result" :class="localTestResult.success ? 'test-success' : 'test-error'">
-              <div v-if="localTestResult.success">✅ 连接正常！Ollama 服务运行良好</div>
+              <div v-if="localTestResult.success">✅ 连接正常！{{ localEngineLabel }} 服务运行良好</div>
               <div v-else>
                 ❌ 失败 [{{ localTestResult.error?.code || 'ERROR' }}]：{{ localTestResult.error?.message || '未知错误' }}
               </div>
@@ -664,12 +682,12 @@
     <!-- 提示词管理抽屉 -->
     <PromptManagerDrawer v-model="showPromptDrawer" />
 
-    <el-dialog v-model="showInstallGuide" title="Ollama 安装指南" width="700px" destroy-on-close @opened="installStep = 0">
+    <el-dialog v-model="showInstallGuide" :title="`${localEngineLabel} 安装指南`" width="700px" destroy-on-close @opened="installStep = 0; loadInstallGuide()">
       <div class="install-guide">
         <!-- 步骤条 -->
         <el-steps :active="installStep" finish-status="success" align-center class="install-steps">
           <el-step title="选择平台" description="选择您的操作系统" />
-          <el-step title="下载安装" description="下载并安装 Ollama" />
+          <el-step title="下载安装" :description="`下载并安装 ${localEngineLabel}`" />
           <el-step title="验证安装" description="检测安装结果" />
         </el-steps>
 
@@ -678,7 +696,7 @@
           <div class="install-guide-intro">
             <el-icon :size="48" class="guide-icon"><Monitor /></el-icon>
             <h3>欢迎使用本地 AI 助手</h3>
-            <p>Ollama 是一个本地大模型运行工具，支持在您的电脑上运行 Qwen、Llama 等大模型。</p>
+            <p>{{ localEngineLabel }} 是一个本地大模型运行引擎，支持在您的电脑上运行 Qwen、Llama 等大模型。</p>
             <p>安装后，所有 AI 分析将在本地完成，数据不会离开您的电脑，确保数据安全。</p>
           </div>
 
@@ -718,9 +736,9 @@
           <div class="download-section">
             <el-button type="primary" size="large" @click="openDownloadPage">
               <el-icon><Download /></el-icon>
-              前往 Ollama 官网下载
+              前往 {{ localEngineLabel }} 官网下载
             </el-button>
-            <p class="download-hint">点击上方按钮将在浏览器中打开 Ollama 官方下载页面</p>
+            <p class="download-hint">点击上方按钮将在浏览器中打开 {{ localEngineLabel }} 官方下载页面</p>
           </div>
 
           <div class="install-instructions">
@@ -741,17 +759,17 @@
           <div class="verify-section">
             <el-icon :size="48" class="guide-icon"><CircleCheck /></el-icon>
             <h3>安装完成？</h3>
-            <p>安装完成后，点击下方按钮检测 Ollama 是否正常运行</p>
+            <p>安装完成后，点击下方按钮检测 {{ localEngineLabel }} 是否正常运行</p>
             <el-button type="success" size="large" :loading="ollamaLoading" @click="verifyInstallation">
               <el-icon><Refresh /></el-icon>
-              检测 Ollama 状态
+              检测 {{ localEngineLabel }} 状态
             </el-button>
           </div>
 
           <div v-if="ollamaStatus?.state === 'running'" class="verify-success">
             <el-alert type="success" :closable="false" show-icon>
               <template #title>
-                ✅ Ollama 安装成功！已检测到 {{ ollamaStatus?.models?.length || 0 }} 个模型
+                ✅ {{ localEngineLabel }} 安装成功！已检测到 {{ ollamaStatus?.models?.length || 0 }} 个模型
               </template>
             </el-alert>
           </div>
@@ -869,8 +887,12 @@ const aiSettings = reactive({
   privacyMode: false,
   sensitiveWords: '',
   mode: 'cloud' as 'cloud' | 'local',
+  // 本地引擎：ollama=Ollama / herdsman=Herdsman(牧马人)，两者可共存切换
+  localEngine: 'ollama' as 'ollama' | 'herdsman',
   ollamaModel: '',
   ollamaUrl: 'http://localhost:11434',
+  herdsmanUrl: 'http://localhost:8080',
+  herdsmanModel: '',
   // OCR预处理默认：云端模式关闭，本地模式开启
   ocrPreprocess: false,
   // 网络代理：system=跟随系统代理（Clash 等） / manual=手动代理 / none=直连
@@ -895,11 +917,28 @@ const editingModel = ref<{ id?: string; name: string; apiBase: string; apiKey?: 
 const showModelForm = ref(false);
 const modelTestLoading = ref<string | null>(null);
 
+// 当前本地引擎（Ollama / Herdsman）辅助计算
+const isHerdsman = computed(() => aiSettings.localEngine === 'herdsman');
+const localEngineLabel = computed(() => (isHerdsman.value ? 'Herdsman' : 'Ollama'));
+const localEngineUrl = computed(() => (isHerdsman.value ? aiSettings.herdsmanUrl : aiSettings.ollamaUrl));
+const localEngineModel = computed(() => (isHerdsman.value ? aiSettings.herdsmanModel : aiSettings.ollamaModel));
+// 本地引擎服务地址双向绑定（按当前引擎读写对应字段）
+const localUrlModel = computed({
+  get: () => localEngineUrl.value,
+  set: (v: string) => {
+    if (isHerdsman.value) {
+      aiSettings.herdsmanUrl = v;
+    } else {
+      aiSettings.ollamaUrl = v;
+    }
+  },
+});
+
 const isConfigured = computed(() => {
   if (aiSettings.mode === 'cloud') {
     return cloudModels.value.some(m => m.enabled === true);
   }
-  return aiSettings.ollamaModel.length > 0;
+  return localEngineModel.value.length > 0;
 });
 
 const activeModelSelectValue = computed<string>({
@@ -1005,7 +1044,7 @@ async function checkOllamaStatus() {
   if (!window.api) return;
   ollamaLoading.value = true;
   try {
-    const res = await window.api.ollama.getStatus(aiSettings.ollamaUrl);
+    const res = await window.api.ollama.getStatus(localEngineUrl.value, aiSettings.localEngine);
     if (res.success && res.data) {
       ollamaStatus.value = res.data;
     } else {
@@ -1021,7 +1060,7 @@ async function checkOllamaStatus() {
 async function loadRecommendedModels() {
   if (!window.api) return;
   try {
-    const res = await window.api.ollama.getRecommendedModels();
+    const res = await window.api.ollama.getRecommendedModels(aiSettings.localEngine);
     if (res.success && res.data) {
       recommendedModels.value = res.data;
     }
@@ -1033,7 +1072,7 @@ async function loadRecommendedModels() {
 async function loadInstallGuide() {
   if (!window.api) return;
   try {
-    const res = await window.api.ollama.getInstallGuide();
+    const res = await window.api.ollama.getInstallGuide(aiSettings.localEngine);
     if (res.success && res.data) {
       installGuide.value = res.data;
     }
@@ -1046,9 +1085,9 @@ async function handleStartOllama() {
   if (!window.api) return;
   ollamaLoading.value = true;
   try {
-    const res = await window.api.ollama.start(aiSettings.ollamaUrl);
+    const res = await window.api.ollama.start(localEngineUrl.value, aiSettings.localEngine);
     if (res.success) {
-      ElMessage.success('Ollama 启动成功');
+      ElMessage.success(`${localEngineLabel.value} 启动成功`);
       await checkOllamaStatus();
     } else {
       ElMessage.error('启动失败：' + (res.error?.message || '未知错误'));
@@ -1082,7 +1121,7 @@ async function handlePullModel(modelName: string) {
 
   try {
     ElMessage.info(`正在下载模型 ${modelName}，请稍候...`);
-    const res = await window.api.ollama.pullModel(modelName, aiSettings.ollamaUrl);
+    const res = await window.api.ollama.pullModel(modelName, localEngineUrl.value, aiSettings.localEngine);
     if (res.success) {
       ElMessage.success('模型下载成功');
       // 清空进度展示（必须在轮询检查之前，防止轮询间隔被事件覆盖）
@@ -1136,12 +1175,16 @@ async function handleDeleteModel(modelName: string) {
       '确认删除',
       { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
     );
-    const res = await window.api.ollama.deleteModel(modelName, aiSettings.ollamaUrl);
+    const res = await window.api.ollama.deleteModel(modelName, localEngineUrl.value, aiSettings.localEngine);
     if (res.success) {
       ElMessage.success('模型已删除');
       // 如果删除的是当前选中的模型，清空选择
-      if (aiSettings.ollamaModel === modelName) {
-        aiSettings.ollamaModel = '';
+      if (localEngineModel.value === modelName) {
+        if (isHerdsman.value) {
+          aiSettings.herdsmanModel = '';
+        } else {
+          aiSettings.ollamaModel = '';
+        }
       }
       await new Promise(resolve => setTimeout(resolve, 500));
       await checkOllamaStatus();
@@ -1165,12 +1208,21 @@ async function handleDeleteModel(modelName: string) {
   }
 }
 
+// 选择本地模型：按当前引擎写入对应配置字段
+function selectLocalModel(name: string) {
+  if (isHerdsman.value) {
+    aiSettings.herdsmanModel = name;
+  } else {
+    aiSettings.ollamaModel = name;
+  }
+}
+
 async function handleTestOllamaConnection() {
   if (!window.api) return;
   localTestLoading.value = true;
   localTestResult.value = null;
   try {
-    const res = await window.api.ollama.testConnection(aiSettings.ollamaUrl);
+    const res = await window.api.ollama.testConnection(localEngineUrl.value, aiSettings.localEngine);
     localTestResult.value = res;
   } catch (err: any) {
     localTestResult.value = { success: false, error: { code: 'CLIENT_ERROR', message: err.message } };
@@ -1216,7 +1268,18 @@ watch(() => aiSettings.mode, (mode) => {
   restoreModeSettings(mode);
 });
 
-// 首次使用提示：检测到Ollama未安装时自动弹出引导
+// 切换本地引擎（Ollama/Herdsman）时：重置状态并重新检测
+watch(() => aiSettings.localEngine, () => {
+  ollamaStatus.value = null;
+  localTestResult.value = null;
+  downloadProgress.value = null;
+  if (aiSettings.mode === 'local' && showSettings.value) {
+    checkOllamaStatus();
+    startHealthCheck();
+  }
+});
+
+// 首次使用提示：检测到当前本地引擎未安装时自动弹出引导
 const hasShownInstallPrompt = ref(false);
 watch(
   () => ollamaStatus.value?.state,
@@ -1337,9 +1400,12 @@ async function loadSettings() {
       aiSettings.privacyMode = (data.privacyMode ?? 0) === 1;
       aiSettings.sensitiveWords = data.sensitiveWords || '';
       aiSettings.temperature = data.temperature ?? 0.3;
-      // 本地配置
+      // 本地配置（Ollama / Herdsman 双引擎共存）
+      aiSettings.localEngine = data.localEngine === 'herdsman' ? 'herdsman' : 'ollama';
       aiSettings.ollamaModel = data.ollamaModel || '';
       aiSettings.ollamaUrl = data.ollamaUrl || 'http://localhost:11434';
+      aiSettings.herdsmanUrl = data.herdsmanUrl || 'http://localhost:8080';
+      aiSettings.herdsmanModel = data.herdsmanModel || '';
       // 云端配置
       // 仅在 apiKey 不是脱敏掩码（含 ****）时才填充输入框，避免覆盖为无意义值
       if (data.apiKey && !data.apiKey.includes('****')) {
@@ -1497,8 +1563,11 @@ async function saveSettings() {
       privacyMode: aiSettings.privacyMode ? 1 : 0,
       sensitiveWords: aiSettings.sensitiveWords,
       mode: aiSettings.mode,
+      localEngine: aiSettings.localEngine,
       ollamaModel: aiSettings.ollamaModel,
       ollamaUrl: aiSettings.ollamaUrl,
+      herdsmanUrl: aiSettings.herdsmanUrl,
+      herdsmanModel: aiSettings.herdsmanModel,
       ocrPreprocess: aiSettings.ocrPreprocess,
       proxyMode: aiSettings.proxyMode,
       proxyUrl: aiSettings.proxyUrl.trim(),
@@ -1577,7 +1646,7 @@ async function sendMessage(customMessage?: string, context?: string) {
     try {
       const res = await window.api.ai.chat({
         messages: messages.value.map(m => ({ role: m.role, content: m.content, attachments: m.attachments })),
-        model: aiSettings.mode === 'local' ? aiSettings.ollamaModel : aiSettings.model,
+        model: aiSettings.mode === 'local' ? localEngineModel.value : aiSettings.model,
         temperature: aiSettings.temperature,
         context: context || undefined,
       });

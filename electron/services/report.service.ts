@@ -1,8 +1,26 @@
 import * as path from 'path';
 import * as fs from 'fs';
+import { safeStorage } from 'electron';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, sql, and, or, lte, inArray, count } from 'drizzle-orm';
+import { eq, sql, and, or, lte, inArray, count, asc } from 'drizzle-orm';
+import log from 'electron-log';
+
+const API_KEY_ENC_PREFIX = 'enc:v1:';
+
+function decryptApiKey(stored: string): string {
+  if (!stored || !stored.startsWith(API_KEY_ENC_PREFIX)) return stored;
+  try {
+    if (!safeStorage.isEncryptionAvailable()) {
+      log.warn('[报告AI] DPAPI 不可用，无法解密 API Key');
+      return '';
+    }
+    return safeStorage.decryptString(Buffer.from(stored.slice(API_KEY_ENC_PREFIX.length), 'base64'));
+  } catch (e: any) {
+    log.error('[报告AI] 解密 API Key 失败:', e.message);
+    return '';
+  }
+}
 import {
   Document,
   Paragraph,
@@ -25,6 +43,7 @@ import {
 } from 'docx';
 import { getMainWindow } from '../main';
 import { ASSET_CATEGORY_NAMES } from '../utils/excel-config';
+import { getPromptTemplate, renderTemplate } from './ai-prompt.service';
 
 // 字体配置常量
 const FONT_CN = 'STFangsong';
@@ -184,6 +203,8 @@ interface ReportOptions {
   includeSections: string[];
   projectId: string;
   savePath: string;
+  // AI 增强：用 AI 生成「总体分析评价」和「整改建议及规划」章节内容
+  aiEnhanced?: boolean;
 }
 
 interface ReportData {
@@ -809,7 +830,7 @@ export class ReportService {
               ],
             }),
           },
-          children: this.buildWordContent(data, options.template, timestamp),
+          children: await this.buildWordContent(data, options.template, timestamp, options),
         },
       ],
     });
@@ -819,7 +840,7 @@ export class ReportService {
     return savePath;
   }
 
-  private buildWordContent(data: ReportData, template: string, timestamp: string): (Paragraph | Table)[] {
+  private async buildWordContent(data: ReportData, template: string, timestamp: string, options: ReportOptions): Promise<(Paragraph | Table)[]> {
     const content: (Paragraph | Table)[] = [];
     const { project, issues, summary, assets, standard } = data;
 
@@ -1186,7 +1207,9 @@ export class ReportService {
       })
     );
 
-    const overallAnalysis = this.generateOverallAnalysis(data);
+    const overallAnalysis = options.aiEnhanced
+      ? (await this.generateAiOverview(data)) || this.generateOverallAnalysis(data)
+      : this.generateOverallAnalysis(data);
     for (const para of overallAnalysis) {
       content.push(
         createBodyParagraph({
@@ -1439,7 +1462,9 @@ export class ReportService {
       })
     );
 
-    const rectificationPlan = this.generateRectificationPlan(data, isDetailed);
+    const rectificationPlan = options.aiEnhanced
+      ? (await this.generateAiRectification(data, isDetailed)) || this.generateRectificationPlan(data, isDetailed)
+      : this.generateRectificationPlan(data, isDetailed);
     for (const section of rectificationPlan) {
       content.push(
         createHeadingParagraph({
@@ -1541,6 +1566,262 @@ export class ReportService {
           })
       ),
     });
+  }
+
+  /**
+   * 通过 AI 生成「总体分析评价」章节内容
+   * 返回段落数组，失败时返回 null（调用方 fallback 到硬编码模板）
+   */
+  private async generateAiOverview(data: ReportData): Promise<string[] | null> {
+    try {
+      const { project, summary, standard } = data;
+      const domainStatsJson = JSON.stringify(summary.domainStats || [], null, 0);
+
+      const template = await getPromptTemplate('report_overview');
+      const prompt = renderTemplate(template, {
+        '项目名称': project?.name || '未知项目',
+        '系统名称': project?.systemName || '未知系统',
+        '测评标准': `${standard.code}《${standard.name}》`,
+        '问题总数': String(summary.total),
+        '高风险数': String(summary.highRisk),
+        '中风险数': String(summary.mediumRisk),
+        '低风险数': String(summary.lowRisk),
+        '各域问题分布': domainStatsJson,
+        '合规率': summary.total > 0 ? `${((summary.total - summary.highRisk) / summary.total * 100).toFixed(1)}%` : '100%',
+      });
+
+      const content = await this.callAiForReport(prompt, 'report_overview');
+      if (!content) return null;
+
+      const paragraphs = content.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+      if (paragraphs.length < 2) return null;
+
+      log.info('[报告AI] 总体分析评价生成成功，段落数:', paragraphs.length);
+      return paragraphs;
+    } catch (e: any) {
+      log.error('[报告AI] 总体分析评价生成失败:', e.message);
+      return null;
+    }
+  }
+
+  /**
+   * 通过 AI 生成「整改建议及规划」章节内容
+   * 返回 { title, content }[] 数组，失败时返回 null（调用方 fallback 到硬编码模板）
+   */
+  private async generateAiRectification(data: ReportData, _isDetailed: boolean): Promise<{ title: string; content: string[] }[] | null> {
+    try {
+      const { project, issues, summary } = data;
+
+      // 只取前 20 个问题避免 token 过多
+      const topIssues = issues.slice(0, 20).map((i: any) => ({
+        title: i.issueTitle,
+        risk: i.riskLevel,
+        domain: i.securityDomain,
+        suggestion: i.rectificationSuggestion || '暂无',
+      }));
+      const issuesJson = JSON.stringify(topIssues, null, 0);
+
+      const template = await getPromptTemplate('report_rectification');
+      const prompt = renderTemplate(template, {
+        '项目名称': project?.name || '未知项目',
+        '系统名称': project?.systemName || '未知系统',
+        '问题总数': String(summary.total),
+        '高风险数': String(summary.highRisk),
+        '中风险数': String(summary.mediumRisk),
+        '低风险数': String(summary.lowRisk),
+        '问题列表JSON': issuesJson,
+      });
+
+      const content = await this.callAiForReport(prompt, 'report_rectification');
+      if (!content) return null;
+
+      // 按空行拆分段落，再按内容启发式分组到小节
+      const paragraphs = content.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+      if (paragraphs.length < 3) return null;
+
+      const sections: { title: string; content: string[] }[] = [];
+      let currentSection = { title: '整改建议', content: [] as string[] };
+
+      for (const para of paragraphs) {
+        // 识别小节标题：含"整改建议"、"整改规划"、"长期规划"等关键词且较短
+        const isSectionTitle = para.length < 40 && (
+          para.includes('整改') && para.includes('建议') ||
+          para.includes('整改') && para.includes('规划') ||
+          para.includes('长期') && para.includes('规划') ||
+          para.includes('高风险') || para.includes('中风险') || para.includes('低风险')
+        );
+        if (isSectionTitle && currentSection.content.length > 0) {
+          sections.push(currentSection);
+          currentSection = { title: para, content: [] };
+        } else if (isSectionTitle && currentSection.content.length === 0) {
+          currentSection.title = para;
+        } else {
+          currentSection.content.push(para);
+        }
+      }
+      if (currentSection.content.length > 0) sections.push(currentSection);
+
+      if (sections.length === 0) return null;
+
+      log.info('[报告AI] 整改建议及规划生成成功，小节数:', sections.length);
+      return sections;
+    } catch (e: any) {
+      log.error('[报告AI] 整改建议及规划生成失败:', e.message);
+      return null;
+    }
+  }
+
+  /**
+   * 调用 AI 生成报告章节内容的通用方法
+   * 云端模式：按 priority 顺序遍历已启用的云端模型，全部失败才返回 null
+   * 本地模式（Ollama/Herdsman）：沿用 ai.ipc 的本地推理调用方式
+   * 任何失败均返回 null，由调用方回退到内置模板，保证报告始终可生成
+   */
+  private async callAiForReport(prompt: string, tag: string): Promise<string | null> {
+    try {
+      const db = getDb();
+      const configs = await db.select().from(schema.aiConfigs).limit(1);
+      if (configs.length === 0) throw new Error('AI未配置');
+      const config = configs[0];
+      const mode = config.mode === 'local' ? 'local' : 'cloud';
+
+      const systemPrompt = '你是一名专业的等级保护测评师，擅长撰写测评报告。请根据提供的数据撰写报告章节内容，语言正式、客观、专业。直接返回正文，不要标题行，不要JSON格式。';
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: prompt },
+      ];
+
+      if (mode === 'local') {
+        return await this.callAiForReportLocal(messages, tag);
+      }
+
+      // 云端：优先走云端模型列表（按 priority 升序），最后兜底 aiConfigs 主配置
+      const cloudModels = await db.select().from(schema.aiCloudModels)
+        .where(eq(schema.aiCloudModels.enabled, 1))
+        .orderBy(asc(schema.aiCloudModels.priority));
+
+      const candidates: { name: string; apiBase: string; apiKey: string; model: string }[] = cloudModels.map(m => ({
+        name: m.name,
+        apiBase: m.apiBase,
+        apiKey: m.apiKey ? decryptApiKey(m.apiKey) : '',
+        model: m.model,
+      }));
+      if (config.apiKey) {
+        candidates.push({
+          name: '主配置',
+          apiBase: config.apiBase || '',
+          apiKey: decryptApiKey(String(config.apiKey || '')),
+          model: config.model || 'gpt-4o-mini',
+        });
+      }
+
+      if (candidates.length === 0) throw new Error('AI未配置');
+
+      const errors: string[] = [];
+      for (const c of candidates) {
+        try {
+          const content = await this.requestOpenAIChat(c.apiBase, c.apiKey, c.model, messages, tag);
+          if (content) return content;
+          errors.push(`${c.name}: 返回空内容`);
+        } catch (e: any) {
+          errors.push(`${c.name}: ${e.message}`);
+        }
+      }
+      log.warn(`[报告AI] 所有模型均失败，回退内置模板: ${errors.join(' | ')}`);
+      return null;
+    } catch (e: any) {
+      log.error(`[报告AI] 调用 AI 生成 ${tag} 失败:`, e.message);
+      return null;
+    }
+  }
+
+  /**
+   * 本地模型（Ollama / Herdsman）生成报告章节
+   * Ollama: POST /api/chat
+   * Herdsman: POST /api/v1/chat/completions
+   */
+  private async callAiForReportLocal(messages: any[], tag: string): Promise<string | null> {
+    try {
+      const db = getDb();
+      const configs = await db.select().from(schema.aiConfigs).limit(1);
+      if (configs.length === 0) return null;
+      const config = configs[0];
+      const engine = config.localEngine === 'herdsman' ? 'herdsman' : 'ollama';
+
+      let baseUrl = engine === 'herdsman'
+        ? (config.herdsmanUrl || 'http://localhost:23334').replace(/\/$/, '')
+        : (config.ollamaUrl || 'http://localhost:11434').replace(/\/$/, '');
+      let model = engine === 'herdsman'
+        ? (config.herdsmanModel || '')
+        : (config.ollamaModel || '');
+      const path_ = engine === 'herdsman' ? '/api/v1/chat/completions' : '/api/chat';
+
+      // 模型为空时尝试从云端模型表外推取本地模型（无结果则用引擎默认）
+      if (!model) model = engine === 'herdsman' ? 'qwen2.5:7b' : 'llama3.1:8b';
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
+      const url = baseUrl + path_;
+      log.info(`[报告AI] 调用本地 ${engine} 生成 ${tag}, url=${url}, model=${model}`);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, messages, stream: false, temperature: 0.3 }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`本地模型错误 ${response.status}: ${errText.slice(0, 200)}`);
+      }
+      const result = await response.json();
+      const content = result.choices?.[0]?.message?.content || result.message?.content || '';
+      return content || null;
+    } catch (e: any) {
+      log.error(`[报告AI] 本地模型生成 ${tag} 失败:`, e.message);
+      return null;
+    }
+  }
+
+  /**
+   * 单次 OpenAI 兼容 API 调用（60 秒超时，报告生成场景容忍较长响应）
+   */
+  private async requestOpenAIChat(
+    apiBaseRaw: string,
+    apiKey: string,
+    model: string,
+    messages: any[],
+    _tag: string
+  ): Promise<string | null> {
+    if (!apiKey) throw new Error('API Key 为空');
+
+    let apiBase = apiBaseRaw || 'https://api.openai.com/v1';
+    if (!apiBase.startsWith('http')) apiBase = 'https://' + apiBase;
+    if (!apiBase.endsWith('/')) apiBase += '/';
+    const url = apiBase + 'chat/completions';
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ model, messages, temperature: 0.3 }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`API ${response.status}: ${errText.slice(0, 120)}`);
+    }
+    const result = await response.json();
+    return result.choices?.[0]?.message?.content || null;
   }
 
   private generateOverallAnalysis(data: ReportData): string[] {
@@ -1919,7 +2200,7 @@ export class ReportService {
     const isSimple = options.template === 'simple';
     const isDetailed = options.template === 'detailed';
 
-    const htmlContent = this.generateHtmlContent(data, projectName, timestamp, options, isSimple, isDetailed);
+    const htmlContent = await this.generateHtmlContent(data, projectName, timestamp, options, isSimple, isDetailed);
 
     const { BrowserWindow } = require('electron');
     const hiddenWindow = new BrowserWindow({
@@ -1955,14 +2236,14 @@ export class ReportService {
     }
   }
 
-  private generateHtmlContent(
+  private async generateHtmlContent(
     data: ReportData,
     _projectName: string,
     timestamp: string,
     options: ReportOptions,
     isSimple: boolean,
     isDetailed: boolean
-  ): string {
+  ): Promise<string> {
     const { project, issues, summary, assets, standard } = data;
 
     const riskLabel = (level: string) => {
@@ -2112,7 +2393,9 @@ export class ReportService {
     if (options.includeSections.includes('analysis')) {
       html += `
     <h2>五、总体分析评价</h2>`;
-      const overallAnalysis = this.generateOverallAnalysis(data);
+      const overallAnalysis = options.aiEnhanced
+        ? (await this.generateAiOverview(data)) || this.generateOverallAnalysis(data)
+        : this.generateOverallAnalysis(data);
       for (const para of overallAnalysis) {
         html += `<p style="margin: 0.5em 0;">${para}</p>`;
       }
@@ -2187,7 +2470,9 @@ export class ReportService {
     // 整改建议
     if (options.includeSections.includes('recommendations')) {
       html += `<h2>七、整改建议及规划</h2>`;
-      const rectificationPlan = this.generateRectificationPlan(data, isDetailed);
+      const rectificationPlan = options.aiEnhanced
+        ? (await this.generateAiRectification(data, isDetailed)) || this.generateRectificationPlan(data, isDetailed)
+        : this.generateRectificationPlan(data, isDetailed);
       for (const section of rectificationPlan) {
         html += `<h3>${section.title}</h3>`;
         for (const para of section.content) {

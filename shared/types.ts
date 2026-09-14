@@ -528,6 +528,8 @@ export interface ApiBridge {
     }>>;
     // Phase 4 · 任务 27：双标准对照表（可选，按需启用）
     compare: (leftStandardId: string, rightStandardId: string) => Promise<IpcResponse<any>>;
+    // 合规统计：项目 × 标准 → 按域/汇总统计（适用条目、判定结果、覆盖率、合规率）
+    getComplianceStats: (params: { projectId: string; standardId: string }) => Promise<IpcResponse<any>>;
   };
   assessment: {
     getItems: (standardId: string, domain?: string, projectLevel?: number, extensionType?: string | string[]) => Promise<IpcResponse<AssessmentItem[]>>;
@@ -575,6 +577,7 @@ export interface ApiBridge {
       includeSections: string[];
       projectId: string;
       savePath: string;
+      aiEnhanced?: boolean;
     }) => Promise<IpcResponse<{ filePath: string }>>;
   };
   knowledge: {
@@ -661,9 +664,35 @@ export interface ApiBridge {
     analyzeIssue: (params: { issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; projectId?: string; itemId?: string }) => Promise<IpcResponse<{ content: string }>>;
     analyzeIssueDescription: (params: { issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; projectId?: string; itemId?: string }) => Promise<IpcResponse<{ content: string }>>;
     batchAnalyzeIssues: (params: { issues: Array<{ issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; itemId?: string }>; projectId?: string }) => Promise<IpcResponse<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }> }>>;
+    searchKnowledge: (question: string) => Promise<IpcResponse<{ content: string; modelName?: string; referencedDocs: Array<{ id: string; title: string }> }>>;
+    recommendCommands: (params: { controlPoint?: string; controlName?: string; requirement?: string; assetLabel?: string; brand?: string; os?: string; deviceType?: string }) => Promise<IpcResponse<{ commands: Array<Record<string, any> & { reason?: string }> }>>;
+    identifyAssets: (params: { projectId?: string; systemName?: string; description?: string; imagePaths?: string[]; documents?: string[]; ocrPreprocess?: boolean }) => Promise<IpcResponse<{ assets: Array<Record<string, any>> }>>;
+    checkMissingAssets: (params: { projectId?: string; systemName?: string }) => Promise<IpcResponse<{ missing: Array<{ category: string; risk: string; suggestion: string }> }>>;
+    dashboardInsight: () => Promise<IpcResponse<{
+      insight: string;
+      alerts: Array<{ key: string; severity: string; title: string; detail: string }>;
+      alertAdvices: Array<{ key: string; advice: string }>;
+    }>>;
+    explainStandardDiff: (params: {
+      baseStandard: string;
+      targetStandard: string;
+      stats?: Record<string, any>;
+      rows?: Array<Record<string, any>>;
+    }) => Promise<IpcResponse<{
+      summary: string;
+      keyDiffs: Array<{ domain: string; point: string; impact: string }>;
+      advice: string;
+    }>>;
+    standardComplianceGap: (params: { projectId: string; standardId: string; precomputed?: { domains?: Array<Record<string, any>>; summary?: Record<string, any>; nonCompliantSamples?: Array<Record<string, any>> } }) => Promise<IpcResponse<{
+      summary: string;
+      gaps: Array<{ domain: string; gap: string; risk: string; priority: string; suggestion: string }>;
+      domains: Array<Record<string, any>>;
+      nonCompliantSamples: Array<Record<string, any>>;
+      stats: Record<string, any>;
+    }>>;
     getConfig: () => Promise<IpcResponse<any>>;
-    saveConfig: (config: { apiBase: string; apiKey: string; model: string; temperature: number; privacyMode?: number; sensitiveWords?: string; mode?: string; ollamaModel?: string; ollamaUrl?: string; ocrPreprocess?: boolean; proxyMode?: 'system' | 'manual' | 'none'; proxyUrl?: string | null }) => Promise<IpcResponse<void>>;
-    testConnection: (params?: { apiBase?: string; apiKey?: string; model?: string; mode?: string; ollamaUrl?: string }) => Promise<IpcResponse<any>>;
+    saveConfig: (config: { apiBase: string; apiKey: string; model: string; temperature: number; privacyMode?: number; sensitiveWords?: string; mode?: string; localEngine?: 'ollama' | 'herdsman'; ollamaModel?: string; ollamaUrl?: string; herdsmanUrl?: string; herdsmanModel?: string; ocrPreprocess?: boolean; proxyMode?: 'system' | 'manual' | 'none'; proxyUrl?: string | null }) => Promise<IpcResponse<void>>;
+    testConnection: (params?: { apiBase?: string; apiKey?: string; model?: string; mode?: string; ollamaUrl?: string; herdsmanUrl?: string; localEngine?: 'ollama' | 'herdsman' }) => Promise<IpcResponse<any>>;
     getModels: () => Promise<IpcResponse<{ models: CloudModel[]; activeModelId: string | null }>>;
     createModel: (data: Omit<CloudModel, 'id'>) => Promise<IpcResponse<{ id: string }>>;
     updateModel: (modelId: string, data: Partial<CloudModel>) => Promise<IpcResponse<void>>;
@@ -678,14 +707,14 @@ export interface ApiBridge {
     resetPrompt: (payload: { key: string }) => Promise<IpcResponse<{ success: boolean }>>;
   };
   ollama: {
-    getStatus: (url?: string) => Promise<IpcResponse<{ state: string; models?: any[]; error?: string }>>;
-    listModels: (url?: string) => Promise<IpcResponse<any[]>>;
-    pullModel: (modelName: string, url?: string) => Promise<IpcResponse<any>>;
-    deleteModel: (modelName: string, url?: string) => Promise<IpcResponse<void>>;
-    start: (url?: string) => Promise<IpcResponse<any>>;
-    getInstallGuide: () => Promise<IpcResponse<{ windows: string[]; mac: string[]; linux: string[]; downloadUrl: string }>>;
-    testConnection: (url?: string) => Promise<IpcResponse<{ success: boolean; message: string }>>;
-    getRecommendedModels: () => Promise<IpcResponse<Array<{ name: string; label: string; description: string; size: string; minMemory: number; supportsVision: boolean }>>>;
+    getStatus: (url?: string, engine?: 'ollama' | 'herdsman') => Promise<IpcResponse<{ state: string; models?: any[]; error?: string }>>;
+    listModels: (url?: string, engine?: 'ollama' | 'herdsman') => Promise<IpcResponse<any[]>>;
+    pullModel: (modelName: string, url?: string, engine?: 'ollama' | 'herdsman') => Promise<IpcResponse<any>>;
+    deleteModel: (modelName: string, url?: string, engine?: 'ollama' | 'herdsman') => Promise<IpcResponse<void>>;
+    start: (url?: string, engine?: 'ollama' | 'herdsman') => Promise<IpcResponse<any>>;
+    getInstallGuide: (engine?: 'ollama' | 'herdsman') => Promise<IpcResponse<{ windows: string[]; mac: string[]; linux: string[]; downloadUrl: string }>>;
+    testConnection: (url?: string, engine?: 'ollama' | 'herdsman') => Promise<IpcResponse<{ success: boolean; message: string }>>;
+    getRecommendedModels: (engine?: 'ollama' | 'herdsman') => Promise<IpcResponse<Array<{ name: string; label: string; description: string; size: string; minMemory: number; supportsVision: boolean }>>>;
     onPullProgress: (callback: (data: { modelName: string; status: string; completed?: number; total?: number }) => void) => () => void;
   };
   document: {

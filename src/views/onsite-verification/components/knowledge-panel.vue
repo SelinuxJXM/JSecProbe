@@ -43,6 +43,18 @@
     <div v-if="knowledgeTab === 'command' && matchedIndustry" class="industry-hint" :title="`当前标准行业：${matchedIndustry}，命令列表已自动包含「行业专属」与「通用命令」`">
       🎯 已按项目行业筛选：<b>{{ matchedIndustry }}</b>
     </div>
+    <!-- AI 智能推荐命令入口 -->
+    <button
+      v-if="knowledgeTab === 'command'"
+      class="ai-recommend-btn"
+      :disabled="aiRecommendLoading"
+      @click="openAiRecommend"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z" />
+      </svg>
+      {{ aiRecommendLoading ? 'AI 分析中...' : 'AI 智能推荐命令' }}
+    </button>
     <div class="knowledge-list">
       <!-- 核查命令卡片 -->
       <div
@@ -113,6 +125,33 @@
 
     <!-- 文件预览对话框 -->
     <FilePreviewDialog ref="previewDialogRef" />
+
+    <!-- AI 推荐命令结果对话框 -->
+    <el-dialog
+      v-model="aiRecommendVisible"
+      title="AI 智能推荐核查命令"
+      width="540px"
+      append-to-body
+      :close-on-click-modal="false"
+    >
+      <div v-if="aiRecommendLoading" class="ai-rc-loading">
+        <div class="ai-rc-spinner"></div>
+        <span>正在根据测评项与资产信息匹配命令...</span>
+      </div>
+      <template v-else>
+        <div v-if="aiRecommendResults.length === 0" class="ai-rc-empty">未获得推荐结果</div>
+        <div v-else class="ai-rc-list">
+          <div v-for="item in aiRecommendResults" :key="item.id" class="ai-rc-item">
+            <div class="ai-rc-item-head">
+              <span class="ai-rc-name">{{ item.name }}</span>
+              <button class="ai-rc-quote" @click="quoteRecommended(item)">引用</button>
+            </div>
+            <div class="ai-rc-code">{{ item.command }}</div>
+            <div v-if="item.reason" class="ai-rc-reason">{{ item.reason }}</div>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -276,6 +315,71 @@ function handleQuoteCommand(cmd: CommandItem) {
   emit('quote', cmd);
 }
 
+// AI 智能推荐命令
+const aiRecommendVisible = ref(false);
+const aiRecommendLoading = ref(false);
+const aiRecommendResults = ref<any[]>([]);
+
+// 组装推荐参数：当前测评行（控制点/测评项内容）+ 当前资产（品牌/系统/设备类型）
+function buildRecommendParams() {
+  const row = props.tableRows[props.currentRowIndex] || {};
+  const asset = props.currentAsset || {};
+  return {
+    controlPoint: String(row.controlPoint || ''),
+    controlName: String(row.itemLabel || ''),
+    requirement: String(row.requirement || row.method || ''),
+    assetLabel: String(asset.name || asset.label || ''),
+    brand: String(asset.brand || ''),
+    os: String(asset.os || asset.osVersion || ''),
+    deviceType: String(asset.deviceType || asset.type || ''),
+  };
+}
+
+async function openAiRecommend() {
+  if (props.tableRows.length === 0) {
+    ElMessage.warning('请先选择测评行');
+    return;
+  }
+  const params = buildRecommendParams();
+  if (!params.requirement && !params.controlPoint) {
+    ElMessage.warning('当前行缺少测评项信息，无法推荐');
+    return;
+  }
+  aiRecommendVisible.value = true;
+  aiRecommendLoading.value = true;
+  aiRecommendResults.value = [];
+  try {
+    const res = await window.api.ai.recommendCommands(params);
+    if (res.success && res.data) {
+      aiRecommendResults.value = res.data.commands || [];
+      if (aiRecommendResults.value.length === 0) ElMessage.info('AI 未推荐匹配的命令');
+    } else {
+      ElMessage.error(res.error?.message || 'AI 推荐失败');
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || 'AI 推荐失败');
+  } finally {
+    aiRecommendLoading.value = false;
+  }
+}
+
+// 引用推荐命令（复用既有引用链路，写入测评依据）
+function quoteRecommended(item: any) {
+  handleQuoteCommand({
+    id: item.id,
+    title: item.name || '',
+    command: item.command || '',
+    content: item.description || item.reason || '',
+    target: item.target || '',
+    os: item.os || '',
+    brand: item.brand || '',
+    category: item.category || '',
+    subCategory: item.subCategory || '',
+    industry: item.industry || '',
+  });
+  aiRecommendVisible.value = false;
+}
+
 // 初始化加载
 loadKnowledgeBase();
 </script>
@@ -301,6 +405,7 @@ loadKnowledgeBase();
 .right-panel.collapsed .panel-header,
 .right-panel.collapsed .knowledge-tabs,
 .right-panel.collapsed .panel-search,
+.right-panel.collapsed .ai-recommend-btn,
 .right-panel.collapsed .knowledge-list {
   opacity: 0;
   visibility: hidden;
@@ -703,6 +808,142 @@ loadKnowledgeBase();
         background: var(--color-bg-hover);
       }
     }
+  }
+}
+
+/* AI 智能推荐命令 */
+.ai-recommend-btn {
+  margin: 4px 16px 8px;
+  padding: 7px 10px;
+  border: 1px dashed var(--color-primary, #1b5fd9);
+  border-radius: 6px;
+  background: var(--color-primary-light, rgba(27, 95, 217, 0.06));
+  color: var(--color-primary, #1b5fd9);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.ai-recommend-btn:hover:not(:disabled) {
+  background: var(--color-primary, #1b5fd9);
+  color: #fff;
+}
+
+.ai-recommend-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* AI 推荐对话框 */
+.ai-rc-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 32px 0;
+  color: var(--color-text-secondary, #4b5563);
+  font-size: 13px;
+}
+
+.ai-rc-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--color-border-light, #e5e7eb);
+  border-top-color: var(--color-primary, #1b5fd9);
+  border-radius: 50%;
+  animation: ai-rc-spin 0.8s linear infinite;
+}
+
+@keyframes ai-rc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ai-rc-empty {
+  padding: 32px 0;
+  text-align: center;
+  color: var(--color-text-tertiary, #9ca3af);
+  font-size: 13px;
+}
+
+.ai-rc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.ai-rc-item {
+  border: 1px solid var(--color-border-default, #e5e7eb);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.ai-rc-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ai-rc-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary, #111827);
+}
+
+.ai-rc-quote {
+  font-size: 11px;
+  padding: 3px 12px;
+  border-radius: 4px;
+  border: none;
+  background: var(--color-primary, #1b5fd9);
+  color: #fff;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ai-rc-quote:hover {
+  opacity: 0.85;
+}
+
+.ai-rc-code {
+  font-size: 11px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  color: #374151;
+  background: var(--color-bg-base, #f5f6fa);
+  border: 1px solid var(--color-border-light, #f0f0f3);
+  border-radius: 4px;
+  padding: 5px 8px;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.ai-rc-reason {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary, #4b5563);
+}
+
+.ai-rc-reason::before {
+  content: '💡 ';
+}
+
+/* AI 推荐对话框深色主题 */
+:root.dark {
+  .ai-rc-code {
+    color: var(--color-text-secondary);
+    background: var(--color-bg-page);
+    border-color: var(--color-border-base);
   }
 }
 </style>

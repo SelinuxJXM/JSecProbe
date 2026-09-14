@@ -225,6 +225,10 @@ export const aiConfigs = sqliteTable('ai_configs', {
   mode: text('mode').default('cloud'),
   ollamaModel: text('ollama_model'),
   ollamaUrl: text('ollama_url').default('http://localhost:11434'),
+  // 本地引擎：ollama=Ollama / herdsman=Herdsman(牧马人)，两者可共存切换
+  localEngine: text('local_engine').default('ollama'),
+  herdsmanUrl: text('herdsman_url').default('http://localhost:8080'),
+  herdsmanModel: text('herdsman_model'),
   // OCR预处理：云端模式默认关闭(0)，本地模式默认开启(1)
   ocrPreprocess: integer('ocr_preprocess').notNull().default(0),
   // 当前聊天使用的云端模型 ID（null 时 fallback 到 priority=1 的启用模型）

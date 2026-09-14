@@ -114,6 +114,23 @@
         </el-checkbox-group>
       </div>
 
+      <!-- AI 增强 -->
+      <div class="config-section">
+        <div class="section-title">
+          <span class="section-icon">🤖</span>
+          <span>AI 智能生成</span>
+        </div>
+        <div class="ai-enhance-container">
+          <el-switch
+            v-model="config.aiEnhanced"
+            active-text="启用 AI 智能生成分析评价与整改建议"
+            inactive-text="使用内置模板生成"
+            class="ai-switch"
+          />
+          <div class="ai-hint">启用后，将基于实际测评数据通过 AI 生成更贴合项目的总体分析评价和整改建议章节</div>
+        </div>
+      </div>
+
       <!-- 保存位置 -->
       <div class="config-section">
         <div class="section-title">
@@ -152,6 +169,7 @@ const savePath = ref('');
 const config = reactive({
   format: 'docx' as 'pdf' | 'docx',
   template: 'standard' as 'standard' | 'detailed' | 'simple',
+  aiEnhanced: false,
   includeSections: [
     'cover',
     'toc',
@@ -205,6 +223,7 @@ async function handleGenerate() {
     const res = await window.api.report.generate({
       format: config.format,
       template: config.template,
+      aiEnhanced: config.aiEnhanced,
       includeSections: [...config.includeSections],
       projectId: projectId.value,
       savePath: savePath.value,
@@ -458,6 +477,26 @@ defineExpose({ open });
   font-weight: 500;
 }
 
+.ai-enhance-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fafbfc;
+}
+
+.ai-switch {
+  height: auto !important;
+}
+
+.ai-hint {
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.4;
+}
+
 .save-path-container {
   display: flex;
   gap: 8px;
@@ -577,6 +616,15 @@ defineExpose({ open });
     border-color: var(--color-primary);
     background: var(--color-primary-light);
     color: var(--color-primary);
+  }
+
+  .ai-enhance-container {
+    border-color: var(--color-border-base);
+    background: var(--color-bg-card);
+  }
+
+  .ai-hint {
+    color: var(--color-text-secondary);
   }
 }
 </style>

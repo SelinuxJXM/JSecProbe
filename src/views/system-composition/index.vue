@@ -47,6 +47,14 @@
           <span class="asset-badge">{{ pagination.total }}</span>
         </div>
         <div class="toolbar-right">
+          <button class="toolbar-btn ai-btn" @click="openAiIdentify" :disabled="aiIdentifyLoading || aiImportLoading">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2m0 12v-2m4.77-7.77l-1.42 1.42M5.65 5.65L4.24 4.24m12.02 12.02l1.41 1.41M4.24 19.76l1.42-1.42M12 12l3-3"/><path d="M9.76 14.24a4 4 0 1 0 4.48-4.48"/></svg>
+            AI 识别
+          </button>
+          <button class="toolbar-btn ai-btn" @click="openAiMissing" :disabled="aiMissingLoading">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            AI 缺失提醒
+          </button>
           <button class="toolbar-btn" @click="handleImport">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             导入资产
@@ -419,6 +427,121 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- AI 资产识别对话框 -->
+    <el-dialog v-model="aiIdentifyVisible" title="AI 资产识别" width="720px" :close-on-click-modal="false" append-to-body>
+      <div v-if="aiIdentifyResults.length === 0">
+        <div class="ai-tip">粘贴系统描述信息（如网络拓扑描述、建设方案节选、资产清单文字等），或添加图片/文档附件（截图、照片、拓扑图、PDF/Word/Excel 等），AI 将识别出应纳入测评范围的资产生成预览清单，勾选确认后导入系统构成。</div>
+        <el-input
+          v-model="aiIdentifyDescription"
+          type="textarea"
+          :rows="6"
+          maxlength="20000"
+          show-word-limit
+          placeholder="示例：本系统核心机房部署在 A 楼 3 层，出口部署山石网科防火墙 1 台；核心交换机为华为 S5735 共 2 台，接入交换机为 H3C S5130S 共 6 台；业务应用系统部署在 2 台华为 RH2288H V3 服务器上，数据库为 Oracle 11g；另有运维终端 2 台、业务终端 20 台，均为 Windows 10 操作系统……"
+        />
+        <!-- 附件上传区 -->
+        <div class="ai-attachments">
+          <div class="ai-attachments-header">
+            <span class="ai-attachments-title">附件（可选）</span>
+            <span class="ai-attachments-hint">图片用于多模态识别/OCR 提取，文档提取文本</span>
+          </div>
+          <div class="ai-attachments-actions">
+            <el-button size="small" :loading="aiIdentifyAttachmentsLoading" @click="aiIdentifyImageInput?.click()">
+              <el-icon><Picture /></el-icon> 添加图片
+            </el-button>
+            <el-button size="small" :loading="aiIdentifyAttachmentsLoading" @click="aiIdentifyDocInput?.click()">
+              <el-icon><Document /></el-icon> 添加文档
+            </el-button>
+            <input
+              ref="aiIdentifyImageInput"
+              type="file"
+              accept=".jpg,.jpeg,.png,.gif,.bmp,.webp"
+              multiple
+              style="display:none"
+              @change="onImageFileSelect"
+            />
+            <input
+              ref="aiIdentifyDocInput"
+              type="file"
+              accept=".pdf,.doc,.docx,.xls,.xlsx,.md,.txt,.csv,.log,.json,.xml,.html,.css,.js,.ts"
+              multiple
+              style="display:none"
+              @change="onDocFileSelect"
+            />
+          </div>
+          <div v-if="aiIdentifyAttachments.length > 0" class="ai-attachments-list">
+            <div v-for="(att, idx) in aiIdentifyAttachments" :key="att.path + att.name" class="ai-attachment-item">
+              <el-icon class="ai-att-icon" :class="att.type === 'image' ? 'is-image' : 'is-doc'">
+                <Picture v-if="att.type === 'image'" />
+                <Document v-else />
+              </el-icon>
+              <span class="ai-att-name" :title="att.name">{{ att.name }}</span>
+              <span class="ai-att-size">{{ formatAttachmentSize(att.size) }}</span>
+              <el-button text class="ai-att-remove" @click="removeAttachment(idx)">
+                <el-icon><Close /></el-icon>
+              </el-button>
+            </div>
+          </div>
+        </div>
+        <div class="ai-identify-footer-left">
+          <el-button type="primary" :loading="aiIdentifyLoading" @click="handleAiIdentify">
+            {{ aiIdentifyLoading ? '识别中…' : '开始识别' }}
+          </el-button>
+        </div>
+      </div>
+      <div v-else class="ai-id-results">
+        <div class="ai-id-header">
+          <span class="ai-id-count">共识别 {{ aiIdentifyResults.length }} 个资产，请勾选需要导入的资产（可在导入前修改分类与名称）</span>
+          <el-button text type="primary" @click="aiIdentifyResults = []">重新识别</el-button>
+        </div>
+        <div class="ai-id-list">
+          <div v-for="(item, idx) in aiIdentifyResults" :key="idx" class="ai-id-item" :class="{ checked: item.selected }">
+            <el-checkbox v-model="item.selected" />
+            <el-select v-model="item.category" size="small" class="ai-id-cat" filterable>
+              <el-option v-for="cat in ASSET_CATEGORIES" :key="cat.id" :label="cat.name" :value="cat.id" />
+            </el-select>
+            <el-input v-model="item.name" size="small" class="ai-id-name" placeholder="资产名称" />
+            <el-select v-model="item.importance" size="small" class="ai-id-imp">
+              <el-option label="关键" value="high" />
+              <el-option label="重要" value="medium" />
+              <el-option label="一般" value="low" />
+            </el-select>
+            <span class="ai-id-usage" :title="item.deviceUsage">{{ item.deviceUsage || '—' }}</span>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="aiIdentifyVisible = false">取消</el-button>
+        <el-button v-if="aiIdentifyResults.length > 0" type="primary" :loading="aiImportLoading" @click="handleImportIdentified">
+          导入选中（{{ selectedIdentifyCount }}）
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- AI 缺失资产提醒对话框 -->
+    <el-dialog v-model="aiMissingVisible" title="AI 缺失资产提醒" width="640px" :close-on-click-modal="false" append-to-body>
+      <div v-loading="aiMissingLoading" class="ai-missing-body" element-loading-text="AI 分析中…">
+        <template v-if="!aiMissingLoading">
+          <div v-if="aiMissingResults.length === 0" class="ai-missing-empty">AI 认为当前资产构成已较完整，未发现明显缺失的资产类别。</div>
+          <div v-else class="ai-missing-list">
+            <div class="ai-tip">基于当前项目已录入的资产分布，AI 识别出以下可能缺失的资产类别：</div>
+            <div v-for="(m, idx) in aiMissingResults" :key="idx" class="ai-missing-item">
+              <div class="ai-missing-title">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                缺失：{{ m.categoryName }}
+              </div>
+              <div class="ai-missing-row"><span class="ai-missing-label">风险影响</span><span>{{ m.risk || '—' }}</span></div>
+              <div class="ai-missing-row"><span class="ai-missing-label">补充建议</span><span>{{ m.suggestion || '—' }}</span></div>
+            </div>
+          </div>
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="aiMissingVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="aiMissingLoading" @click="handleAiMissing">重新检查</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -430,6 +553,9 @@ import {
   HomeFilled,
   DArrowRight,
   ArrowLeft,
+  Close,
+  Picture,
+  Document,
 } from '@element-plus/icons-vue';
 import type { Asset, AssetCategory, AssetListResult } from '@shared/types';
 import { ASSET_CATEGORIES } from '@shared/asset-categories';
@@ -493,6 +619,28 @@ const formData = reactive({
   isVirtual: false,
   isAssessmentTarget: true,
 });
+
+// AI 资产识别 / 缺失提醒
+const aiIdentifyVisible = ref(false);
+const aiIdentifyLoading = ref(false);
+const aiIdentifyDescription = ref('');
+const aiIdentifyResults = ref<any[]>([]);
+const aiImportLoading = ref(false);
+// AI 资产识别附件
+interface AiIdentifyAttachment {
+  name: string;
+  path: string;
+  type: 'image' | 'document';
+  size: number;
+}
+const aiIdentifyAttachments = ref<AiIdentifyAttachment[]>([]);
+const aiIdentifyAttachmentsLoading = ref(false);
+const aiIdentifyImageInput = ref<HTMLInputElement | null>(null);
+const aiIdentifyDocInput = ref<HTMLInputElement | null>(null);
+const aiMissingVisible = ref(false);
+const aiMissingLoading = ref(false);
+const aiMissingResults = ref<Array<{ category: string; categoryName: string; risk: string; suggestion: string }>>([]);
+const selectedIdentifyCount = computed(() => aiIdentifyResults.value.filter(a => a.selected).length);
 
 // 分类名称映射（统一引用共享资产分类，避免与后端定义漂移）
 const CATEGORY_NAMES: Record<string, string> = Object.fromEntries(
@@ -760,6 +908,225 @@ function handleCategoryChange(categoryId: string) {
   currentCategory.value = categoryId;
   pagination.page = 1;
   loadAssets();
+}
+
+// AI 资产识别
+function openAiIdentify() {
+  aiIdentifyDescription.value = '';
+  aiIdentifyResults.value = [];
+  aiIdentifyAttachments.value = [];
+  aiIdentifyVisible.value = true;
+}
+
+// 附件类型常量（与后端 attachment.ipc.ts 的 IMAGE/DOCUMENT 白名单一致）
+const IDENTIFY_IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'];
+const IDENTIFY_DOC_EXT = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.md', '.txt', '.csv', '.log', '.json', '.xml', '.html', '.css', '.js', '.ts'];
+const IDENTIFY_IMAGE_MAX = 10 * 1024 * 1024;
+const IDENTIFY_DOC_MAX = 20 * 1024 * 1024;
+const IDENTIFY_MAX_IMAGES = 20;
+const IDENTIFY_MAX_DOCS = 10;
+
+function getFileNameExt(name: string): string {
+  return name.toLowerCase().match(/\.[^.]+$/)?.[0] || '';
+}
+
+function isDuplicateAttachment(name: string, size: number): boolean {
+  return aiIdentifyAttachments.value.some(a => a.name === name && a.size === size);
+}
+
+async function addAttachmentFiles(files: File[], kind: 'image' | 'document') {
+  const max = kind === 'image' ? IDENTIFY_MAX_IMAGES : IDENTIFY_MAX_DOCS;
+  const exts = kind === 'image' ? IDENTIFY_IMAGE_EXT : IDENTIFY_DOC_EXT;
+  const maxSize = kind === 'image' ? IDENTIFY_IMAGE_MAX : IDENTIFY_DOC_MAX;
+  const currentKindCount = aiIdentifyAttachments.value.filter(a => a.type === kind).length;
+  let accepted = 0;
+  for (const file of files) {
+    if (currentKindCount + accepted >= max) {
+      ElMessage.warning(`附件「${file.name}」已达数量上限（${max} 个），未添加`);
+      continue;
+    }
+    const ext = getFileNameExt(file.name);
+    if (!exts.includes(ext)) {
+      ElMessage.warning(`不支持的文件类型：${file.name}`);
+      continue;
+    }
+    if (file.size > maxSize) {
+      ElMessage.warning(`「${file.name}」超过大小限制（${maxSize / 1024 / 1024}MB）`);
+      continue;
+    }
+    if (isDuplicateAttachment(file.name, file.size)) {
+      ElMessage.warning(`附件「${file.name}」已存在`);
+      continue;
+    }
+    if (!window.api) {
+      ElMessage.warning('应用未初始化，请在 Electron 环境中运行');
+      return;
+    }
+    try {
+      aiIdentifyAttachmentsLoading.value = true;
+      const base64Data = await readFileAsBase64(file);
+      const res = await window.api.attachment.save({ name: file.name, base64Data });
+      if (res.success && res.data) {
+        aiIdentifyAttachments.value.push({
+          name: res.data.name,
+          path: res.data.path,
+          type: res.data.type,
+          size: res.data.size,
+        });
+        accepted++;
+      } else {
+        ElMessage.error(`附件「${file.name}」保存失败：${res.error?.message || '未知错误'}`);
+      }
+    } catch (error: any) {
+      ElMessage.error(`附件「${file.name}」处理失败：${error.message || '未知错误'}`);
+    } finally {
+      aiIdentifyAttachmentsLoading.value = false;
+    }
+  }
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(',')[1] || '';
+      if (!base64) reject(new Error('文件内容读取失败'));
+      else resolve(base64);
+    };
+    reader.onerror = () => reject(new Error('文件读取失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function onImageFileSelect(e: Event) {
+  const target = e.target as HTMLInputElement;
+  const files = target.files ? Array.from(target.files) : [];
+  if (files.length > 0) addAttachmentFiles(files, 'image');
+  target.value = '';
+}
+
+function onDocFileSelect(e: Event) {
+  const target = e.target as HTMLInputElement;
+  const files = target.files ? Array.from(target.files) : [];
+  if (files.length > 0) addAttachmentFiles(files, 'document');
+  target.value = '';
+}
+
+function removeAttachment(index: number) {
+  aiIdentifyAttachments.value.splice(index, 1);
+}
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+}
+
+async function handleAiIdentify() {
+  if (!aiIdentifyDescription.value.trim() && aiIdentifyAttachments.value.length === 0) {
+    ElMessage.warning('请先粘贴系统描述信息或添加附件');
+    return;
+  }
+  aiIdentifyLoading.value = true;
+  try {
+    const imagePaths = aiIdentifyAttachments.value.filter(a => a.type === 'image').map(a => a.path);
+    const documents = aiIdentifyAttachments.value.filter(a => a.type === 'document').map(a => a.path);
+    let ocrPreprocess = false;
+    try {
+      const cfgRes = await window.api.ai.getConfig();
+      if (cfgRes.success && cfgRes.data) {
+        ocrPreprocess = Boolean((cfgRes.data as any).ocrPreprocess);
+      }
+    } catch { /* 配置读取失败时按默认关闭处理 */ }
+    const res = await window.api.ai.identifyAssets({
+      projectId: route.params.id as string,
+      description: aiIdentifyDescription.value,
+      imagePaths,
+      documents,
+      ocrPreprocess,
+    });
+    if (res.success && res.data) {
+      aiIdentifyResults.value = (res.data.assets || []).map(a => ({ ...a, selected: true }));
+      if (aiIdentifyResults.value.length === 0) ElMessage.info('AI 未识别出资产，请补充系统描述细节或附件');
+    } else {
+      ElMessage.error(res.error?.message || 'AI 资产识别失败');
+    }
+  } finally {
+    aiIdentifyLoading.value = false;
+  }
+}
+
+function isNonTargetCategory(cat: string) {
+  return ['sys_doc', 'other_asset', 'crypto_product', 'security_personnel'].includes(cat);
+}
+
+async function handleImportIdentified() {
+  const selected = aiIdentifyResults.value.filter(a => a.selected);
+  if (selected.length === 0) {
+    ElMessage.warning('请至少勾选一个资产');
+    return;
+  }
+  aiImportLoading.value = true;
+  try {
+    const projectId = route.params.id as string;
+    let failCount = 0;
+    for (const a of selected) {
+      try {
+        await window.api.asset.create({
+          projectId,
+          category: a.category,
+          name: a.name,
+          os: a.os || '',
+          version: a.version || '',
+          deviceUsage: a.deviceUsage || '',
+          description: a.description || '',
+          quantity: a.quantity || 1,
+          ip: a.ip || '',
+          importance: a.importance || 'medium',
+          isVirtual: false,
+          isAssessmentTarget: !isNonTargetCategory(a.category),
+        });
+      } catch {
+        failCount += 1;
+      }
+    }
+    if (failCount > 0) {
+      ElMessage.warning(`已导入 ${selected.length - failCount} 个资产，${failCount} 个失败`);
+    } else {
+      ElMessage.success(`成功导入 ${selected.length} 个资产`);
+    }
+    aiIdentifyVisible.value = false;
+    if (selected.some(a => a.category === currentCategory.value)) {
+      loadAssets();
+    }
+  } finally {
+    aiImportLoading.value = false;
+  }
+}
+
+// AI 缺失资产提醒
+async function openAiMissing() {
+  aiMissingVisible.value = true;
+  await handleAiMissing();
+}
+
+async function handleAiMissing() {
+  aiMissingLoading.value = true;
+  try {
+    const res = await window.api.ai.checkMissingAssets({ projectId: route.params.id as string });
+    if (res.success && res.data) {
+      aiMissingResults.value = (res.data.missing || []).map(m => ({
+        ...m,
+        categoryName: CATEGORY_NAMES[m.category] || m.category,
+      }));
+      if (aiMissingResults.value.length === 0) ElMessage.info('AI 认为当前资产构成已较完整');
+    } else {
+      ElMessage.error(res.error?.message || 'AI 缺失资产提醒失败');
+    }
+  } finally {
+    aiMissingLoading.value = false;
+  }
 }
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1563,5 +1930,225 @@ onUnmounted(() => {
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+// AI 资产识别 / 缺失提醒
+.toolbar-btn.ai-btn {
+  color: #8b5cf6;
+  border-color: rgba(139, 92, 246, 0.35);
+
+  &:hover:not(:disabled) {
+    color: #7c3aed;
+    border-color: rgba(139, 92, 246, 0.65);
+    background: rgba(139, 92, 246, 0.06);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.ai-tip {
+  font-size: 12.5px;
+  color: var(--color-text-tertiary);
+  line-height: 1.6;
+  margin-bottom: 10px;
+}
+
+.ai-id-results {
+  .ai-id-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+
+    .ai-id-count {
+      font-size: 13px;
+      color: var(--color-text-secondary);
+    }
+  }
+
+  .ai-id-list {
+    max-height: 420px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .ai-id-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--color-border-base);
+    border-radius: 8px;
+    transition: border-color 0.15s, background 0.15s;
+
+    &.checked {
+      background: rgba(139, 92, 246, 0.04);
+      border-color: rgba(139, 92, 246, 0.35);
+    }
+
+    .ai-id-cat {
+      width: 150px;
+      flex-shrink: 0;
+    }
+
+    .ai-id-name {
+      flex: 1;
+      min-width: 120px;
+    }
+
+    .ai-id-imp {
+      width: 90px;
+      flex-shrink: 0;
+    }
+
+    .ai-id-usage {
+      width: 160px;
+      flex-shrink: 0;
+      font-size: 12px;
+      color: var(--color-text-tertiary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+}
+
+.ai-attachments {
+  margin-bottom: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+
+  .ai-attachments-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+
+    .ai-attachments-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--color-text);
+    }
+
+    .ai-attachments-hint {
+      font-size: 11.5px;
+      color: var(--color-text-tertiary);
+    }
+  }
+
+  .ai-attachments-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .ai-attachments-list {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .ai-attachment-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: var(--color-bg-subtle);
+    border-radius: 6px;
+    font-size: 12px;
+
+    .ai-att-icon {
+      font-size: 16px;
+      &.is-image { color: var(--color-primary); }
+      &.is-doc { color: #8a6d3b; }
+    }
+
+    .ai-att-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--color-text-secondary);
+    }
+
+    .ai-att-size {
+      color: var(--color-text-tertiary);
+      font-size: 11px;
+    }
+
+    .ai-att-remove {
+      padding: 2px;
+      min-width: 0;
+    }
+  }
+}
+
+.ai-identify-footer-left {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.ai-missing-body {
+  min-height: 120px;
+
+  .ai-missing-empty {
+    text-align: center;
+    padding: 32px 0;
+    font-size: 13px;
+    color: var(--color-text-tertiary);
+  }
+
+  .ai-missing-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 440px;
+    overflow-y: auto;
+  }
+
+  .ai-missing-item {
+    border: 1px solid var(--color-border-base);
+    border-radius: 8px;
+    padding: 12px 14px;
+    background: var(--color-bg-base);
+
+    .ai-missing-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13.5px;
+      font-weight: 600;
+      color: #d97706;
+      margin-bottom: 8px;
+    }
+
+    .ai-missing-row {
+      display: flex;
+      gap: 8px;
+      font-size: 12.5px;
+      line-height: 1.7;
+      color: var(--color-text-secondary);
+
+      .ai-missing-label {
+        flex-shrink: 0;
+        color: var(--color-text-tertiary);
+
+        &::after {
+          content: '：';
+        }
+      }
+    }
+  }
 }
 </style>

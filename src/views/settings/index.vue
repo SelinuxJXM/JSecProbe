@@ -337,6 +337,13 @@
             </span>
           </template>
         </el-tab-pane>
+        <el-tab-pane name="compliance">
+          <template #label>
+            <span style="display: inline-flex; align-items: center; gap: 6px">
+              合规差距
+            </span>
+          </template>
+        </el-tab-pane>
       </el-tabs>
 
       <!-- 列表 Tab -->
@@ -587,6 +594,14 @@
               >
                 导出 Markdown
               </el-button>
+              <el-button
+                type="warning"
+                :disabled="!compareResult || aiDiffLoading"
+                :loading="aiDiffLoading"
+                @click="runAiDiffExplain"
+              >
+                AI 解读差异
+              </el-button>
               <el-button :icon="Refresh" @click="resetCompare">重置</el-button>
             </div>
           </div>
@@ -687,6 +702,200 @@
                 </template>
               </el-table-column>
             </el-table>
+
+            <!-- AI 差异解读卡片 -->
+            <div v-if="aiDiffData || aiDiffLoading || aiDiffError" style="margin-top: 20px; border-top: 1px solid var(--el-border-color-lighter); padding-top: 16px">
+              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px">
+                <el-tag type="warning" size="small">AI 解读</el-tag>
+                <span style="font-weight: 600; font-size: 14px">差异分析</span>
+              </div>
+
+              <div v-if="aiDiffLoading" style="padding: 12px 0">
+                <el-skeleton :rows="3" animated />
+              </div>
+
+              <div v-else-if="aiDiffError" style="margin-bottom: 12px">
+                <el-alert :title="aiDiffError" type="error" :closable="false" show-icon />
+              </div>
+
+              <div v-else-if="aiDiffData">
+                <div style="font-size: 13px; line-height: 1.7; color: var(--el-text-color-primary); white-space: pre-wrap; margin-bottom: 12px">
+                  {{ aiDiffData.summary }}
+                </div>
+
+                <div v-if="aiDiffData.keyDiffs && aiDiffData.keyDiffs.length > 0" style="margin-bottom: 12px">
+                  <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px; color: var(--el-text-color-secondary)">关键差异（{{ aiDiffData.keyDiffs.length }} 项）</div>
+                  <el-table :data="aiDiffData.keyDiffs" size="small" stripe style="width: 100%">
+                    <el-table-column prop="domain" label="域" width="100" />
+                    <el-table-column prop="point" label="差异要点" min-width="220" show-overflow-tooltip />
+                    <el-table-column prop="impact" label="影响说明" min-width="220" show-overflow-tooltip />
+                  </el-table>
+                </div>
+
+                <div v-if="aiDiffData.advice" style="padding: 10px 12px; background: var(--el-color-primary-light-9); border-radius: 6px; font-size: 13px; line-height: 1.7; color: var(--el-text-color-primary)">
+                  <span style="font-weight: 600; color: var(--el-color-primary)">AI 建议：</span>{{ aiDiffData.advice }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- 合规差距子 Tab -->
+      <template v-else-if="standardsSubTab === 'compliance'">
+        <div class="card p-md">
+          <div class="toolbar" style="margin-bottom: 12px">
+            <div class="toolbar-left">
+              <div class="settings-section-title" style="margin-bottom: 0">合规差距分析</div>
+            </div>
+            <div class="toolbar-right">
+              <el-select
+                v-model="complianceProjectId"
+                placeholder="选择项目"
+                clearable
+                style="width: 220px"
+              >
+                <el-option
+                  v-for="p in projectListForCompliance"
+                  :key="p.id"
+                  :label="p.name"
+                  :value="p.id"
+                />
+              </el-select>
+              <span style="color: #909399; padding: 0 4px">×</span>
+              <el-select
+                v-model="complianceStandardId"
+                placeholder="选择标准"
+                clearable
+                style="width: 260px"
+              >
+                <el-option
+                  v-for="s in standardList"
+                  :key="s.id"
+                  :label="`${s.name}（${s.code}）`"
+                  :value="s.id"
+                />
+              </el-select>
+              <el-button
+                type="primary"
+                :disabled="!complianceProjectId || !complianceStandardId"
+                :loading="complianceStatsLoading"
+                @click="runComplianceStats"
+              >
+                统计
+              </el-button>
+              <el-button
+                type="warning"
+                :disabled="!complianceStatsData || aiComplianceLoading || complianceStatsLoading"
+                :loading="aiComplianceLoading"
+                @click="runAiComplianceGap"
+              >
+                AI 分析差距
+              </el-button>
+              <el-button :icon="Refresh" @click="resetCompliance">重置</el-button>
+            </div>
+          </div>
+
+          <el-empty
+            v-if="!complianceStatsData && !complianceStatsLoading"
+            :description="complianceProjectId && complianceStandardId ? '已选择项目与标准，点击「统计」查看合规数据' : '请先选择项目与标准，再点击「统计」查看合规数据'"
+            style="padding: 40px 0"
+          />
+
+          <div v-else-if="complianceStatsLoading" style="padding: 20px 0">
+            <el-skeleton :rows="4" animated />
+          </div>
+
+          <div v-else-if="complianceStatsData">
+            <!-- 汇总概览 -->
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px">
+              <el-card shadow="hover">
+                <div class="overview-label">适用条目</div>
+                <div class="overview-value">{{ complianceStatsData.summary?.totalItems ?? 0 }}</div>
+              </el-card>
+              <el-card shadow="hover">
+                <div class="overview-label">已判定</div>
+                <div class="overview-value">{{ complianceStatsData.summary?.tested ?? 0 }}</div>
+              </el-card>
+              <el-card shadow="hover">
+                <div class="overview-label">合规率</div>
+                <div class="overview-value" :style="{ color: (complianceStatsData.summary?.complianceRate ?? 0) >= 80 ? '#18A957' : (complianceStatsData.summary?.complianceRate ?? 0) >= 50 ? '#D48806' : '#F56C6C' }">
+                  {{ (complianceStatsData.summary?.complianceRate ?? 0).toFixed(1) }}%
+                </div>
+              </el-card>
+              <el-card shadow="hover">
+                <div class="overview-label">覆盖率</div>
+                <div class="overview-value">{{ (complianceStatsData.summary?.coverageRate ?? 0).toFixed(1) }}%</div>
+              </el-card>
+            </div>
+
+            <!-- 按域统计 -->
+            <div v-if="complianceStatsData.domains && complianceStatsData.domains.length > 0" style="margin-bottom: 16px">
+              <div style="font-weight: 600; font-size: 14px; margin-bottom: 8px">按域统计</div>
+              <el-table :data="complianceStatsData.domains" size="small" stripe style="width: 100%">
+                <el-table-column prop="name" label="域" width="160" show-overflow-tooltip />
+                <el-table-column prop="total" label="适用" width="80" align="center" />
+                <el-table-column prop="tested" label="已判定" width="80" align="center" />
+                <el-table-column label="合规率" min-width="140">
+                  <template #default="{ row }">
+                    <div style="display: flex; align-items: center; gap: 8px">
+                      <div style="flex: 1; height: 6px; background: var(--el-border-color-lighter); border-radius: 3px; overflow: hidden">
+                        <div
+                          :style="{ width: (row.complianceRate ?? 0) + '%', height: '100%', borderRadius: '3px' }"
+                          :background="(row.complianceRate ?? 0) >= 80 ? '#18A957' : (row.complianceRate ?? 0) >= 50 ? '#D48806' : '#F56C6C'"
+                        />
+                      </div>
+                      <span style="font-size: 12px; white-space: nowrap">{{ (row.complianceRate ?? 0).toFixed(0) }}%</span>
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="不合规" width="80" align="center">
+                  <template #default="{ row }">
+                    <span :style="{ color: (row.nonCompliant ?? 0) > 0 ? '#F56C6C' : 'inherit' }">{{ row.nonCompliant ?? 0 }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="部分合规" width="80" align="center">
+                  <template #default="{ row }">
+                    <span :style="{ color: (row.partial ?? 0) > 0 ? '#D48806' : 'inherit' }">{{ row.partial ?? 0 }}</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+
+            <!-- AI 合规差距卡片 -->
+            <div v-if="aiComplianceData || aiComplianceLoading || aiComplianceError" style="margin-top: 16px; border-top: 1px solid var(--el-border-color-lighter); padding-top: 16px">
+              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px">
+                <el-tag type="warning" size="small">AI 分析</el-tag>
+                <span style="font-weight: 600; font-size: 14px">合规差距</span>
+              </div>
+
+              <div v-if="aiComplianceLoading" style="padding: 12px 0">
+                <el-skeleton :rows="3" animated />
+              </div>
+
+              <div v-else-if="aiComplianceError" style="margin-bottom: 12px">
+                <el-alert :title="aiComplianceError" type="error" :closable="false" show-icon />
+              </div>
+
+              <div v-else-if="aiComplianceData">
+                <div style="font-size: 13px; line-height: 1.7; color: var(--el-text-color-primary); white-space: pre-wrap; margin-bottom: 12px">
+                  {{ aiComplianceData.summary }}
+                </div>
+
+                <div v-if="aiComplianceData.gaps && aiComplianceData.gaps.length > 0" style="margin-bottom: 12px">
+                  <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px; color: var(--el-text-color-secondary)">主要差距（{{ aiComplianceData.gaps.length }} 项）</div>
+                  <div v-for="gap in aiComplianceData.gaps" :key="gap.domain + gap.gap" style="padding: 10px 12px; background: var(--el-bg-color); border-radius: 6px; margin-bottom: 8px; border: 1px solid var(--el-border-color-lighter)">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px">
+                      <el-tag :type="gap.priority === 'high' ? 'danger' : gap.priority === 'medium' ? 'warning' : 'info'" size="small">{{ gap.priority === 'high' ? '高' : gap.priority === 'medium' ? '中' : '低' }}</el-tag>
+                      <span style="font-weight: 600; font-size: 13px">{{ gap.domain }}</span>
+                    </div>
+                    <div style="font-size: 13px; line-height: 1.6; margin-bottom: 4px">{{ gap.gap }}</div>
+                    <div style="font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 4px">风险：{{ gap.risk }}</div>
+                    <div style="font-size: 12px; color: var(--el-color-primary); line-height: 1.5">{{ gap.suggestion }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </template>
@@ -1401,7 +1610,7 @@ const filteredStandardList = ref<any[]>([]);
 const standardLoading = ref(false);
 const standardKeyword = ref('');
 const selectedStandards = ref<any[]>([]);
-const standardsSubTab = ref<'list' | 'compare'>('list');
+const standardsSubTab = ref<'list' | 'compare' | 'compliance'>('list');
 const compareLeftId = ref<string>('');
 const compareRightId = ref<string>('');
 const compareLoading = ref(false);
@@ -1536,6 +1745,189 @@ function resetCompare() {
   compareRows.value = [];
   compareLabels.left = '左';
   compareLabels.right = '右';
+  aiDiffData.value = null;
+  aiDiffError.value = '';
+}
+
+// ===== AI 差异解读 =====
+interface AiDiffData {
+  summary: string;
+  keyDiffs: Array<{ domain: string; point: string; impact: string }>;
+  advice: string;
+}
+const aiDiffData = ref<AiDiffData | null>(null);
+const aiDiffLoading = ref(false);
+const aiDiffError = ref('');
+
+async function runAiDiffExplain() {
+  if (!window.api?.ai) return;
+  if (!compareResult.value) {
+    ElMessage.warning('请先执行对照');
+    return;
+  }
+  const left = standardList.value.find(s => s.id === compareLeftId.value);
+  const right = standardList.value.find(s => s.id === compareRightId.value);
+  if (!left || !right) return;
+
+  // 检查 AI 配置
+  const cfgRes = await window.api.ai.getConfig();
+  if (cfgRes.success && cfgRes.data) {
+    const cfg: any = cfgRes.data;
+    const hasKey = !!(cfg.apiKey && cfg.apiBase && cfg.model);
+    const hasLocal = cfg.mode === 'local' && !!(cfg.localEngine);
+    if (!hasKey && !hasLocal) {
+      aiDiffError.value = '尚未配置 AI 服务，请前往「AI 服务」Tab 完成配置后再试';
+      return;
+    }
+  }
+
+  aiDiffLoading.value = true;
+  aiDiffError.value = '';
+  try {
+    // 按 standard:compare 真实行结构映射：{ controlPoint, domainA, domainB, tag, left:{requirement, controlName, ...}, right:{...} }
+    const rows = (compareResult.value.rows || []).map((r: any) => ({
+      controlPoint: r.controlPoint || '',
+      domain: r.domainA || r.domainB || '',
+      tag: r.tag || '',
+      left: r.left ? {
+        requirement: (r.left.requirement || '').slice(0, 150),
+        controlName: (r.left.controlName || '').slice(0, 100),
+      } : null,
+      right: r.right ? {
+        requirement: (r.right.requirement || '').slice(0, 150),
+        controlName: (r.right.controlName || '').slice(0, 100),
+      } : null,
+    }));
+    const res = await window.api.ai.explainStandardDiff({
+      baseStandard: left.name,
+      targetStandard: right.name,
+      stats: compareResult.value.stats,
+      rows,
+    });
+    if (res.success && res.data) {
+      aiDiffData.value = res.data;
+    } else {
+      aiDiffError.value = res.error?.message || 'AI 解读失败，请稍后重试';
+    }
+  } catch (err: any) {
+    aiDiffError.value = err?.message || 'AI 解读失败，请稍后重试';
+  } finally {
+    aiDiffLoading.value = false;
+  }
+}
+
+// ===== 合规差距 =====
+const projectListForCompliance = ref<Array<{ id: string; name: string; level?: number; extensionType?: string }>>([]);
+const complianceProjectId = ref<string>('');
+const complianceStandardId = ref<string>('');
+const complianceStatsLoading = ref(false);
+const complianceStatsData = ref<any>(null);
+const aiComplianceLoading = ref(false);
+const aiComplianceData = ref<{
+  summary: string;
+  gaps: Array<{ domain: string; gap: string; risk: string; priority: string; suggestion: string }>;
+  domains: Array<Record<string, any>>;
+  stats: Record<string, any>;
+} | null>(null);
+const aiComplianceError = ref('');
+
+async function loadProjectListForCompliance() {
+  if (!window.api?.project) return;
+  try {
+    const res = await window.api.project.list({ page: 1, pageSize: 500 });
+    if (res.success && res.data) {
+      projectListForCompliance.value = (res.data.list || []).map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        level: p.level,
+        extensionType: p.extensionType,
+      }));
+    }
+  } catch (err) {
+    console.error('加载项目列表失败:', err);
+  }
+}
+
+async function runComplianceStats() {
+  if (!window.api?.standard?.getComplianceStats) {
+    ElMessage.warning('统计通道未就绪');
+    return;
+  }
+  if (!complianceProjectId.value || !complianceStandardId.value) {
+    ElMessage.warning('请选择项目和标准');
+    return;
+  }
+  complianceStatsLoading.value = true;
+  aiComplianceData.value = null;
+  aiComplianceError.value = '';
+  try {
+    const res = await window.api.standard.getComplianceStats({
+      projectId: complianceProjectId.value,
+      standardId: complianceStandardId.value,
+    });
+    if (res.success && res.data) {
+      complianceStatsData.value = res.data;
+    } else {
+      complianceStatsData.value = null;
+      ElMessage.error(res.error || '统计失败');
+    }
+  } catch (err: any) {
+    ElMessage.error(err?.message || '统计失败');
+  } finally {
+    complianceStatsLoading.value = false;
+  }
+}
+
+async function runAiComplianceGap() {
+  if (!window.api?.ai) return;
+  // 数据漂移防护：点击 AI 分析前强制重新统计一次，确保 precomputed 与当前库一致
+  // （避免用户点统计后又改动测评记录，导致 AI 基于过期统计给出错误差距）
+  await runComplianceStats();
+  if (!complianceStatsData.value) {
+    ElMessage.warning('统计失败，无法执行 AI 分析');
+    return;
+  }
+  const cfgRes = await window.api.ai.getConfig();
+  if (cfgRes.success && cfgRes.data) {
+    const cfg: any = cfgRes.data;
+    const hasKey = !!(cfg.apiKey && cfg.apiBase && cfg.model);
+    const hasLocal = cfg.mode === 'local' && !!(cfg.localEngine);
+    if (!hasKey && !hasLocal) {
+      aiComplianceError.value = '尚未配置 AI 服务，请前往「AI 服务」Tab 完成配置后再试';
+      return;
+    }
+  }
+  aiComplianceLoading.value = true;
+  aiComplianceError.value = '';
+  try {
+    const res = await window.api.ai.standardComplianceGap({
+      projectId: complianceProjectId.value,
+      standardId: complianceStandardId.value,
+      // 复用已查好的统计结果，避免 AI 通道再做一次全量查库
+      precomputed: {
+        domains: complianceStatsData.value.domains,
+        summary: complianceStatsData.value.summary,
+        nonCompliantSamples: complianceStatsData.value.nonCompliantSamples,
+      },
+    });
+    if (res.success && res.data) {
+      aiComplianceData.value = res.data;
+    } else {
+      aiComplianceError.value = res.error?.message || 'AI 分析失败，请稍后重试';
+    }
+  } catch (err: any) {
+    aiComplianceError.value = err?.message || 'AI 分析失败，请稍后重试';
+  } finally {
+    aiComplianceLoading.value = false;
+  }
+}
+
+function resetCompliance() {
+  complianceProjectId.value = '';
+  complianceStandardId.value = '';
+  complianceStatsData.value = null;
+  aiComplianceData.value = null;
+  aiComplianceError.value = '';
 }
 
 /**
@@ -2308,6 +2700,7 @@ onMounted(() => {
   loadLogs();
   loadSettings();
   loadStandards();
+  loadProjectListForCompliance();
   initUpdateListener();
 });
 

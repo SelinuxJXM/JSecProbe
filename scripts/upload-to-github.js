@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.2.8'; // 版本号由 package.json 动态获取
+const TAG = 'v2.2.9'; // 版本号由 package.json 动态获取
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,17 +57,17 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.2.8 更新内容
+    body: `## v2.2.9 更新内容
 
 ### 新增功能
-- AI 助手支持自定义分析提示词：撰写现场测评记录、批量资产匹配、整改建议、问题描述四类模板均可编辑，使用 {{变量名}} 占位符，保存立即生效
-- 自定义提示词可一键恢复为内置默认模板；界面实时提示缺失变量并给出警告
-- 工作台系统状态卡片新增「备份地址」展示，点击可直接打开备份目录
-- 顶栏帮助图标接入产品白皮书站点，点击即可查看在线文档
+- 工作台新增「AI 洞察」：自动汇总全量项目统计，内置 5 条确定性预警规则（冷项目、逾期整改、高风险未处置等，窗口扩至近 6 个月），结合 AI 生成洞察、建议与可执行行动项
+- 标准管理新增「AI 三件套」：合规统计（10 大安全域分布/覆盖率/合规率）、AI 分析差距、AI 解读标准版本差异，三者互斥锁防重复触发，操作日志自动记录当前操作者身份
+- 系统构成「AI 资产识别」支持图片与文档附件：截图/拓扑图走多模态通道（隐私模式自动 OCR 脱敏），PDF/Word/Excel 自动提取文本，OCR 预处理跟随系统配置开关
+- 产品白皮书（docs/docs.html）同步更新 5 项 AI 功能说明，目录扩展为可折叠二级目录树
 
-### 界面优化
-- 提示词管理迁移至 AI 助手独立抽屉面板，系统设置弹窗更加清爽
-- 提示词卡片操作按钮改为横向排列，深色模式下配色全面适配`,
+### 优化
+- 合规差距分析前强制重算统计，消除数据漂移风险
+- 重复点击 AI 按钮时的 busy 提示文案明确化，防止误以为无响应`,
     draft: false,
     prerelease: false,
   });
