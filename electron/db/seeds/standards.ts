@@ -64,7 +64,7 @@ const STANDARDS: SeedStandard[] = [
   {
     "id": "dl-t-2614-2023-s2a3a3-l3",
     "name": "电力（S2A3G3）",
-    "code": "DL/T 2614-2023-S2A3A3",
+    "code": "DL/T 2614-2023-S2A3G3",
     "version": "2023",
     "description": "电力行业网络安全等级保护基本要求标准",
     "grade": 3,
@@ -83,7 +83,7 @@ const STANDARDS: SeedStandard[] = [
   {
     "id": "gb-t-22239-2019-s3a3g2-l3",
     "name": "国标（S3A3G3）",
-    "code": "GB/T 22239-2019-S3A3G2",
+    "code": "GB/T 22239-2019-S3A3G3",
     "version": "2019",
     "description": "网络安全等级保护基本要求标准，包含安全通用要求和各应用场景扩展要求",
     "grade": 3,

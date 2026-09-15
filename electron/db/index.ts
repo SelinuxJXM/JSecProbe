@@ -636,7 +636,7 @@ async function initStandardLibrary(): Promise<void> {
   //  - 按 code 幂等判重：若该 code 已存在（含用户覆盖导入的内置标准、或用户导入的其他标准），
   //    绝不重复插入、绝不覆盖、也绝不删除用户的测评记录或既有测评项；
   //  - 仅对「本次新入驻」的标准写入其测评项。
-  const STANDARD_DATA_VERSION = 8;
+  const STANDARD_DATA_VERSION = 9;
   try {
     const { getStandardSeeds } = await import('./seeds/standards');
     const seed = getStandardSeeds();
@@ -644,6 +644,29 @@ async function initStandardLibrary(): Promise<void> {
     const seedComboByCode = new Map<string, { levelCombo: string; industry: string }>();
     for (const s of seed.standards) {
       if (s.code) seedComboByCode.set(s.code, { levelCombo: s.levelCombo || '', industry: s.industry || '' });
+    }
+
+    // 内置标准代号勘误迁移：历史 seed 中两条内置标准的 code 误写（与 name/levelCombo 不一致），
+    // 存量库按 id + 旧代号 锚定改名；若新代号已被其他标准占用（如用户手动导入过）则跳过，
+    // 后续按 code 的幂等判重会自然命中新代号而不再重复入驻，不会产生脏数据。
+    const STANDARD_CODE_FIXUPS: Array<{ id: string; from: string; to: string }> = [
+      { id: 'gb-t-22239-2019-s3a3g2-l3', from: 'GB/T 22239-2019-S3A3G2', to: 'GB/T 22239-2019-S3A3G3' },
+      { id: 'dl-t-2614-2023-s2a3a3-l3', from: 'DL/T 2614-2023-S2A3A3', to: 'DL/T 2614-2023-S2A3G3' },
+    ];
+    try {
+      for (const fix of STANDARD_CODE_FIXUPS) {
+        const current = sqliteInstance.prepare('SELECT code FROM standards WHERE id = ?').get(fix.id) as { code: string } | undefined;
+        if (!current || current.code !== fix.from) continue;
+        const occupied = sqliteInstance.prepare('SELECT id FROM standards WHERE code = ?').get(fix.to);
+        if (occupied) {
+          log.warn(`内置标准代号勘误跳过(id=${fix.id})：新代号 ${fix.to} 已被其他标准占用`);
+          continue;
+        }
+        sqliteInstance.prepare('UPDATE standards SET code = ? WHERE id = ?').run(fix.to, fix.id);
+        log.info(`内置标准代号已勘误: ${fix.from} → ${fix.to}`);
+      }
+    } catch (e) {
+      log.warn('内置标准代号勘误迁移失败:', e);
     }
 
     // 防御性迁移：为 standards 补充 level_combo 列，并回填/校正存量数据的等级组合与行业
