@@ -51,9 +51,7 @@ passwd.md
 # Local data directory
 JSecProbeData
 
-# Screenshots (optional, keep wechat-qrcode for README)
-screenshots/*.png
-!screenshots/wechat-qrcode.png
+# Screenshots 由 README 通过 raw 链接引用，全部纳入版本跟踪（勿忽略）
 
 # Tesseract traineddata (OCR 语言包由 tesseract.js 运行时自动下载)
 *.traineddata

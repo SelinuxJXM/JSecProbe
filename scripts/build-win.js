@@ -103,7 +103,7 @@ async function build() {
 
   if (shouldPublish) {
     console.log('\n=== 发布到 GitHub Releases ===');
-    execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(ROOT, 'upload-release.ps1')}"`, {
+    execSync(`node "${path.join(ROOT, 'scripts', 'upload-to-github.js')}"`, {
       cwd: ROOT, stdio: 'inherit', shell: true,
     });
   } else {
