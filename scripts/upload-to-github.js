@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.3.1'; // 发布标签，随版本升级同步修改
+const TAG = 'v2.3.2'; // 发布标签，随版本升级同步修改
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,10 +57,11 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.3.1 更新内容
+    body: `## v2.3.2 更新内容
 
 ### 缺陷修复
-- 修复项目列表页空状态提示未区分页签的问题：「已归档项目」页签在空列表或搜索无结果时不再误显"暂无项目"及"新建第一个项目"按钮（新建项目为草稿态，不会出现在归档列表），改为「暂无已归档项目 / 未找到匹配的已归档项目」；"新建第一个项目"引导仅在未归档页签且无搜索词时显示`,
+- 修正标准库两条内置标准的错误代号：国标（S3A3G3）代号更正为 GB/T 22239-2019-S3A3G3，电力（S2A3G3）代号更正为 DL/T 2614-2023-S2A3G3
+- 新增存量数据库自动勘误迁移：老版本库启动时自动改正代号（保留标准 id，测评项关联不断链），且不会重复入驻内置标准`,
     draft: false,
     prerelease: false,
   });
