@@ -9,7 +9,7 @@ const DIST_DIR = path.join(ROOT, 'dist');
 const TOKEN = process.env.GITHUB_TOKEN;
 const OWNER = 'SelinuxJXM';
 const REPO = 'JSecProbe';
-const TAG = 'v2.3.2'; // 发布标签，随版本升级同步修改
+const TAG = `v${getPkgVersion()}`; // 发布标签，随版本升级自动同步 package.json
 
 if (!TOKEN) {
   console.error('Error: GITHUB_TOKEN environment variable is not set');
@@ -57,11 +57,17 @@ async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## v2.3.2 更新内容
+    body: `## ${TAG} 更新内容
+
+### 新功能
+- 新增自动采集执行引擎 Phase 1：支持 SSH/WinRM/MySQL/Oracle/PostgreSQL/SQLServer/Redis/HTTP 8 种连接类型
+- 新增 5 类解析器：SQL 表格 / 键值对 / Redis INFO / 正则提取 / 原文
+- 新增多资产并发调度（默认 3 并发，可通过 COLLECTION_MAX_CONCURRENT 调整）
+- 新增连接配置 CRUD、批量删除、任务取消、命令明细查看
 
 ### 缺陷修复
-- 修正标准库两条内置标准的错误代号：国标（S3A3G3）代号更正为 GB/T 22239-2019-S3A3G3，电力（S2A3G3）代号更正为 DL/T 2614-2023-S2A3G3
-- 新增存量数据库自动勘误迁移：老版本库启动时自动改正代号（保留标准 id，测评项关联不断链），且不会重复入驻内置标准`,
+- collection.service.ts 批量删除补 \`await .returning()\`，修复 deleted 恒为 undefined 的运行时 bug
+- shared/types.ts 补充 batchDeleteProfiles IPC 签名，前后端契约对齐`,
     draft: false,
     prerelease: false,
   });
