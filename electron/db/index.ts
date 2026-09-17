@@ -86,6 +86,7 @@ export async function initDatabase(): Promise<void> {
     }
 
     migrateAiConfigsTable(sqlite);
+    ensureCollectionTables(sqlite);
     createIndexes(sqlite);
     await initDefaultData();
     await initStandardLibrary();
@@ -511,6 +512,85 @@ function migrateAiConfigsTable(sqlite: Database.Database): void {
     }
   } catch (err) {
     log.warn('迁移 ai_configs 表失败:', err);
+  }
+}
+
+function ensureCollectionTables(sqlite: Database.Database): void {
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS connection_profiles (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        conn_type TEXT NOT NULL,
+        host TEXT NOT NULL,
+        port INTEGER,
+        username TEXT,
+        auth_method TEXT NOT NULL DEFAULT 'password',
+        password_encrypted TEXT,
+        private_key_path TEXT,
+        timeout_ms INTEGER NOT NULL DEFAULT 10000,
+        extra_config TEXT,
+        asset_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS asset_connections (
+        id TEXT PRIMARY KEY,
+        asset_id TEXT NOT NULL,
+        connection_id TEXT NOT NULL,
+        command_scope TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS collection_tasks (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        asset_id TEXT NOT NULL,
+        connection_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        total_commands INTEGER NOT NULL DEFAULT 0,
+        completed_commands INTEGER NOT NULL DEFAULT 0,
+        progress INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT,
+        finished_at TEXT,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS collection_results (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        command_id TEXT,
+        command TEXT NOT NULL,
+        status TEXT NOT NULL,
+        exit_code INTEGER,
+        stdout TEXT,
+        stderr TEXT,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        parsed_data TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS collection_documents (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        asset_id TEXT,
+        asset_name TEXT NOT NULL,
+        host TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `);
+
+    const profileCols = sqlite.prepare(`SELECT name FROM pragma_table_info('connection_profiles')`).all() as Array<{ name: string }>;
+    if (!profileCols.some((c) => c.name === 'asset_id')) {
+      sqlite.exec(`ALTER TABLE connection_profiles ADD COLUMN asset_id TEXT`);
+      log.info('已为 connection_profiles 补充 asset_id 列');
+    }
+
+    log.info('已确保采集引擎表存在');
+  } catch (err) {
+    log.warn('创建采集引擎表失败:', err);
   }
 }
 

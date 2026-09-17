@@ -15,6 +15,7 @@ import { registerDocumentHandlers } from '../ipc/document.ipc';
 import { registerFileHandlers } from '../ipc/file.ipc';
 import { registerWindowHandlers } from '../ipc/window.ipc';
 import { registerAttachmentHandlers } from '../ipc/attachment.ipc';
+import { registerCollectionHandlers } from '../ipc/collection.ipc';
 
 export function registerIpcHandlers(): void {
   registerAuthHandlers();
@@ -34,4 +35,5 @@ export function registerIpcHandlers(): void {
   registerFileHandlers();
   registerWindowHandlers();
   registerAttachmentHandlers();
+  registerCollectionHandlers();
 }

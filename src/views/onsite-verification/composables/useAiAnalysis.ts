@@ -194,7 +194,7 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
 
       // 更新步骤提示
       aiStep.value = 2;
-      aiLoadingText.value = hasScreenshots ? 'AI正在识别截图内容...' : 'AI正在分析关键证据点...';
+      aiLoadingText.value = hasScreenshots ? 'AI正在识别内容...' : 'AI正在分析关键证据点...';
 
       let res;
       try {

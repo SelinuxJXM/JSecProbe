@@ -285,6 +285,29 @@ const api = {
     writeTextFile: ipc<any>('fs:writeTextFile'),
   },
 
+  collection: {
+    listProfiles: ipc<any[]>('collection:listProfiles'),
+    saveProfile: ipc<any>('collection:saveProfile'),
+    deleteProfile: ipc<void>('collection:deleteProfile'),
+    batchDeleteProfiles: ipc<any>('collection:batchDeleteProfiles'),
+    testConnection: ipc<any>('collection:testConnection'),
+    listTasks: ipc<any[]>('collection:listTasks'),
+    getTask: ipc<any>('collection:getTask'),
+    createTask: ipc<any>('collection:createTask'),
+    cancelTask: ipc<void>('collection:cancelTask'),
+    listResults: ipc<any[]>('collection:listResults'),
+    confirmResult: ipc<void>('collection:confirmResult'),
+    saveDocument: ipc<any>('collection:saveDocument'),
+    listDocuments: ipc<any[]>('collection:listDocuments'),
+    deleteDocument: ipc<void>('collection:deleteDocument'),
+    openDocumentDir: ipc<void>('collection:openDocumentDir'),
+    onProgress: (callback: (data: any) => void) => {
+      const handler = (_e: IpcRendererEvent, data: any) => callback(data);
+      ipcRenderer.on('collection:progress', handler);
+      return () => ipcRenderer.removeListener('collection:progress', handler);
+    },
+  },
+
 
   /**
    * 监听主进程日志，转发到 DevTools Console

@@ -773,6 +773,24 @@ export interface ApiBridge {
    * 监听 IPC 事件
    */
   on: (channel: string, callback: (...args: any[]) => void) => () => void;
+  collection: {
+    listProfiles: () => Promise<IpcResponse<ConnectionProfile[]>>;
+    saveProfile: (data: ConnectionProfileInput) => Promise<IpcResponse<ConnectionProfile>>;
+    deleteProfile: (id: string) => Promise<IpcResponse<void>>;
+    batchDeleteProfiles: (ids: string[]) => Promise<IpcResponse<{ deleted: number }>>;
+    testConnection: (id: string) => Promise<IpcResponse<{ ok: boolean; message?: string }>>;
+    listTasks: (params: { projectId: string; assetId?: string }) => Promise<IpcResponse<CollectionTask[]>>;
+    getTask: (id: string) => Promise<IpcResponse<CollectionTask | null>>;
+    createTask: (data: { projectId: string; assetId: string; connectionId: string; commandIds: string[] }) => Promise<IpcResponse<CollectionTask>>;
+    cancelTask: (id: string) => Promise<IpcResponse<void>>;
+    listResults: (taskId: string) => Promise<IpcResponse<CollectionResult[]>>;
+    confirmResult: (data: { resultId: string; projectId: string; itemId: string; assetId: string; result: string; method?: string; evidence?: string }) => Promise<IpcResponse<void>>;
+    saveDocument: (data: { taskId: string; dirPath: string }) => Promise<IpcResponse<{ filePath: string; title: string }>>;
+    listDocuments: (projectId: string) => Promise<IpcResponse<CollectionDocument[]>>;
+    deleteDocument: (id: string) => Promise<IpcResponse<void>>;
+    openDocumentDir: (filePath: string) => Promise<IpcResponse<void>>;
+    onProgress: (callback: (data: CollectionProgress) => void) => () => void;
+  };
 }
 
 export interface DialogOpenOptions {
@@ -822,4 +840,100 @@ export interface UpdateStatus {
   downloadTransferred?: number;
   downloadTotal?: number;
   error?: string;
+}
+
+// ============ 自动采集执行引擎（Phase 1） ============
+
+export type ConnectionType = 'ssh' | 'winrm' | 'mysql' | 'oracle' | 'postgresql' | 'sqlserver' | 'redis' | 'http';
+
+export interface ConnectionProfile {
+  id: string;
+  name: string;
+  connType: ConnectionType;
+  host: string;
+  port: number | null;
+  username: string | null;
+  authMethod: 'password' | 'privateKey' | 'integrated';
+  passwordEncrypted: string | null;
+  privateKeyPath: string | null;
+  timeoutMs: number;
+  extraConfig: string | null;
+  assetId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConnectionProfileInput {
+  id?: string;
+  name: string;
+  connType: ConnectionType;
+  host: string;
+  port?: number | null;
+  username?: string | null;
+  authMethod?: 'password' | 'privateKey' | 'integrated';
+  password?: string;
+  privateKeyPath?: string | null;
+  timeoutMs?: number;
+  extraConfig?: string | null;
+  assetId?: string | null;
+}
+
+export interface CollectionTask {
+  id: string;
+  projectId: string;
+  assetId: string;
+  connectionId: string;
+  status: 'pending' | 'running' | 'success' | 'partial' | 'failed' | 'canceled';
+  totalCommands: number;
+  completedCommands: number;
+  progress: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CollectionResult {
+  id: string;
+  taskId: string;
+  commandId: string | null;
+  command: string;
+  status: 'success' | 'failed' | 'timeout' | 'error';
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  parsedData: string | null;
+  createdAt: string;
+}
+
+export interface CollectionCommandState {
+  commandId: string;
+  command: string;
+  status: 'pending' | 'running' | 'success' | 'failed' | 'timeout' | 'error';
+  durationMs?: number;
+}
+
+export interface CollectionProgress {
+  taskId: string;
+  status: string;
+  stage: string;
+  message: string;
+  percent: number;
+  completedCommands: number;
+  totalCommands: number;
+  commandStates?: CollectionCommandState[];
+}
+
+export interface CollectionDocument {
+  id: string;
+  taskId: string;
+  projectId: string;
+  assetId: string | null;
+  assetName: string;
+  host: string;
+  filePath: string;
+  title: string;
+  createdAt: string;
 }

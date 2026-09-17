@@ -309,3 +309,77 @@ export const operationLogs = sqliteTable('operation_logs', {
   detailJson: text('detail_json'), // 详细 JSON 审计信息（标准导入/导出等）
   createdAt: text('created_at').notNull(),
 });
+
+// ============ 自动采集执行引擎（Phase 1） ============
+
+// 连接配置：SSH / 数据库 / 中间件等（Phase 1 仅使用 ssh 类型，表结构为后续阶段预留）
+export const connectionProfiles = sqliteTable('connection_profiles', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  connType: text('conn_type').notNull(),
+  host: text('host').notNull(),
+  port: integer('port'),
+  username: text('username'),
+  authMethod: text('auth_method').notNull().default('password'),
+  passwordEncrypted: text('password_encrypted'),
+  privateKeyPath: text('private_key_path'),
+  timeoutMs: integer('timeout_ms').notNull().default(10000),
+  extraConfig: text('extra_config'),
+  assetId: text('asset_id'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+// 资产-连接配置关联（Phase 1 暂不写入，预留）
+export const assetConnections = sqliteTable('asset_connections', {
+  id: text('id').primaryKey(),
+  assetId: text('asset_id').notNull(),
+  connectionId: text('connection_id').notNull(),
+  commandScope: text('command_scope'),
+  createdAt: text('created_at').notNull(),
+});
+
+// 采集任务
+export const collectionTasks = sqliteTable('collection_tasks', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull(),
+  assetId: text('asset_id').notNull(),
+  connectionId: text('connection_id').notNull(),
+  status: text('status').notNull().default('pending'),
+  totalCommands: integer('total_commands').notNull().default(0),
+  completedCommands: integer('completed_commands').notNull().default(0),
+  progress: integer('progress').notNull().default(0),
+  startedAt: text('started_at'),
+  finishedAt: text('finished_at'),
+  createdBy: text('created_by'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+// 采集结果
+export const collectionResults = sqliteTable('collection_results', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id').notNull(),
+  commandId: text('command_id'),
+  command: text('command').notNull(),
+  status: text('status').notNull(),
+  exitCode: integer('exit_code'),
+  stdout: text('stdout'),
+  stderr: text('stderr'),
+  durationMs: integer('duration_ms').notNull().default(0),
+  parsedData: text('parsed_data'),
+  createdAt: text('created_at').notNull(),
+});
+
+// 采集文档（Markdown 元数据）
+export const collectionDocuments = sqliteTable('collection_documents', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id').notNull(),
+  projectId: text('project_id').notNull(),
+  assetId: text('asset_id'),
+  assetName: text('asset_name').notNull(),
+  host: text('host').notNull(),
+  filePath: text('file_path').notNull(),
+  title: text('title').notNull(),
+  createdAt: text('created_at').notNull(),
+});

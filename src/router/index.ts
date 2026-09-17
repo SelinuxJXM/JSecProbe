@@ -71,6 +71,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '知识库', icon: 'Reading' },
       },
       {
+        path: 'collection',
+        name: 'AutoCollection',
+        component: () => import('@/views/auto-collection/index.vue'),
+        meta: { title: '自动采集', icon: 'Cpu' },
+      },
+      {
         path: 'settings',
         name: 'Settings',
         component: () => import('@/views/settings/index.vue'),

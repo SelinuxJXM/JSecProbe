@@ -8,7 +8,8 @@ let appDataPath = '';
 const CONFIG_FILE_NAME = 'app-config.json';
 
 export function getDefaultBasePath(): string {
-  if (app.isPackaged) {
+  const isDev = !app.isPackaged || process.env.NODE_ENV === 'development' || process.env.ELECTRON_DEV === '1';
+  if (!isDev) {
     return 'C:\\JSecProbeData';
   }
   return join(process.cwd(), 'JSecProbeData');
