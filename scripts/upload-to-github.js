@@ -187,7 +187,8 @@ async function main() {
   let existingAssetNames = new Set();
   try {
     const existingAssets = await getReleaseAssets(releaseId);
-    existingAssetNames = new Set((existingAssets || []).map(a => a.name));
+    // 只把 state=uploaded（上传完成）的资产视为已存在；state=starter 的上传未完成，需补传
+    existingAssetNames = new Set((existingAssets || []).filter(a => a.state === 'uploaded').map(a => a.name));
   } catch (err) {
     console.log(`Warning: 获取已有资产列表失败（${err.message}），继续尝试上传`);
   }
