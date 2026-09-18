@@ -133,6 +133,7 @@
       width="560px"
       append-to-body
       :close-on-click-modal="false"
+      @close="handleAiRecommendClose"
     >
       <div v-if="aiRecommendLoading" class="ai-rc-loading">
         <div class="ai-rc-spinner"></div>
@@ -421,6 +422,11 @@ async function openAiRecommend() {
   } finally {
     aiRecommendLoading.value = false;
   }
+}
+
+// 弹窗关闭时重置 loading 状态，避免请求进行中手动关闭弹窗后按钮卡在"AI 分析中"
+function handleAiRecommendClose() {
+  aiRecommendLoading.value = false;
 }
 
 // 引用推荐命令（复用既有引用链路，写入测评依据）

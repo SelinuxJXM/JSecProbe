@@ -541,7 +541,7 @@ body {
   <aside class="sidebar" id="sidebar" aria-label="目录导航">
     <div class="sidebar-header">
       <div class="sidebar-title"><a href="index.html">📄 产品白皮书</a></div>
-      <div class="sidebar-subtitle">JSecProbe V2.4.0</div>
+      <div class="sidebar-subtitle">JSecProbe V2.4.1</div>
     </div>
     <nav aria-label="目录">
       <div class="toc">
@@ -678,7 +678,7 @@ body {
   <main class="content" id="main-content">
     <article class="article">
       <h1>JSecProbe 等级保护现场测评系统</h1>
-      <p class="subtitle">产品白皮书 · 当前版本 V2.4.0 · 技术标准 GB/T 22239-2019</p>
+      <p class="subtitle">产品白皮书 · 当前版本 V2.4.1 · 技术标准 GB/T 22239-2019</p>
 
       <h2 id="intro">一、产品概述</h2>
 
@@ -1402,6 +1402,20 @@ body {
             </td>
           </tr>
           <tr>
+            <td>白皮书 V1.3</td><td>V2.4.1</td>
+            <td>
+              <ul style="margin:0 0 0 18px;padding:0;">
+                <li>修复：现场核查「AI 智能推荐核查方法」弹窗手动关闭后按钮卡在「AI 分析中」的问题</li>
+                <li>数据：修复迁移 SQL 建表顺序，清理未登记孤儿迁移，统一 createdAt 为 UTC ISO 格式</li>
+                <li>数据：删除项目/资产时级联清理采集任务、连接配置等孤儿数据；命令库种子按 id 判重，不再重灌或覆盖用户编辑</li>
+                <li>数据：补充采集/连接/命令库索引；VACUUM INTO 路径转义；迁移路径绝对化</li>
+                <li>安全：Excel 解析库由 xlsx 替换为 exceljs（修复 CVE-2023-30533 / CVE-2024-22363），.xls 需另存为 .xlsx 后导入</li>
+                <li>安全：.env.example 敏感信息脱敏</li>
+                <li>构建：latest.yml 自动补充 blockmap 支持增量更新，GitHub 上传幂等，新增 typecheck 脚本</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
             <td>白皮书 V1.2</td><td>V2.4.0</td>
             <td>
               <ul style="margin:0 0 0 18px;padding:0;">
@@ -1424,7 +1438,7 @@ body {
 
       <hr>
       <p style="text-align:center;color:var(--gray-500);font-size:14px;padding:20px 0;">
-        <em>本文档最后更新：2026 年 9 月（V1.2，对应 V2.4.0）</em><br>
+        <em>本文档最后更新：2026 年 9 月（V1.3，对应 V2.4.1）</em><br>
         <strong>JSecProbe - 让等保测评更高效、更规范、更智能</strong>
       </p>
     </article>

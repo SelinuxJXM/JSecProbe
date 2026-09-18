@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { S3Client, PutObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
+const { ensureBlockmapInLatestYml } = require('./latest-yml-helper');
 
 const ROOT = path.resolve(__dirname, '..');
 const DIST_DIR = path.join(ROOT, 'dist');
@@ -28,6 +29,8 @@ async function main() {
 
   const version = getPkgVersion();
   console.log(`=== 上传 v${version} 更新文件到 Cloudflare R2 ===\n`);
+
+  ensureBlockmapInLatestYml(DIST_DIR, version);
 
   const client = new S3Client({
     region: 'auto',

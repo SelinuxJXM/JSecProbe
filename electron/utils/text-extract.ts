@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { readExcelSheets } from './excel-reader';
 
 export async function extractPdfText(filePath: string): Promise<string> {
   const pdfParse = require('pdf-parse');
@@ -13,15 +14,12 @@ export async function extractWordText(filePath: string): Promise<string> {
   return result.value || '';
 }
 
-export function extractExcelText(filePath: string): string {
-  const XLSX = require('xlsx');
-  const workbook = XLSX.readFile(filePath);
+export async function extractExcelText(filePath: string): Promise<string> {
+  const sheets = await readExcelSheets(filePath);
   const parts: string[] = [];
-  for (const sheetName of workbook.SheetNames) {
-    const worksheet = workbook.Sheets[sheetName];
-    const rows: any[] = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-    const lines = rows.map((row: any[]) => row.map((cell: any) => String(cell ?? '')).join('\t'));
-    parts.push(`[工作表: ${sheetName}]\n${lines.join('\n')}`);
+  for (const sheet of sheets) {
+    const lines = sheet.rows.map((row: any[]) => row.map((cell: any) => String(cell ?? '')).join('\t'));
+    parts.push(`[工作表: ${sheet.name}]\n${lines.join('\n')}`);
   }
   return parts.join('\n\n');
 }

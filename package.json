@@ -1,6 +1,6 @@
 {
   "name": "mlps-assessment-tool",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "JSecProbe - 等级保护现场测评系统",
   "main": "dist-electron/main/index.js",
   "author": "景景",
@@ -9,6 +9,7 @@
   "private": true,
   "scripts": {
     "dev": "vite",
+    "typecheck": "vue-tsc --noEmit",
     "build": "vue-tsc --noEmit && vite build && electron-builder",
     "build:win": "vue-tsc --noEmit && vite build && electron-builder --win",
     "build:win:full": "node scripts/build-win.js",
@@ -40,8 +41,7 @@
     "sharp": "^0.35.3",
     "ssh2": "^1.17.0",
     "tesseract.js": "^5.0.0",
-    "winrm-client": "^0.0.12",
-    "xlsx": "^0.18.5"
+    "winrm-client": "^0.0.12"
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.1095.0",

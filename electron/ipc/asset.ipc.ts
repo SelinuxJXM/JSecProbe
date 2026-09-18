@@ -442,7 +442,19 @@ export function registerAssetHandlers(): void {
       const db = getDb();
       const asset = db.select().from(schema.assets).where(eq(schema.assets.id, id)).get();
       db.transaction((tx) => {
+        // 先收集该资产下的采集任务，再级联删除，避免遗留孤儿数据
+        const taskRows = tx.select({ id: schema.collectionTasks.id }).from(schema.collectionTasks).where(eq(schema.collectionTasks.assetId, id)).all();
+        const taskIds = taskRows.map(t => t.id);
+
         tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.assetId, id)).run();
+        tx.delete(schema.issues).where(eq(schema.issues.assetId, id)).run();
+        if (taskIds.length > 0) {
+          tx.delete(schema.collectionResults).where(inArray(schema.collectionResults.taskId, taskIds)).run();
+        }
+        tx.delete(schema.collectionTasks).where(eq(schema.collectionTasks.assetId, id)).run();
+        tx.delete(schema.collectionDocuments).where(eq(schema.collectionDocuments.assetId, id)).run();
+        tx.delete(schema.assetConnections).where(eq(schema.assetConnections.assetId, id)).run();
+        tx.delete(schema.connectionProfiles).where(eq(schema.connectionProfiles.assetId, id)).run();
         tx.delete(schema.assets).where(eq(schema.assets.id, id)).run();
       });
       // 操作日志为异步写入，必须 await 以确保删除成功后再记录，避免日志丢失或被吞掉
@@ -460,7 +472,18 @@ export function registerAssetHandlers(): void {
       const db = getDb();
       db.transaction((tx) => {
         for (const id of ids) {
+          const taskRows = tx.select({ id: schema.collectionTasks.id }).from(schema.collectionTasks).where(eq(schema.collectionTasks.assetId, id)).all();
+          const taskIds = taskRows.map(t => t.id);
+
           tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.assetId, id)).run();
+          tx.delete(schema.issues).where(eq(schema.issues.assetId, id)).run();
+          if (taskIds.length > 0) {
+            tx.delete(schema.collectionResults).where(inArray(schema.collectionResults.taskId, taskIds)).run();
+          }
+          tx.delete(schema.collectionTasks).where(eq(schema.collectionTasks.assetId, id)).run();
+          tx.delete(schema.collectionDocuments).where(eq(schema.collectionDocuments.assetId, id)).run();
+          tx.delete(schema.assetConnections).where(eq(schema.assetConnections.assetId, id)).run();
+          tx.delete(schema.connectionProfiles).where(eq(schema.connectionProfiles.assetId, id)).run();
           tx.delete(schema.assets).where(eq(schema.assets.id, id)).run();
         }
       });

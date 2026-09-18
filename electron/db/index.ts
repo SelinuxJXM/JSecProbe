@@ -428,6 +428,18 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
     log.warn('knowledge_commands 表 industry 迁移失败:', err);
   }
 
+  // 兼容旧库：system_settings 追加 created_at（0002 原逻辑，JS 兜底确保列存在）
+  try {
+    const sysCols = sqlite.prepare('PRAGMA table_info(system_settings)').all() as Array<{ name: string }>;
+    const sysColNames = sysCols.map(c => c.name);
+    if (!sysColNames.includes('created_at')) {
+      sqlite.exec("ALTER TABLE system_settings ADD COLUMN created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
+      log.info('已添加 created_at 列到 system_settings 表');
+    }
+  } catch (err) {
+    log.warn('system_settings 表 created_at 迁移失败:', err);
+  }
+
   log.info('自动建表完成');
 }
 
@@ -614,8 +626,15 @@ function createIndexes(sqlite: Database.Database): void {
       CREATE INDEX IF NOT EXISTS idx_issues_item_id ON issues(item_id);
       CREATE INDEX IF NOT EXISTS idx_knowledge_documents_category ON knowledge_documents(category_id);
       CREATE INDEX IF NOT EXISTS idx_knowledge_documents_title ON knowledge_documents(title);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_commands_category ON knowledge_commands(category);
       CREATE INDEX IF NOT EXISTS idx_operation_logs_module_action ON operation_logs(module, action);
       CREATE INDEX IF NOT EXISTS idx_operation_logs_created_at ON operation_logs(created_at);
+      CREATE INDEX IF NOT EXISTS idx_collection_tasks_project ON collection_tasks(project_id);
+      CREATE INDEX IF NOT EXISTS idx_collection_tasks_asset ON collection_tasks(asset_id);
+      CREATE INDEX IF NOT EXISTS idx_collection_results_task ON collection_results(task_id);
+      CREATE INDEX IF NOT EXISTS idx_collection_documents_task ON collection_documents(task_id);
+      CREATE INDEX IF NOT EXISTS idx_collection_documents_project ON collection_documents(project_id);
+      CREATE INDEX IF NOT EXISTS idx_connection_profiles_asset ON connection_profiles(asset_id);
       CREATE UNIQUE INDEX IF NOT EXISTS project_user_idx ON project_members(project_id, user_id);
     `);
   } catch (err) {
@@ -688,7 +707,9 @@ async function initStandardLibrary(): Promise<void> {
 
   const backupPath = `${backupBase}${Date.now()}`;
   try {
-    sqliteInstance.exec(`VACUUM INTO '${backupPath}'`);
+    // 单引号转义，避免路径含引号时破坏 SQL（VACUUM INTO 不支持参数绑定）
+    const escapedBackupPath = backupPath.replace(/'/g, "''");
+    sqliteInstance.exec(`VACUUM INTO '${escapedBackupPath}'`);
     log.info(`数据库已备份到: ${backupPath}`);
   } catch (e) {
     log.warn('数据库备份失败，继续执行:', e);
@@ -929,19 +950,22 @@ async function initCommandLibrary(): Promise<void> {
     const { getCommandSeeds } = await import('./seeds/commands');
     const seeds = getCommandSeeds();
 
-    const existing = await dbInstance
-      .select({ count: count() })
+    // 按 id 判重：仅插入缺失的种子命令。避免用户删除命令后 count 减少触发全量重灌，
+    // 也避免 onConflictDoUpdate 覆盖用户对种子命令的编辑。
+    const existingRows = await dbInstance
+      .select({ id: schema.knowledgeCommands.id })
       .from(schema.knowledgeCommands);
-    const existingCount = existing[0]?.count || 0;
+    const existingIds = new Set(existingRows.map(r => r.id));
+    const missingSeeds = seeds.filter(s => !existingIds.has(s.id));
 
-    if (existingCount > 0 && existingCount >= seeds.length) {
-      log.info(`核查命令库已存在(${existingCount}条命令)，跳过初始化`);
+    if (missingSeeds.length === 0) {
+      log.info(`核查命令库已存在(${existingRows.length}条命令)，跳过初始化`);
       return;
     }
 
-    log.info(`初始化核查命令库: ${seeds.length}条命令`);
+    log.info(`初始化核查命令库: 本次新增 ${missingSeeds.length} 条（种子共 ${seeds.length} 条）`);
 
-    for (const cmd of seeds) {
+    for (const cmd of missingSeeds) {
       await dbInstance.insert(schema.knowledgeCommands)
         .values({
           id: cmd.id,
@@ -959,21 +983,7 @@ async function initCommandLibrary(): Promise<void> {
           createdAt: cmd.createdAt || new Date().toISOString(),
           updatedAt: cmd.updatedAt || new Date().toISOString(),
         })
-        .onConflictDoUpdate({
-          target: schema.knowledgeCommands.id,
-          set: {
-            name: cmd.name,
-            target: cmd.target,
-            command: cmd.command,
-            description: cmd.description,
-            os: cmd.os,
-            brand: cmd.brand,
-            deviceType: cmd.deviceType,
-            category: cmd.category,
-            subCategory: cmd.subCategory,
-            updatedAt: cmd.updatedAt || new Date().toISOString(),
-          },
-        });
+        .onConflictDoNothing({ target: schema.knowledgeCommands.id });
     }
 
     log.info('核查命令库初始化完成');

@@ -1,4 +1,5 @@
 import { sqliteTable, text, integer, real, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -11,7 +12,7 @@ export const users = sqliteTable('users', {
   isActive: integer('is_active').notNull().default(1),
   mustChangePassword: integer('must_change_password').notNull().default(1),
   lastLoginAt: text('last_login_at'),
-  createdAt: text('created_at').notNull().default(new Date().toISOString()),
+  createdAt: text('created_at').notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`),
   updatedAt: text('updated_at').notNull(),
 });
 
@@ -95,7 +96,7 @@ export const standards = sqliteTable('standards', {
   presetMethod: text('preset_method').default('check'), // 预置导入默认 method（interview/check/test），缺省 'check'
   columnMap: text('column_map'), // 预置导入列映射 JSON（{"序号":0,"控制点":1,"要求":2,"记录":3,"合规":4}），缺省沿用 A/B/C/D/E
   levelCombo: text('level_combo').default(''), // 适用等级组合，如 S2A2G2 / S2A3G3 等（G=max(S,A)）；grade 为最终保护等级用于标准匹配
-  createdAt: text('created_at').notNull().default(new Date().toISOString()),
+  createdAt: text('created_at').notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`),
 });
 
 export const assessmentItems = sqliteTable('assessment_items', {

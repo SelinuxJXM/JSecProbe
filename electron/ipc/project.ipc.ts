@@ -499,9 +499,24 @@ export function registerProjectHandlers(): void {
       const db = getDb();
       const project = db.select().from(schema.projects).where(eq(schema.projects.id, id)).get();
       db.transaction((tx) => {
+        // 先收集关联 id，再级联删除，避免遗留孤儿数据
+        const assetRows = tx.select({ id: schema.assets.id }).from(schema.assets).where(eq(schema.assets.projectId, id)).all();
+        const assetIds = assetRows.map(a => a.id);
+        const taskRows = tx.select({ id: schema.collectionTasks.id }).from(schema.collectionTasks).where(eq(schema.collectionTasks.projectId, id)).all();
+        const taskIds = taskRows.map(t => t.id);
+
         tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.projectId, id)).run();
         tx.delete(schema.issues).where(eq(schema.issues.projectId, id)).run();
         tx.delete(schema.projectMembers).where(eq(schema.projectMembers.projectId, id)).run();
+        if (taskIds.length > 0) {
+          tx.delete(schema.collectionResults).where(inArray(schema.collectionResults.taskId, taskIds)).run();
+        }
+        tx.delete(schema.collectionTasks).where(eq(schema.collectionTasks.projectId, id)).run();
+        tx.delete(schema.collectionDocuments).where(eq(schema.collectionDocuments.projectId, id)).run();
+        if (assetIds.length > 0) {
+          tx.delete(schema.assetConnections).where(inArray(schema.assetConnections.assetId, assetIds)).run();
+          tx.delete(schema.connectionProfiles).where(inArray(schema.connectionProfiles.assetId, assetIds)).run();
+        }
         tx.delete(schema.assets).where(eq(schema.assets.projectId, id)).run();
         tx.delete(schema.projects).where(eq(schema.projects.id, id)).run();
       });

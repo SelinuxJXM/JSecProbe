@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 import { getAppDataPath } from '../main/paths';
 import { wrap } from '../utils/ipc-wrapper';
 import { toRelativePath, validateDataPath } from '../utils/path-resolver';
+import { readExcelSheets, readExcelAsObjects } from '../utils/excel-reader';
 
 const MAX_EXCEL_SIZE = 50 * 1024 * 1024;
 const MAX_EXCEL_ROWS = 10000;
@@ -423,11 +424,7 @@ export function registerKnowledgeHandlers(): void {
           return { imported: 0, errors: [`文件大小超过限制 (${MAX_EXCEL_SIZE / 1024 / 1024}MB)`] };
         }
 
-        const XLSX = require('xlsx');
-        const workbook = XLSX.readFile(resolvedPath);
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const rows: any[] = XLSX.utils.sheet_to_json(worksheet);
+        const rows: any[] = await readExcelAsObjects(resolvedPath);
 
         if (rows.length > MAX_EXCEL_ROWS) {
           return { imported: 0, errors: [`数据行数超过限制 (${MAX_EXCEL_ROWS}行)`] };
@@ -746,16 +743,13 @@ export function registerKnowledgeHandlers(): void {
 
   // 读取 Excel 文件
   ipcMain.handle('knowledge:readExcelFile', wrap(async (_event, filePath: string, sheetName?: string) => {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const XLSX = require('xlsx');
       const resolvedPath = await validateDataPath(filePath);
-      const workbook = XLSX.readFile(resolvedPath);
-      const sheets = workbook.SheetNames;
-      const targetSheet = sheetName || sheets[0];
-      const worksheet = workbook.Sheets[targetSheet];
-      const data: any[] = XLSX.utils.sheet_to_json(worksheet);
+      const sheetsData = await readExcelSheets(resolvedPath);
+      const sheetNames = sheetsData.map(s => s.name);
+      const targetSheet = sheetName || sheetNames[0];
+      const data: any[] = await readExcelAsObjects(resolvedPath, targetSheet);
       const columns = data.length > 0 ? Object.keys(data[0]) : [];
-      return { sheetNames: sheets, columns, data };
+      return { sheetNames, columns, data };
     }, { moduleName: 'knowledge', requireSession: true }));
 
   // 读取 Word 文件

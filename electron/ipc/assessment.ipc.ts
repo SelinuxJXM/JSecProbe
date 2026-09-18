@@ -5,8 +5,8 @@ import { getDb } from '../db';
 import * as schema from '../db/schema';
 import { eq, and, desc, count, sql, inArray, lte, or, isNull } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
-import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
+import { readExcelSheets } from '../utils/excel-reader';
 import * as fs from 'fs';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
@@ -1432,15 +1432,15 @@ export function registerAssessmentHandlers(): void {
         throw new Error('项目不存在');
       }
 
-      const workbook = XLSX.readFile(filePath);
+      const sheetsData = await readExcelSheets(filePath);
       const importDomainSheets = await loadProjectDomainSheets(projectId);
       const domainSheetMap = Object.fromEntries(importDomainSheets.map(d => [d.sheetName, d.domain]));
 
       const sheets: ExcelSheetInfo[] = [];
-      for (const sheetName of workbook.SheetNames) {
+      for (const sheet of sheetsData) {
+        const sheetName = sheet.name;
         const resolved = await resolveSheetName(sheetName, projectId, domainSheetMap);
-        const worksheet = workbook.Sheets[sheetName];
-        const rows: any[][] = worksheet ? XLSX.utils.sheet_to_json(worksheet, { header: 1 }) : [];
+        const rows = sheet.rows;
         sheets.push({
           sheetName,
           domainKey: resolved.domainKey,
@@ -1477,7 +1477,7 @@ export function registerAssessmentHandlers(): void {
         throw new Error('项目不存在');
       }
 
-      const workbook = XLSX.readFile(filePath);
+      const sheetsData = await readExcelSheets(filePath);
 
       // 改造：按项目标准动态构建"sheet 名 → 域 ID"映射（含额外安全域），fallback 国标十域
       const importDomainSheets = await loadProjectDomainSheets(projectId);
@@ -1499,7 +1499,8 @@ export function registerAssessmentHandlers(): void {
 
       const excelDataMap = new Map<string, {result: string, resultRecord: string, evidence: string, assetId: string | null, domainKey: string}>();
 
-      for (const sheetName of workbook.SheetNames) {
+      for (const sheet of sheetsData) {
+        const sheetName = sheet.name;
         // 勾选了 sheet 时只处理勾选的（未勾选的连解析都不发生）
         if (sheetNames && sheetNames.length > 0 && !sheetNames.includes(sheetName)) {
           continue;
@@ -1511,8 +1512,7 @@ export function registerAssessmentHandlers(): void {
         const assetId = resolved.assetId;
         if (!domainKey) continue;
 
-        const worksheet = workbook.Sheets[sheetName];
-        const rows: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        const rows = sheet.rows;
         if (rows.length === 0) continue;
 
         let lastControlPoint = '';
