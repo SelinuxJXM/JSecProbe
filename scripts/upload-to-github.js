@@ -59,15 +59,26 @@ async function createRelease() {
     name: TAG,
     body: `## ${TAG} 更新内容
 
-### 新功能
-- 新增自动采集执行引擎 Phase 1：支持 SSH/WinRM/MySQL/Oracle/PostgreSQL/SQLServer/Redis/HTTP 8 种连接类型
-- 新增 5 类解析器：SQL 表格 / 键值对 / Redis INFO / 正则提取 / 原文
-- 新增多资产并发调度（默认 3 并发，可通过 COLLECTION_MAX_CONCURRENT 调整）
-- 新增连接配置 CRUD、批量删除、任务取消、命令明细查看
+### 稳定性修复
+- 自动采集任务异常逃逸至主进程导致应用崩溃/白屏的根因修复
+- 采集任务执行链路 try/catch 兜底，采集失败不再触发应用级退出
+- 数据库连接器（pg/mysql/mssql）挂接 error 兜底监听，避免 uncaughtException
+- isTransientRejection 关键词补全（超时/econnreset），超时错误不再被误判为致命
+- 路由过渡 mode="out-in" 多根组件兼容修复（自动采集页 el-dialog 移入根节点）
+- 窗口后台节流关闭（setBackgroundThrottling(false)），最小化/遮挡时 rAF 仍运行
+- 采集结果页签切换 / 命令明细展开在连接失败场景下的反馈修复
 
-### 缺陷修复
-- collection.service.ts 批量删除补 \`await .returning()\`，修复 deleted 恒为 undefined 的运行时 bug
-- shared/types.ts 补充 batchDeleteProfiles IPC 签名，前后端契约对齐`,
+### 性能优化
+- AI 本地引擎（Ollama/Herdsman）探测改为异步 execFile，消除主进程 execSync 阻塞
+- 引擎安装状态 5 分钟缓存 + 验证安装 / 打开设置时 force 旁路
+- PowerShell 探测强制 UTF-8 输出，修复中文路径下 herdsman 误报未安装
+
+### 数据健壮性
+- 启动备份 .bak-* 轮转保留最近 3 份，自动备份保留最近 10 份
+- OCR 单张超时后终止旧 Worker，避免悬挂 Promise 阻塞后续识别
+- 默认管理员 mustChangePassword=1，首次登录强制改密
+- session.json token 用 safeStorage 加密 + 旧明文自动迁移
+- 报告 / AI 密钥三处加密实现统一到 credential.util（兼容 enc:v1: 遗留）`,
     draft: false,
     prerelease: false,
   });

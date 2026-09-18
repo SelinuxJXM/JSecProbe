@@ -4,7 +4,6 @@ import { ref } from 'vue';
 export const useAppStore = defineStore('app', () => {
   const sidebarCollapsed = ref(true);
   const currentProjectId = ref<string>('');
-  const theme = ref<'light' | 'dark'>('light');
 
   function toggleSidebar() {
     sidebarCollapsed.value = !sidebarCollapsed.value;
@@ -25,7 +24,6 @@ export const useAppStore = defineStore('app', () => {
   return {
     sidebarCollapsed,
     currentProjectId,
-    theme,
     toggleSidebar,
     setCurrentProject,
     restoreAppState,

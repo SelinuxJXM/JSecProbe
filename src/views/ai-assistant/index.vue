@@ -1016,7 +1016,8 @@ const currentPlatformSteps = computed(() => {
 
 async function verifyInstallation() {
   installStep.value = 2;
-  await checkOllamaStatus();
+  // 用户刚安装完就点验证：必须绕过缓存，拿最新的安装状态
+  await checkOllamaStatus(true);
 }
 
 function formatDownloadStatus(status: string): string {
@@ -1040,11 +1041,12 @@ function formatBytes(bytes?: number): string {
   return (bytes / 1024).toFixed(0) + ' KB';
 }
 
-async function checkOllamaStatus() {
+async function checkOllamaStatus(force = false) {
   if (!window.api) return;
   ollamaLoading.value = true;
   try {
-    const res = await window.api.ollama.getStatus(localEngineUrl.value, aiSettings.localEngine);
+    // force=true 时跳过主进程的安装探测缓存，用于「验证安装」「打开设置」等需要最新结果的场景
+    const res = await window.api.ollama.getStatus(localEngineUrl.value, aiSettings.localEngine, force);
     if (res.success && res.data) {
       ollamaStatus.value = res.data;
     } else {
@@ -1241,7 +1243,8 @@ async function handleDialogOpened() {
   await loadRecommendedModels();
   await loadInstallGuide();
   if (aiSettings.mode === 'local') {
-    await checkOllamaStatus();
+    // 每次打开设置都强制刷新一次安装状态（仅这一下走真实探测，其后的健康轮询走缓存）
+    await checkOllamaStatus(true);
     startHealthCheck();
   }
 }

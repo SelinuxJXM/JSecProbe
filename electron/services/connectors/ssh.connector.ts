@@ -25,11 +25,25 @@ export class SshConnector implements IConnector {
     this.commandTimeoutMs = getCommandTimeout(profile);
     await new Promise<void>((resolve, reject) => {
       const client = new Client();
+      let settled = false;
       client.on('ready', () => {
+        if (settled) return;
+        settled = true;
         this.client = client;
         resolve();
       });
-      client.on('error', reject);
+      // 连接失败时必须显式关掉这个 Client，否则它会被遗弃（this.client 仍为 null，
+      // disconnect() 无从回收），底层 socket 继续重试解析 DNS，重复失败会不断累积泄漏的连接。
+      client.on('error', (e) => {
+        if (settled) return;
+        settled = true;
+        try {
+          client.end();
+        } catch {
+          // 忽略关闭异常
+        }
+        reject(e);
+      });
       client.connect(cfg);
     });
   }

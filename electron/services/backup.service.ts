@@ -62,6 +62,24 @@ function getBackupRootPath(): Promise<string> {
   return getAppDataPath().then(p => path.join(p, 'backups'));
 }
 
+const BACKUP_RETENTION_COUNT = 10;
+
+async function cleanupOldBackups(): Promise<void> {
+  try {
+    const backupDir = await getBackupRootPath();
+    if (!fs.existsSync(backupDir)) return;
+    const backups = fs.readdirSync(backupDir)
+      .filter((f) => f.startsWith('backup_') && f.endsWith('.zip'))
+      .map((f) => ({ f, mtime: fs.statSync(path.join(backupDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const item of backups.slice(BACKUP_RETENTION_COUNT)) {
+      try { fs.unlinkSync(path.join(backupDir, item.f)); } catch { /* 忽略单文件删除失败 */ }
+    }
+  } catch (e) {
+    log.warn('清理旧备份失败:', e);
+  }
+}
+
 function validateExtractedPaths(extractDir: string): void {
   const resolvedBase = path.resolve(extractDir);
   const walk = (dir: string) => {
@@ -183,6 +201,10 @@ export async function createFullBackup(customPath?: string): Promise<BackupResul
     manifest.totalSize = totalSize;
 
     log.info(`[备份] 完整备份完成: ${backupFilePath}, 大小: ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
+
+    if (!customPath) {
+      await cleanupOldBackups();
+    }
 
     return { success: true, path: backupFilePath, size: totalSize };
   } catch (error: any) {

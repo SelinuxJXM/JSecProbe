@@ -654,11 +654,11 @@ async function initDefaultData(): Promise<void> {
       realName: '系统管理员',
       role: 'admin',
       isActive: 1,
-      mustChangePassword: 0,
+      mustChangePassword: 1,
       createdAt: now,
       updatedAt: now,
     });
-    log.info('创建默认管理员账号: admin / admin123');
+    log.info('创建默认管理员账号: admin / admin123（首次登录需修改密码）');
   }
 
   const aiConfigCount = await dbInstance.select().from(schema.aiConfigs).limit(1);
@@ -683,12 +683,29 @@ async function initStandardLibrary(): Promise<void> {
   if (!sqliteInstance) throw new Error('数据库未初始化');
 
   const dbPath = sqliteInstance.name;
-  const backupPath = `${dbPath}.bak-${Date.now()}`;
+  const backupDir = dirname(dbPath);
+  const backupBase = `${dbPath}.bak-`;
+
+  const backupPath = `${backupBase}${Date.now()}`;
   try {
     sqliteInstance.exec(`VACUUM INTO '${backupPath}'`);
     log.info(`数据库已备份到: ${backupPath}`);
   } catch (e) {
     log.warn('数据库备份失败，继续执行:', e);
+  }
+
+  // 轮转清理：仅保留最近 3 份启动备份（含本次新建），删除更早的 .bak-* 文件，避免磁盘无限累积
+  try {
+    const prefix = backupBase.slice(backupDir.length + 1);
+    const baks = fs.readdirSync(backupDir)
+      .filter((f) => f.startsWith(prefix))
+      .map((f) => ({ f, mtime: fs.statSync(join(backupDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const item of baks.slice(3)) {
+      try { fs.unlinkSync(join(backupDir, item.f)); } catch { /* 忽略单文件删除失败 */ }
+    }
+  } catch (e) {
+    log.warn('清理旧启动备份失败，继续执行:', e);
   }
 
   // 防御性迁移：为 assessment_items 补充新增的预置字段列（避免旧库 no such column）

@@ -1,25 +1,17 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { safeStorage } from 'electron';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
 import { eq, sql, and, or, lte, inArray, count, asc } from 'drizzle-orm';
 import log from 'electron-log';
-
-const API_KEY_ENC_PREFIX = 'enc:v1:';
+import { decryptSecret } from './credential.util';
 
 function decryptApiKey(stored: string): string {
-  if (!stored || !stored.startsWith(API_KEY_ENC_PREFIX)) return stored;
-  try {
-    if (!safeStorage.isEncryptionAvailable()) {
-      log.warn('[报告AI] DPAPI 不可用，无法解密 API Key');
-      return '';
-    }
-    return safeStorage.decryptString(Buffer.from(stored.slice(API_KEY_ENC_PREFIX.length), 'base64'));
-  } catch (e: any) {
-    log.error('[报告AI] 解密 API Key 失败:', e.message);
-    return '';
+  const result = decryptSecret(stored);
+  if (!result && stored && (stored.startsWith('enc:v1:') || stored.startsWith('enc:'))) {
+    log.error('[报告AI] 解密 API Key 失败（密文可能损坏或系统凭据变更）');
   }
+  return result;
 }
 import {
   Document,

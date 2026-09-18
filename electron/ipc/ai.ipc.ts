@@ -1,4 +1,4 @@
-import { ipcMain, safeStorage } from 'electron';
+import { ipcMain } from 'electron';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
@@ -38,6 +38,7 @@ import {
 } from '../services/ocr.service';
 import { extractTextFromFile } from '../utils/text-extract';
 import { aiFetch, isValidProxyMode, parseProxyUrl, syncAiProxyFromDb } from '../services/ai-net.service';
+import { encryptSecret, decryptSecret } from '../services/credential.util';
 import {
   BUILTIN_PROMPTS,
   MAX_PROMPT_LENGTH,
@@ -580,31 +581,21 @@ function wrap<T>(event: any, fn: () => T | Promise<T>): Promise<any> {
 }
 
 /**
- * API Key 加解密：使用 safeStorage（Windows DPAPI）落库加密。
- * - 加密值带 'enc:v1:' 前缀，未带前缀的视为旧版明文（兼容，下次保存时自动转加密）
- * - safeStorage 不可用时降级为明文保存
+ * API Key 加解密：统一委托 credential.util（safeStorage + base64）。
+ * - 加密值带 'enc:' 前缀；历史 'enc:v1:' 前缀与无前缀明文均能解密（向后兼容）
+ * - safeStorage 不可用时降级为 base64 编码（仍带前缀，便于识别）
+ * - 保留函数名以最小化调用点改动
  */
-const API_KEY_ENC_PREFIX = 'enc:v1:';
-
 function encryptApiKey(plain: string): string {
-  if (!plain || plain.startsWith(API_KEY_ENC_PREFIX)) return plain;
-  try {
-    if (!safeStorage.isEncryptionAvailable()) return plain;
-    return API_KEY_ENC_PREFIX + safeStorage.encryptString(plain).toString('base64');
-  } catch (e) {
-    log.warn('[AI] 加密 API Key 失败，将以明文保存:', e);
-    return plain;
-  }
+  return encryptSecret(plain);
 }
 
 function decryptApiKey(stored: string): string {
-  if (!stored || !stored.startsWith(API_KEY_ENC_PREFIX)) return stored;
-  try {
-    return safeStorage.decryptString(Buffer.from(stored.slice(API_KEY_ENC_PREFIX.length), 'base64'));
-  } catch (e) {
-    log.error('[AI] 解密 API Key 失败（密文可能损坏或系统凭据变更），请重新填写 API Key:', e);
-    return '';
+  const result = decryptSecret(stored);
+  if (!result && stored && (stored.startsWith('enc:v1:') || stored.startsWith('enc:'))) {
+    log.error('[AI] 解密 API Key 失败（密文可能损坏或系统凭据变更），请重新填写 API Key');
   }
+  return result;
 }
 
 function maskApiKey(key: string): string {
@@ -1032,12 +1023,12 @@ export function registerAIHandlers(): void {
     })
   );
 
-  ipcMain.handle('ollama:getStatus', async (event, url?: string, engine?: string) =>
+  ipcMain.handle('ollama:getStatus', async (event, url?: string, engine?: string, force?: boolean) =>
     wrap(event, async () => {
       if (engine === 'herdsman') {
-        return await getHerdsmanStatus(url);
+        return await getHerdsmanStatus(url, force === true);
       }
-      return await getOllamaStatus(url);
+      return await getOllamaStatus(url, force === true);
     })
   );
 

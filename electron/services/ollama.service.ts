@@ -1,7 +1,27 @@
-import { execSync, spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import log from 'electron-log';
+
+// 用异步 execFile 执行 PowerShell 探测命令。
+// 不能用 execSync：它会阻塞 Electron 主进程，导致「AI 设置」打开或切换本地/云端模式时整个应用卡顿一下。
+export function runPowerShellAsync(command: string, timeout: number): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(
+      'powershell',
+      [
+        '-NoProfile',
+        '-Command',
+        // 强制 PowerShell 以 UTF-8 输出。Windows PowerShell 默认按 OEM 代码页写 stdout，
+        // 当安装路径含中文（如 E:\12-牧马人引擎\Herdsman）时会被按 UTF-8 解码成乱码，
+        // 导致后续 fs.existsSync 判断失败、把「已安装」误报成「未安装」。
+        '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;' + command,
+      ],
+      { timeout, windowsHide: true, encoding: 'utf8' },
+      (err, stdout) => resolve(err ? '' : String(stdout ?? ''))
+    );
+  });
+}
 
 const OLLAMA_DEFAULT_URL = 'http://localhost:11434';
 const MIN_DISK_SPACE_GB = 5;
@@ -145,22 +165,36 @@ async function checkDiskSpace(targetPath: string): Promise<{ free: number; total
   }
 }
 
-export async function checkOllamaInstalled(): Promise<boolean> {
+// 本地引擎「是否已安装」的探测需要调用 PowerShell，代价较高；而渲染层健康检查每 30 秒就会查一次状态。
+// 这里做短时缓存，避免重复执行昂贵探测；force=true 用于用户显式操作（打开设置、点击「验证安装」），
+// 保证这些场景拿到最新结果，不会被缓存挡住。
+const INSTALL_CHECK_TTL_MS = 5 * 60 * 1000;
+let installedCache: { value: boolean; at: number } | null = null;
+
+export async function checkOllamaInstalled(force = false): Promise<boolean> {
+  if (!force && installedCache && Date.now() - installedCache.at < INSTALL_CHECK_TTL_MS) {
+    return installedCache.value;
+  }
+  let installed = false;
   try {
-    const paths = getOllamaExePaths();
-    for (const p of paths) {
+    for (const p of getOllamaExePaths()) {
       if (fs.existsSync(p)) {
-        return true;
+        installed = true;
+        break;
       }
     }
-    const output = execSync(
-      'powershell -NoProfile -Command "(Get-Command ollama -ErrorAction SilentlyContinue).Source"',
-      { stdio: 'pipe', timeout: 5000 }
-    ).toString();
-    return output.trim().length > 0;
+    if (!installed) {
+      const output = await runPowerShellAsync(
+        '(Get-Command ollama -ErrorAction SilentlyContinue).Source',
+        5000
+      );
+      installed = output.trim().length > 0;
+    }
   } catch {
-    return false;
+    installed = false;
   }
+  installedCache = { value: installed, at: Date.now() };
+  return installed;
 }
 
 export async function checkOllamaRunning(url: string = OLLAMA_DEFAULT_URL): Promise<boolean> {
@@ -172,14 +206,14 @@ export async function checkOllamaRunning(url: string = OLLAMA_DEFAULT_URL): Prom
   }
 }
 
-export async function getOllamaStatus(url: string = OLLAMA_DEFAULT_URL): Promise<OllamaStatus> {
+export async function getOllamaStatus(url: string = OLLAMA_DEFAULT_URL, force = false): Promise<OllamaStatus> {
   try {
     const running = await checkOllamaRunning(url);
     if (running) {
       const models = await listModels(url);
       return { state: 'running', models };
     }
-    const installed = await checkOllamaInstalled();
+    const installed = await checkOllamaInstalled(force);
     return { state: installed ? 'not_running' : 'not_installed' };
   } catch (err: any) {
     log.error('[Ollama] 状态检查失败:', err.message);

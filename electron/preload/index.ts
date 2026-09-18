@@ -291,16 +291,20 @@ const api = {
     deleteProfile: ipc<void>('collection:deleteProfile'),
     batchDeleteProfiles: ipc<any>('collection:batchDeleteProfiles'),
     testConnection: ipc<any>('collection:testConnection'),
+    testConnectionWithProfile: ipc<any>('collection:testConnectionWithProfile'),
     listTasks: ipc<any[]>('collection:listTasks'),
     getTask: ipc<any>('collection:getTask'),
     createTask: ipc<any>('collection:createTask'),
     cancelTask: ipc<void>('collection:cancelTask'),
+    deleteTask: ipc<void>('collection:deleteTask'),
     listResults: ipc<any[]>('collection:listResults'),
     confirmResult: ipc<void>('collection:confirmResult'),
     saveDocument: ipc<any>('collection:saveDocument'),
     listDocuments: ipc<any[]>('collection:listDocuments'),
     deleteDocument: ipc<void>('collection:deleteDocument'),
     openDocumentDir: ipc<void>('collection:openDocumentDir'),
+    exportLocalScript: ipc<any>('collection:exportLocalScript'),
+    importLocalResults: ipc<any>('collection:importLocalResults'),
     onProgress: (callback: (data: any) => void) => {
       const handler = (_e: IpcRendererEvent, data: any) => callback(data);
       ipcRenderer.on('collection:progress', handler);

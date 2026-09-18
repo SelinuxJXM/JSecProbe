@@ -29,6 +29,10 @@ export class PostgresqlConnector implements IConnector {
       query_timeout: this.commandTimeoutMs,
       statement_timeout: this.commandTimeoutMs,
     });
+    // 连接存活期间服务端断连/网络中断会在 client 上 emit 'error'；
+    // 不挂监听会成为未捕获异常直接打崩主进程（uncaughtException → 应用退出）。
+    // 连接级错误交由后续 query 的异常捕获路径处理，这里仅需兜底防崩。
+    client.on('error', () => {});
     await client.connect();
     this.client = client;
   }

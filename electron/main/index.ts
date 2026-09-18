@@ -35,6 +35,7 @@ function isTransientRejection(reason: unknown): boolean {
     'enotfound', 'econnrefused', 'econnreset', 'econnaborted', 'etimedout',
     'eai_again', 'socket hang up', 'fetch failed', 'network',
     'timed out', 'certificate', 'dns',
+    '超时', // 采集连接器超时（CommandTimeoutError）为中文消息，属暂态错误不应误杀应用
   ];
   return keywords.some((k) => msg.includes(k));
 }
@@ -87,6 +88,11 @@ function createWindow() {
 
   mainWindow = new BrowserWindow(mainWindowOptions);
 
+  // 关闭后台节流：窗口被遮挡或隐藏（最小化到托盘、被其它窗口覆盖）时，Chromium 默认会暂停
+  // requestAnimationFrame 与定时器，导致路由过渡动画卡死、离场节点无法回收（表现为内容空白/残留）。
+  // 保持常开可确保页面切换动画始终能跑完，后台采集轮询等任务也不被降频。
+  mainWindow.webContents.setBackgroundThrottling(false);
+
   // 外链（http/https）用系统默认浏览器打开，阻止 Electron 内置窗口
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http://') || url.startsWith('https://')) {
@@ -131,6 +137,24 @@ function createWindow() {
   });
   mainWindow.on('unmaximize', () => {
     mainWindow?.webContents.send('window:maximizeChanged', false);
+  });
+
+  // 渲染进程崩溃兜底：崩溃后窗口会变成永久白屏（表现为「任何页面都访问为空」），
+  // 这里记录崩溃原因并自动重载，避免用户卡在空白界面无从恢复。
+  let lastRenderReloadAt = 0;
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    log.error('渲染进程异常退出:', details.reason, 'exitCode=', details.exitCode);
+    if (isQuitting || !mainWindow || mainWindow.isDestroyed()) return;
+    // 防止持续崩溃导致无限重载：10 秒内只允许自动重载一次
+    const now = Date.now();
+    if (now - lastRenderReloadAt < 10000) return;
+    lastRenderReloadAt = now;
+    mainWindow.reload();
+  });
+
+  // 渲染进程长时间无响应（如同一帧内塞入超大采集输出）时记录，便于定位卡死场景
+  mainWindow.webContents.on('unresponsive', () => {
+    log.warn('渲染进程无响应');
   });
 
   // 创建托盘图标
@@ -227,40 +251,45 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on('window-all-closed', () => {
+let cleanupDone = false;
+async function gracefulCleanup(): Promise<void> {
+  if (cleanupDone) return;
+  cleanupDone = true;
   cleanupAutoBackup();
   cleanupWalCheckpoint();
   AuthService.stopSessionCleanupTimer();
   cleanupLockFile();
+  try { await stopOllama(); } catch (e) { log.error('退出时停止 Ollama 失败:', e); }
+  try { await terminateOCRWorker(); } catch (e) { log.error('退出时终止 OCR Worker 失败:', e); }
+  try { closeDb(); } catch (e) { log.error('退出时关闭数据库失败:', e); }
+}
+
+app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
 
-app.on('before-quit', async () => {
+app.on('before-quit', () => {
   isQuitting = true;
-  cleanupAutoBackup();
-  cleanupWalCheckpoint();
-  AuthService.stopSessionCleanupTimer();
-  cleanupLockFile();
-  await stopOllama();
-  await terminateOCRWorker();
-  closeDb();
+});
+
+app.on('will-quit', async (event) => {
+  // before-quit / 旧实现是 async 回调，但 Electron 不 await 事件回调，
+  // 会导致 stopOllama/terminateOCRWorker/closeDb 在进程退出前未完成（子进程残留、DB 未正常关闭）。
+  // 改用 will-quit + preventDefault + app.exit(0) 标准模式，确保异步清理跑完再退出。
+  event.preventDefault();
+  await gracefulCleanup();
+  app.exit(0);
 });
 
 process.on('SIGINT', async () => {
-  cleanupLockFile();
-  await stopOllama();
-  await terminateOCRWorker();
-  closeDb();
+  await gracefulCleanup();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  cleanupLockFile();
-  await stopOllama();
-  await terminateOCRWorker();
-  closeDb();
+  await gracefulCleanup();
   process.exit(0);
 });
 

@@ -7,6 +7,8 @@ import zhCn from 'element-plus/dist/locale/zh-cn.mjs';
 import App from './App.vue';
 import router from './router';
 import { restorePrimaryColor } from './utils/theme';
+import { useUserStore } from './stores/user';
+import { useAppStore } from './stores/app';
 import './styles/global.scss';
 
 // Global unhandled error/rejection guard (best-effort console + log to preload)
@@ -66,4 +68,20 @@ if (import.meta.env.DEV && window.api?.onMainLog) {
   });
 }
 
-app.mount('#app');
+// 启动时先校验会话再挂载，消除"先进受保护页 → 再被踢回登录页"的闪烁窗口。
+// 加 3 秒超时兜底：即便 IPC 卡住也能保证挂载，不会永久空白。
+async function bootstrap() {
+  try {
+    useAppStore().restoreAppState();
+    const userStore = useUserStore();
+    await Promise.race([
+      userStore.restoreSession(),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+  } catch (e) {
+    console.error('[启动] 会话恢复失败:', e);
+  }
+  app.mount('#app');
+}
+
+void bootstrap();

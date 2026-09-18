@@ -152,6 +152,20 @@ export async function extractTextFromImage(
   }
 }
 
+async function resetSharedWorker(): Promise<void> {
+  if (sharedWorker) {
+    const old = sharedWorker;
+    sharedWorker = null;
+    sharedWorkerLanguage = null;
+    try {
+      await old.terminate();
+    } catch (err) {
+      log.warn('[OCR] 超时后终止 Worker 失败:', err);
+    }
+    log.info('[OCR] 超时后已终止旧 Worker（下次识别将重新初始化）');
+  }
+}
+
 export async function extractTextFromMultipleImages(
   imagePaths: string[],
   options: OCROptions = {}
@@ -161,9 +175,10 @@ export async function extractTextFromMultipleImages(
 
   // 串行处理（OCR Worker 是共享单例，并行会冲突），但加单张超时
   for (const imagePath of imagePaths) {
+    const recognizePromise = extractTextFromImage(imagePath, options);
     try {
       const result = await Promise.race([
-        extractTextFromImage(imagePath, options),
+        recognizePromise,
         new Promise<OCRResult>((_, reject) =>
           setTimeout(() => reject(new Error(`OCR 单张超时(${SINGLE_TIMEOUT / 1000}s): ${imagePath}`)), SINGLE_TIMEOUT)
         ),
@@ -171,6 +186,13 @@ export async function extractTextFromMultipleImages(
       results.push({ path: imagePath, result });
     } catch (err: any) {
       log.warn(`[OCR] 批量处理单张失败: ${err.message}`);
+      // 超时：底层 recognize 仍挂在共享 Worker 上，单例会被卡住导致后续图片全部排队等待。
+      // 直接终止旧 Worker，下次识别会自动重建，避免批量串行被一个挂死任务阻塞。
+      if (err.message && err.message.includes('超时')) {
+        await resetSharedWorker();
+      }
+      // 吸收 recognizePromise 可能的后续拒绝，避免未处理 Promise 拒绝打崩主进程
+      recognizePromise.catch(() => {});
       results.push({
         path: imagePath,
         result: { text: '', confidence: 0, words: [] },

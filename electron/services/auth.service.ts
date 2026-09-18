@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from '
 import { dirname, join } from 'path';
 import log from 'electron-log';
 import { getDbPath } from '../main/paths';
+import { encryptSecret, decryptSecret } from './credential.util';
 import type { User } from '../../shared/types';
 
 interface Session {
@@ -29,7 +30,8 @@ function getSessionFilePath(): string {
   return join(dirname(getDbPath()), 'session.json');
 }
 
-/** 将活动会话写入磁盘（重启后可恢复登录态）；不传 session 表示清除 */
+/** 将活动会话写入磁盘（重启后可恢复登录态）；不传 session 表示清除。
+ *  token 字段用 safeStorage 加密落盘，避免明文 token 泄露；读取时自动解密，兼容旧版明文文件。 */
 function persistActiveSession(session?: Session): void {
   try {
     const file = getSessionFilePath();
@@ -39,7 +41,7 @@ function persistActiveSession(session?: Session): void {
     }
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify({
-      token: session.token,
+      token: encryptSecret(session.token),
       userId: session.userId,
       username: session.username,
       createdAt: session.createdAt,
@@ -74,14 +76,16 @@ export class AuthService {
       const file = getSessionFilePath();
       if (!existsSync(file)) return;
       const raw = JSON.parse(readFileSync(file, 'utf-8'));
-      if (!raw?.token || !raw?.userId || !raw?.username) {
+      // decryptSecret 会自动识别 enc: 前缀解密；旧版明文 token（无前缀）原样返回，保持兼容
+      const token = decryptSecret(raw?.token);
+      if (!token || !raw?.userId || !raw?.username) {
         persistActiveSession();
         return;
       }
       const session: Session = {
         userId: raw.userId,
         username: raw.username,
-        token: raw.token,
+        token,
         createdAt: raw.createdAt || Date.now(),
         lastAccessedAt: raw.lastAccessedAt || raw.createdAt || Date.now(),
       };
@@ -93,6 +97,10 @@ export class AuthService {
       sessions.set(session.token, session);
       activeToken = session.token;
       lastSessionPersistAt = Date.now();
+      // 若磁盘上仍是旧版明文 token（无 enc: 前缀），立即用加密格式重写落盘，避免明文残留
+      if (typeof raw?.token === 'string' && !raw.token.startsWith('enc:')) {
+        persistActiveSession(session);
+      }
       log.info(`已恢复登录会话: ${session.username}`);
     } catch (e) {
       log.warn('恢复登录会话失败:', e);

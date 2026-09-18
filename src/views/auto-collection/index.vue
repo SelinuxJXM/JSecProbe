@@ -226,13 +226,11 @@
                 已选 {{ selectedProfileIds.length }} 个连接，{{ selectedCommandIds.length }} 条命令，并发执行（上限 3）
               </span>
             </div>
-            <el-button
-              type="primary"
-              :disabled="!canStart"
-              :loading="starting"
-              @click="handleStartTask"
-            >
+            <el-button type="primary" :disabled="!canStart" :loading="starting" @click="handleStartTask">
               开始采集（{{ selectedProfileIds.length }} × {{ selectedCommandIds.length }}）
+            </el-button>
+            <el-button class="ac-local-collect-btn" type="warning" plain :disabled="selectedCommandIds.length === 0" @click="openLocalCollectDialog">
+              本地采集
             </el-button>
           </div>
         </div>
@@ -261,17 +259,33 @@
                         ｜成功 {{ t.summary.success }} / 失败 {{ t.summary.failed }} / 超时 {{ t.summary.timeout }}
                       </template>
                     </div>
-                    <div v-if="t.expanded && t.commandStates.length" class="ac-cmd-states">
+                    <div v-if="t.expanded" class="ac-cmd-states">
                       <el-scrollbar height="100%">
                         <div v-for="s in t.commandStates" :key="s.commandId" class="ac-cmd-state-row">
                           <span class="ac-cmd-state-name" :title="s.command">{{ s.command || s.commandId }}</span>
                           <span class="ac-cmd-state-duration">{{ s.durationMs != null ? `${s.durationMs} ms` : '' }}</span>
                           <el-tag :type="stateTagType(s.status)" size="small">{{ stateText(s.status) }}</el-tag>
                         </div>
+                        <!-- 无命令明细时给出明确提示：否则「命令明细」按钮点了看不到任何变化，像是失效 -->
+                        <div v-if="t.commandStates.length === 0" class="ac-cmd-empty">暂无命令明细</div>
                       </el-scrollbar>
                     </div>
                     <div class="ac-task-actions">
-                      <el-button size="small" :disabled="!isTaskRunning(t.status)" @click="handleCancelTask(t.id)">取消任务</el-button>
+                      <el-button
+                        size="small"
+                        type="danger"
+                        plain
+                        :disabled="!isTaskRunning(t.status)"
+                        :loading="canceling"
+                        @click="handleCancelTask(t)"
+                      >取消任务</el-button>
+                      <el-button
+                        v-if="!isTaskRunning(t.status)"
+                        link
+                        size="small"
+                        type="danger"
+                        @click="handleDeleteTask(t)"
+                      >删除</el-button>
                       <el-button link size="small" @click="toggleTaskExpand(t)">命令明细</el-button>
                       <el-button v-if="!isTaskRunning(t.status)" link size="small" @click="viewTaskResults(t.id)">查看结果</el-button>
                       <el-button
@@ -341,6 +355,36 @@
         </div>
       </div>
     </div>
+
+  <!-- 本地采集助手：目标机仅开远程桌面(3389)无法用连接器远程执行时的兜底方案 -->
+  <el-dialog
+    v-model="localDialogVisible"
+    title="本地采集助手"
+    width="560px"
+    append-to-body
+  >
+    <div class="ac-local-dialog-body">
+      <p class="ac-local-dialog-tip">
+        已选 <b>{{ selectedCommandIds.length }}</b> 条核查命令。将生成一个 PowerShell 脚本，拷到目标
+        Windows 主机以管理员身份运行一次，本地逐条执行命令并生成 results.json，再导回本工具入库。
+      </p>
+      <el-form label-width="90px" @submit.prevent>
+        <el-form-item label="目标主机">
+          <el-input v-model="localHost" placeholder="可选，将写入脚本头部便于溯源" clearable />
+        </el-form-item>
+      </el-form>
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="无需目标机开启 WinRM/SSH，仅需能放置脚本并本地运行一次（经 RDP/拷贝投递）。"
+      />
+    </div>
+    <template #footer>
+      <el-button :loading="exporting" type="primary" @click="handleExportLocalScript">导出本地脚本</el-button>
+      <el-button :loading="importing" type="success" @click="handleImportLocalResults">导入结果文件</el-button>
+    </template>
+  </el-dialog>
   </div>
 </template>
 
@@ -562,14 +606,6 @@ function switchProfileMode() {
   profileMode.value = profileMode.value === 'select' ? 'create' : 'select';
 }
 
-async function ensureProfileId(): Promise<string> {
-  if (profileMode.value === 'create') {
-    const id = await saveProfileInner();
-    return id;
-  }
-  return currentProfileId.value;
-}
-
 async function saveProfileInner(): Promise<string> {
   const payload: ConnectionProfileInput = {
     name: form.value.name,
@@ -603,13 +639,35 @@ async function handleSaveProfile() {
 async function handleTestConnection() {
   testing.value = true;
   try {
-    const profileId = await ensureProfileId();
-    if (!profileId) return;
-    const res = await window.api.collection.testConnection(profileId);
-    if (res.success && res.data?.ok) {
-      ElMessage.success('连接成功');
+    if (profileMode.value === 'create') {
+      const payload: ConnectionProfileInput = {
+        name: form.value.name,
+        connType: form.value.connType,
+        host: form.value.host,
+        port: form.value.port,
+        username: form.value.username,
+        authMethod: form.value.authMethod,
+        password: form.value.password,
+        privateKeyPath: form.value.privateKeyPath,
+        timeoutMs: form.value.timeoutMs,
+        extraConfig: buildExtraConfig(),
+        assetId: form.value.assetId,
+      };
+      const res = await window.api.collection.testConnectionWithProfile(payload);
+      if (res.success && res.data?.ok) {
+        ElMessage.success('连接成功');
+      } else {
+        ElMessage.error(res.data?.message || res.error?.message || '连接失败');
+      }
     } else {
-      ElMessage.error(res.data?.message || res.error?.message || '连接失败');
+      const profileId = currentProfileId.value;
+      if (!profileId) return;
+      const res = await window.api.collection.testConnection(profileId);
+      if (res.success && res.data?.ok) {
+        ElMessage.success('连接成功');
+      } else {
+        ElMessage.error(res.data?.message || res.error?.message || '连接失败');
+      }
     }
   } finally {
     testing.value = false;
@@ -672,9 +730,19 @@ const selectedCommandIds = ref<string[]>([]);
 const commandOsFilter = ref<string>('__auto__');
 
 async function loadCommands() {
-  // 全量加载（ pageSize 上限内），OS 过滤在前端做，保证下拉选项反映库内真实数据
-  const res = await window.api.knowledge.listCommands({ pageSize: 500 });
-  if (res.success) allCommands.value = res.data?.list || [];
+  // 分页循环拉取全量命令：后端 pageSize 硬上限为 500，单次请求可能取不全，需翻页直至取完
+  const pageSize = 500;
+  const all: any[] = [];
+  let page = 1;
+  for (;;) {
+    const res = await window.api.knowledge.listCommands({ page, pageSize });
+    if (!res.success) break;
+    const list = res.data?.list || [];
+    all.push(...list);
+    if (list.length < pageSize) break;
+    page++;
+  }
+  allCommands.value = all;
 }
 
 const osOptions = computed(() => {
@@ -727,6 +795,13 @@ const tasks = ref<any[]>([]);
 const activeTaskId = ref('');
 const results = ref<any[]>([]);
 const activeTab = ref('progress');
+
+// ============ 本地采集助手（手动投放兜底方案） ============
+const localDialogVisible = ref(false);
+const localHost = ref('');
+const exporting = ref(false);
+const importing = ref(false);
+let localTargetProfileId = '';
 
 let progressOff: (() => void) | null = null;
 
@@ -802,6 +877,103 @@ async function handleStartTask() {
   }
 }
 
+// ============ 本地采集助手（手动投放兜底方案） ============
+async function openLocalCollectDialog() {
+  if (selectedCommandIds.value.length === 0) {
+    ElMessage.warning('请先勾选核查命令');
+    return;
+  }
+  localTargetProfileId = '';
+  if (profileMode.value === 'select' && selectedProfileIds.value.length > 0) {
+    localTargetProfileId = selectedProfileIds.value[0];
+  }
+  localDialogVisible.value = true;
+}
+
+async function handleExportLocalScript() {
+  if (selectedCommandIds.value.length === 0) {
+    ElMessage.warning('请先勾选核查命令');
+    return;
+  }
+  exporting.value = true;
+  try {
+    const res = await window.api.collection.exportLocalScript({
+      host: localHost.value,
+      commandIds: selectedCommandIds.value.map((id) => String(id)),
+    });
+    if (!res.success || !res.data) {
+      ElMessage.error(res.error?.message || '生成本地采集脚本失败');
+      return;
+    }
+    const saveRes = await window.api.dialog.showSaveDialog({
+      title: '保存本地采集脚本',
+      defaultPath: 'local-collect.ps1',
+      filters: [{ name: 'PowerShell 脚本', extensions: ['ps1'] }],
+    });
+    if (!saveRes.success || !saveRes.data?.filePath) return;
+    const writeRes = await window.api.fs.writeTextFile(saveRes.data.filePath, res.data.content);
+    if (!writeRes.success) {
+      ElMessage.error(writeRes.error?.message || '写入脚本文件失败');
+      return;
+    }
+    ElMessage.success(`脚本已导出（共 ${res.data.commandCount} 条命令），请拷贝到目标主机以管理员身份运行`);
+  } finally {
+    exporting.value = false;
+  }
+}
+
+async function handleImportLocalResults() {
+  // 本地采集为手动投放兜底模式，不建立远程连接，因此不强求关联连接配置。
+  // connectionId 可空（后端 NOT NULL 列允许空串），任务对象自带兜底展示名「本地采集」。
+  importing.value = true;
+  try {
+    const openRes = await window.api.dialog.showOpenDialog({
+      title: '选择本地采集结果文件',
+      filters: [{ name: 'JSON 结果文件', extensions: ['json'] }],
+      properties: ['openFile'],
+    });
+    if (!openRes.success || !openRes.data?.filePaths?.length) return;
+    const filePath = openRes.data.filePaths[0];
+    const readRes = await window.api.fs.readFile(filePath);
+    if (!readRes.success) {
+      ElMessage.error(readRes.error?.message || '读取结果文件失败');
+      return;
+    }
+    if (!readRes.data || !readRes.data.trim()) {
+      ElMessage.warning('结果文件内容为空，请检查 results.json 是否正确生成');
+      return;
+    }
+    const profile = profiles.value.find((p) => p.id === localTargetProfileId);
+    const impRes = await window.api.collection.importLocalResults({
+      projectId: String(selectedProjectId.value),
+      assetId: profile?.assetId ? String(profile.assetId) : '',
+      connectionId: String(localTargetProfileId),
+      jsonContent: readRes.data ?? '',
+    });
+    if (!impRes.success || !impRes.data) {
+      ElMessage.error(impRes.error?.message || '导入结果失败');
+      return;
+    }
+    ElMessage.success(`成功导入 ${impRes.data.imported} 条采集结果`);
+    tasks.value.push({
+      id: impRes.data.taskId,
+      profileId: localTargetProfileId,
+      status: 'success',
+      message: '本地采集结果已导入',
+      percent: 100,
+      completedCommands: impRes.data.imported,
+      totalCommands: impRes.data.imported,
+      commandStates: [],
+      summary: { total: impRes.data.imported, success: impRes.data.imported, failed: 0, timeout: 0, error: 0, running: 0, pending: 0 },
+      expanded: false,
+      profileName: profile?.name || `${profile?.host || ''} 本地采集`,
+    });
+    activeTab.value = 'progress';
+  } finally {
+    importing.value = false;
+  }
+}
+
 function handleProgress(data: any) {
   if (!data || !data.taskId) return;
   const t = tasks.value.find((x) => x.id === data.taskId);
@@ -837,8 +1009,14 @@ async function loadResults(taskId: string) {
   }
 }
 
-function viewTaskResults(taskId: string) {
-  void loadResults(taskId);
+async function viewTaskResults(taskId: string) {
+  // 必须先等结果加载完成再切页签：结果页签是 v-if="results.length > 0"，
+  // 若先切过去而此时 results 仍为空，页签不存在，就会出现「跳转后什么内容也没显示」
+  await loadResults(taskId);
+  if (results.value.length === 0) {
+    ElMessage.warning('该任务暂无采集结果');
+    return;
+  }
   activeTab.value = 'results';
 }
 
@@ -846,12 +1024,45 @@ function toggleTaskExpand(t: any) {
   t.expanded = !t.expanded;
 }
 
-async function handleCancelTask(taskId: string) {
+async function handleCancelTask(t: any) {
+  const taskId = t?.id;
+  if (!taskId) return;
+  // 立即给用户反馈：先乐观置为「取消中」，后台循环将在当前命令结束后中断并推送最终状态
+  if (t.status !== 'canceled') {
+    t.status = 'canceling';
+    t.message = '正在取消，等待当前命令结束…';
+  }
   canceling.value = true;
   try {
-    if (taskId) await window.api.collection.cancelTask(taskId);
+    await window.api.collection.cancelTask(taskId);
   } finally {
     canceling.value = false;
+  }
+}
+
+async function handleDeleteTask(t: any) {
+  if (!t?.id) return;
+  const name = t.profileName || '该任务';
+  try {
+    await ElMessageBox.confirm(
+      `确定删除任务「${name}」吗？将同时清除其采集结果与已生成的文档记录。`,
+      '删除任务',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    );
+  } catch {
+    return;
+  }
+  const res = await window.api.collection.deleteTask(t.id);
+  if (res.success) {
+    ElMessage.success('已删除任务');
+    tasks.value = tasks.value.filter((x) => x.id !== t.id);
+    if (activeTaskId.value === t.id) {
+      activeTaskId.value = '';
+      results.value = [];
+    }
+    await loadDocuments();
+  } else {
+    ElMessage.error(res.error?.message || '删除任务失败');
   }
 }
 
@@ -1347,6 +1558,13 @@ onUnmounted(() => {
   overflow: hidden;
   padding: 0 8px;
   margin-bottom: 8px;
+}
+
+.ac-cmd-empty {
+  padding: 46px 0;
+  text-align: center;
+  font-size: 12px;
+  color: #909399;
 }
 
 .ac-cmd-state-row {

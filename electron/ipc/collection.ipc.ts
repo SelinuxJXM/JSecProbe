@@ -47,9 +47,31 @@ export function registerCollectionHandlers(): void {
     return collectionService.testConnection(id);
   }, { moduleName: 'collection', requireSession: true }));
 
+  ipcMain.handle('collection:testConnectionWithProfile', wrap(async (_event, data: any) => {
+    validateNotEmpty(data?.name, '连接名称');
+    validateNotEmpty(data?.host, '主机地址');
+    if (data?.password && data.password.length > 0 && data.password.length < 6) {
+      throw new Error('密码长度不能少于 6 位');
+    }
+    return collectionService.testConnectionWithProfile({
+      id: data.id,
+      name: data.name,
+      connType: data.connType,
+      host: data.host,
+      port: data.port ?? null,
+      username: data.username ?? null,
+      authMethod: data.authMethod,
+      password: data.password,
+      privateKeyPath: data.privateKeyPath ?? null,
+      timeoutMs: data.timeoutMs,
+      extraConfig: data.extraConfig ?? null,
+      assetId: data.assetId ?? null,
+    });
+  }, { moduleName: 'collection', requireSession: true }));
+
   ipcMain.handle('collection:createTask', wrap(async (event, data: any) => {
     validateNotEmpty(data?.projectId, '项目ID');
-    validateNotEmpty(data?.assetId, '资产ID');
+    // assetId 允许为空：连接配置可不关联资产（手动目标），collectionTasks.assetId 为 NOT NULL，空串可正常写入
     validateNotEmpty(data?.connectionId, '连接配置ID');
     if (!Array.isArray(data?.commandIds) || data.commandIds.length === 0) {
       throw new Error('请至少选择一条核查命令');
@@ -65,6 +87,11 @@ export function registerCollectionHandlers(): void {
   ipcMain.handle('collection:cancelTask', wrap(async (_event, id: string) => {
     validateNotEmpty(id, '任务ID');
     return collectionService.cancelTask(id);
+  }, { moduleName: 'collection', requireSession: true }));
+
+  ipcMain.handle('collection:deleteTask', wrap(async (_event, id: string) => {
+    validateNotEmpty(id, '任务ID');
+    return collectionService.deleteTask(id);
   }, { moduleName: 'collection', requireSession: true }));
 
   ipcMain.handle('collection:getTask', wrap(async (_event, id: string) => {
@@ -119,5 +146,33 @@ export function registerCollectionHandlers(): void {
     validateNotEmpty(filePath, '文件路径');
     shell.showItemInFolder(filePath);
     return;
+  }, { moduleName: 'collection', requireSession: true }));
+
+  ipcMain.handle('collection:exportLocalScript', wrap(async (_event, data: any) => {
+    if (!Array.isArray(data?.commandIds) || data.commandIds.length === 0) {
+      throw new Error('请至少选择一条核查命令');
+    }
+    return collectionService.exportLocalScript({
+      host: typeof data?.host === 'string' ? data.host : '',
+      commandIds: data.commandIds.map((id: unknown) => String(id)),
+    });
+  }, { moduleName: 'collection', requireSession: true }));
+
+  ipcMain.handle('collection:importLocalResults', wrap(async (_event, data: any) => {
+    validateNotEmpty(data?.projectId, '项目ID');
+    // 本地采集为手动投放兜底模式，不建立远程连接，connectionId 可为空串（无需勾选连接配置）。
+    // 仅校验其为字符串类型（允许空串），不再强制非空。
+    if (typeof data?.connectionId !== 'string') {
+      throw new Error('连接配置ID类型不合法');
+    }
+    if (typeof data?.jsonContent !== 'string' || data.jsonContent.length === 0) {
+      throw new Error('请提供本地采集结果文件内容');
+    }
+    return collectionService.importLocalResults({
+      projectId: data.projectId,
+      assetId: typeof data?.assetId === 'string' ? data.assetId : '',
+      connectionId: data.connectionId,
+      jsonContent: data.jsonContent,
+    });
   }, { moduleName: 'collection', requireSession: true }));
 }

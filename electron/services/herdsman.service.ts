@@ -1,4 +1,4 @@
-import { execSync, spawn } from 'child_process';
+import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import log from 'electron-log';
@@ -6,6 +6,7 @@ import {
   checkOllamaRunning,
   listModels,
   validateLocalUrl,
+  runPowerShellAsync,
   type OllamaModel,
   type OllamaStatus,
   type OllamaInstallGuide,
@@ -53,17 +54,16 @@ export function getHerdsmanExePath(): string {
  * 通过开始菜单快捷方式反查 herdsman.exe 的真实路径，覆盖自定义安装目录。
  * 使用 WScript.Shell 解析 .lnk 的 TargetPath。
  */
-function findHerdsmanFromStartMenu(): string {
-  // 分段拼接，避免引号转义嵌套；目标脚本通过 WScript.Shell 解析 .lnk 反查 exe 真实路径
+async function findHerdsmanFromStartMenu(): Promise<string> {
+  // 直接传 PowerShell 脚本本体（由 runPowerShellAsync 异步执行），不再拼接 powershell 命令前缀
   const script =
-    'powershell -NoProfile -Command "' +
     '$shell=New-Object -ComObject WScript.Shell; ' +
     'foreach($d in @("$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs","$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs")){ ' +
     'Get-ChildItem -Path $d -Recurse -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object { ' +
     '$t=$shell.CreateShortcut($_.FullName).TargetPath; ' +
-    "if($t -and $t -match 'herdsman\\.exe$'){ $t } } }\")";
+    "if($t -and $t -match 'herdsman\\.exe$'){ $t } } }";
   try {
-    const output = execSync(script, { stdio: 'pipe', timeout: 8000, encoding: 'utf8' }).toString();
+    const output = await runPowerShellAsync(script, 8000);
     const lines = output
       .split(/\r?\n/)
       .map((l) => l.trim())
@@ -74,34 +74,48 @@ function findHerdsmanFromStartMenu(): string {
   }
 }
 
-export async function checkHerdsmanInstalled(): Promise<boolean> {
+// 「是否已安装」的探测代价最高（开始菜单反查实测约 1.5 秒），而健康检查每 30 秒就会查一次状态。
+// 这里做短时缓存；force=true 用于用户显式操作（打开设置、点击「验证安装」），保证拿到最新结果。
+const INSTALL_CHECK_TTL_MS = 5 * 60 * 1000;
+let installedCache: { value: boolean; at: number } | null = null;
+
+export async function checkHerdsmanInstalled(force = false): Promise<boolean> {
+  if (!force && installedCache && Date.now() - installedCache.at < INSTALL_CHECK_TTL_MS) {
+    return installedCache.value;
+  }
+  let installed = false;
   try {
     for (const p of getHerdsmanExePaths()) {
       if (fs.existsSync(p)) {
-        return true;
+        installed = true;
+        break;
       }
     }
-    if (findHerdsmanFromStartMenu()) {
-      return true;
+    if (!installed && (await findHerdsmanFromStartMenu())) {
+      installed = true;
     }
-    const output = execSync(
-      'powershell -NoProfile -Command "(Get-Command herdsman -ErrorAction SilentlyContinue).Source"',
-      { stdio: 'pipe', timeout: 5000, encoding: 'utf8' }
-    ).toString();
-    return output.trim().length > 0;
+    if (!installed) {
+      const output = await runPowerShellAsync(
+        '(Get-Command herdsman -ErrorAction SilentlyContinue).Source',
+        5000
+      );
+      installed = output.trim().length > 0;
+    }
   } catch {
-    return false;
+    installed = false;
   }
+  installedCache = { value: installed, at: Date.now() };
+  return installed;
 }
 
-export async function getHerdsmanStatus(url: string = HERDSMAN_DEFAULT_URL): Promise<OllamaStatus> {
+export async function getHerdsmanStatus(url: string = HERDSMAN_DEFAULT_URL, force = false): Promise<OllamaStatus> {
   try {
     const running = await checkOllamaRunning(url);
     if (running) {
       const models: OllamaModel[] = await listModels(url);
       return { state: 'running', models };
     }
-    const installed = await checkHerdsmanInstalled();
+    const installed = await checkHerdsmanInstalled(force);
     return { state: installed ? 'not_running' : 'not_installed' };
   } catch (err: any) {
     log.error('[Herdsman] 状态检查失败:', err.message);
@@ -125,7 +139,7 @@ export async function startHerdsman(url: string = HERDSMAN_DEFAULT_URL): Promise
     }
     let exe = getHerdsmanExePath();
     if (!fs.existsSync(exe)) {
-      exe = findHerdsmanFromStartMenu();
+      exe = await findHerdsmanFromStartMenu();
     }
     if (!exe || !fs.existsSync(exe)) {
       return { success: false, message: '未找到 Herdsman 安装位置，请手动启动 Herdsman' };

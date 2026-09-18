@@ -717,7 +717,7 @@ export interface ApiBridge {
     resetPrompt: (payload: { key: string }) => Promise<IpcResponse<{ success: boolean }>>;
   };
   ollama: {
-    getStatus: (url?: string, engine?: 'ollama' | 'herdsman') => Promise<IpcResponse<{ state: string; models?: any[]; error?: string }>>;
+    getStatus: (url?: string, engine?: 'ollama' | 'herdsman', force?: boolean) => Promise<IpcResponse<{ state: string; models?: any[]; error?: string }>>;
     listModels: (url?: string, engine?: 'ollama' | 'herdsman') => Promise<IpcResponse<any[]>>;
     pullModel: (modelName: string, url?: string, engine?: 'ollama' | 'herdsman') => Promise<IpcResponse<any>>;
     deleteModel: (modelName: string, url?: string, engine?: 'ollama' | 'herdsman') => Promise<IpcResponse<void>>;
@@ -779,16 +779,20 @@ export interface ApiBridge {
     deleteProfile: (id: string) => Promise<IpcResponse<void>>;
     batchDeleteProfiles: (ids: string[]) => Promise<IpcResponse<{ deleted: number }>>;
     testConnection: (id: string) => Promise<IpcResponse<{ ok: boolean; message?: string }>>;
+    testConnectionWithProfile: (data: ConnectionProfileInput) => Promise<IpcResponse<{ ok: boolean; message?: string }>>;
     listTasks: (params: { projectId: string; assetId?: string }) => Promise<IpcResponse<CollectionTask[]>>;
     getTask: (id: string) => Promise<IpcResponse<CollectionTask | null>>;
     createTask: (data: { projectId: string; assetId: string; connectionId: string; commandIds: string[] }) => Promise<IpcResponse<CollectionTask>>;
     cancelTask: (id: string) => Promise<IpcResponse<void>>;
+    deleteTask: (id: string) => Promise<IpcResponse<void>>;
     listResults: (taskId: string) => Promise<IpcResponse<CollectionResult[]>>;
     confirmResult: (data: { resultId: string; projectId: string; itemId: string; assetId: string; result: string; method?: string; evidence?: string }) => Promise<IpcResponse<void>>;
     saveDocument: (data: { taskId: string; dirPath: string }) => Promise<IpcResponse<{ filePath: string; title: string }>>;
     listDocuments: (projectId: string) => Promise<IpcResponse<CollectionDocument[]>>;
     deleteDocument: (id: string) => Promise<IpcResponse<void>>;
     openDocumentDir: (filePath: string) => Promise<IpcResponse<void>>;
+    exportLocalScript: (data: { host: string; commandIds: string[] }) => Promise<IpcResponse<{ content: string; commandCount: number }>>;
+    importLocalResults: (data: { projectId: string; assetId: string; connectionId: string; jsonContent: string }) => Promise<IpcResponse<{ taskId: string; imported: number }>>;
     onProgress: (callback: (data: CollectionProgress) => void) => () => void;
   };
 }

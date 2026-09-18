@@ -39,6 +39,9 @@ export class SqlServerConnector implements IConnector {
       },
     };
     const pool = new sql.ConnectionPool(config);
+    // 连接池空闲期间服务端断连会在 pool 上 emit 'error'，无监听会打崩主进程；
+    // 挂兜底监听防止进程级崩溃，连接错误交由后续 query 的异常捕获路径处理
+    pool.on('error', () => {});
     await pool.connect();
     this.pool = pool;
   }

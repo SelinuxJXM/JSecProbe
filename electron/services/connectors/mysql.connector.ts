@@ -28,6 +28,9 @@ export class MySqlConnector implements IConnector {
       database: cfg.database || undefined,
       connectTimeout: profile.timeoutMs || 10000,
     });
+    // mysql2 空闲期间服务端断连会在底层连接上 emit 'error'，无监听会打崩主进程；
+    // 挂兜底监听防止进程级崩溃，连接错误交由后续 query 的异常捕获路径处理
+    (conn as any).connection?.on?.('error', () => {});
     this.conn = conn;
   }
 
