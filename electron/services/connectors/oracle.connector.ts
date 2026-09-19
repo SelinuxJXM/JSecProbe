@@ -1,6 +1,7 @@
 import oracledb from 'oracledb';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
+import { logger as log } from '../../utils/logger';
 import type { IConnector, ExecResult } from './connector';
 import {
   parseExtraConfig,
@@ -9,6 +10,7 @@ import {
   formatRows,
   splitSqlStatements,
   assertReadonlySql,
+  isTlsHandshakeError,
 } from './db.util';
 
 export class OracleConnector implements IConnector {
@@ -20,18 +22,54 @@ export class OracleConnector implements IConnector {
     const cfg = parseExtraConfig(profile.extraConfig);
     const password = decryptSecret(profile.passwordEncrypted);
     this.commandTimeoutMs = getCommandTimeout(profile);
-    const connectString = `${profile.host}:${profile.port || 1521}/${cfg.database || 'ORCL'}`;
-    const conn = await withTimeout(
-      oracledb.getConnection({
-        user: profile.username || undefined,
-        password: password || undefined,
-        connectString,
-        connectTimeout: profile.timeoutMs || 10000,
-      }),
-      profile.timeoutMs || 10000,
-      'Oracle 连接超时'
-    );
-    this.conn = conn;
+    const port = profile.port || 1521;
+    const service = cfg.database || cfg.serviceName || 'ORCL';
+    // 传输安全：对齐 MySQL / PostgreSQL / Redis 的「优先加密、服务端不支持时降级」策略。
+    // 原实现默认走明文 TCP，口令与查询结果明文过网。
+    // Oracle 的 TCPS 需要服务端监听已配置 SSL/TLS，内网老库普遍没有，因此保留降级，
+    // 但必须告警留痕。可用 extraConfig 显式控制：{"tcps": true|false}。
+    const tcpsConnectString =
+      `(DESCRIPTION=(ADDRESS=(PROTOCOL=TCPS)(HOST=${profile.host})(PORT=${port}))(CONNECT_DATA=(SERVICE_NAME=${service})))`;
+    const tcpConnectString = `${profile.host}:${port}/${service}`;
+
+    const doConnect = (connectString: string, timeoutMs: number) =>
+      withTimeout(
+        oracledb.getConnection({
+          user: profile.username || undefined,
+          password: password || undefined,
+          connectString,
+          connectTimeout: timeoutMs,
+        }),
+        timeoutMs,
+        'Oracle 连接超时'
+      );
+
+    const fullTimeout = profile.timeoutMs || 10000;
+    // 显式关闭时才完全跳过 TCPS 尝试；否则先试加密链路
+    if (cfg.tcps !== false) {
+      // 首次尝试给一个较短的超时，避免不支持 TCPS 的实例把连接耗时拖到两倍
+      const probeTimeout = Math.min(fullTimeout, 5000);
+      try {
+        this.conn = await doConnect(tcpsConnectString, probeTimeout);
+        return;
+      } catch (err) {
+        // 显式要求 TCPS 时不降级，直接失败（用户已明确声明该实例支持加密）
+        if (cfg.tcps === true) throw err;
+        if (!isTlsHandshakeError(err)) {
+          // 非加密握手类错误（口令错误、服务名不存在等）直接抛出，不误导为 TLS 问题
+          throw err;
+        }
+        log.warn(
+          `[Oracle] ${profile.host}:${port} 不支持 TCPS，已降级为明文连接（口令与查询结果将以明文传输）；` +
+          `如需强制加密请在服务端配置 SSL/TLS 监听`
+        );
+      }
+    } else {
+      log.warn(
+        `[Oracle] ${profile.host}:${port} 已按 {"tcps": false} 使用明文连接，口令与查询结果将以明文传输`
+      );
+    }
+    this.conn = await doConnect(tcpConnectString, fullTimeout);
   }
 
   async execute(cmd: string): Promise<ExecResult> {

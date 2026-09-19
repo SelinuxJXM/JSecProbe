@@ -5,7 +5,7 @@ import log from 'electron-log';
 import crypto from 'crypto';
 import { wrap } from '../utils/ipc-wrapper';
 import { getAppDataPath } from '../main/paths';
-import { toRelativePath, validateDataPath, resolvePath } from '../utils/path-resolver';
+import { toRelativePath, validateDataPath, validateReadablePath } from '../utils/path-resolver';
 
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -103,21 +103,21 @@ function validateId(id: string, name: string): void {
 }
 
 /**
- * 解析用户通过文件对话框显式选择的文件：仅做路径归一化与穿越防护，
- * 不强制位于应用数据目录内（用户已主动选择，读取属合理行为）。
- * 用于 getBase64 / readText / readWord 等预览场景；
- * 注意：删除类操作（screenshot:deleteFile）仍使用 validateDataPath 受管目录限制。
+ * 解析来源受限的可读文件：只接受「受管数据目录内」或「用户亲手挑选并登记的文件」。
+ *
+ * 与全应用保持一致——此前这里自行拼接 resolvePath，允许读取任意绝对路径
+ * （渲染层一旦被挟持即可读取 id_rsa、浏览器凭据等），是全项目最后一处同类口子。
+ * 删除类操作（screenshot:deleteFile）仍使用 validateDataPath 受管目录限制，不受影响。
  */
 async function resolveUserFilePath(inputPath: string): Promise<string> {
-  if (!inputPath || typeof inputPath !== 'string') {
-    throw new Error('路径无效');
-  }
-  const resolved = await resolvePath(inputPath);
-  const normalized = path.resolve(resolved);
-  if (normalized.includes('..')) {
-    throw new Error('路径访问被拒绝: 非法的路径格式');
-  }
-  return normalized;
+  return await validateReadablePath(inputPath);
+}
+
+/** 模糊匹配结果同样视为「新路径」，必须回炉校验后才能使用 */
+async function resolveFuzzyMatch(resolvedPath: string): Promise<string> {
+  const fuzzyPath = findFuzzyMatch(resolvedPath);
+  if (!fuzzyPath) return '';
+  return await validateReadablePath(fuzzyPath);
 }
 
 export function registerScreenshotHandlers(): void {
@@ -125,10 +125,12 @@ export function registerScreenshotHandlers(): void {
     if (!filePath || typeof filePath !== 'string') {
       throw new Error('文件路径无效');
     }
-    if (!fs.existsSync(filePath)) {
+    // 读来源统一收口：必须是受管数据目录内的文件，或用户亲手挑选（已登记）的文件
+    const sourcePath = await validateReadablePath(filePath);
+    if (!fs.existsSync(sourcePath)) {
       throw new Error('文件不存在: ' + filePath);
     }
-    if (fs.statSync(filePath).size > MAX_FILE_SIZE) {
+    if (fs.statSync(sourcePath).size > MAX_FILE_SIZE) {
       throw new Error(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
     }
 
@@ -139,12 +141,12 @@ export function registerScreenshotHandlers(): void {
     const screenshotsDir = path.join(appDataPath, 'screenshots', projectId, itemId);
     fs.mkdirSync(screenshotsDir, { recursive: true });
 
-    const ext = path.extname(filePath).toLowerCase();
+    const ext = path.extname(sourcePath).toLowerCase();
     if (!IMAGE_EXTENSIONS.includes(ext)) {
       throw new Error(`不支持的文件类型: ${ext}`);
     }
 
-    const buffer = fs.readFileSync(filePath);
+    const buffer = fs.readFileSync(sourcePath);
     if (!isValidImage(buffer, ext)) {
       throw new Error('文件内容不是有效的图片格式');
     }
@@ -162,11 +164,11 @@ export function registerScreenshotHandlers(): void {
       }
     }
 
-    const baseName = path.basename(filePath, ext);
+    const baseName = path.basename(sourcePath, ext);
     const targetName = `${baseName}_${Date.now()}${ext}`;
     const targetPath = path.join(screenshotsDir, targetName);
 
-    fs.copyFileSync(filePath, targetPath);
+    fs.copyFileSync(sourcePath, targetPath);
 
     const relativePath = await toRelativePath(targetPath);
     return { path: relativePath, name: targetName };
@@ -206,14 +208,16 @@ export function registerScreenshotHandlers(): void {
     if (!filePath || typeof filePath !== 'string') {
       throw new Error('文件路径无效');
     }
-    if (!fs.existsSync(filePath)) {
+    // 同上： documentary 上传也走统一读来源校验（来源仍为用户在对话框中选择的文件）
+    const sourcePath = await validateReadablePath(filePath);
+    if (!fs.existsSync(sourcePath)) {
       throw new Error('文件不存在: ' + filePath);
     }
-    if (fs.statSync(filePath).size > MAX_FILE_SIZE) {
+    if (fs.statSync(sourcePath).size > MAX_FILE_SIZE) {
       throw new Error(`文件大小超过限制 (${MAX_FILE_SIZE / 1024 / 1024}MB)`);
     }
 
-    const ext = path.extname(filePath).toLowerCase();
+    const ext = path.extname(sourcePath).toLowerCase();
     if (!DOCUMENT_EXTENSIONS.includes(ext)) {
       throw new Error(`不支持的文件类型: ${ext} (仅支持: ${DOCUMENT_EXTENSIONS.join(', ')})`);
     }
@@ -225,7 +229,7 @@ export function registerScreenshotHandlers(): void {
     const evidenceDir = path.join(appDataPath, 'evidence', projectId, itemId);
     fs.mkdirSync(evidenceDir, { recursive: true });
 
-    const buffer = fs.readFileSync(filePath);
+    const buffer = fs.readFileSync(sourcePath);
     const fileHash = crypto.createHash('md5').update(buffer).digest('hex');
     const existingFiles = fs.readdirSync(evidenceDir);
     for (const existing of existingFiles) {
@@ -239,11 +243,11 @@ export function registerScreenshotHandlers(): void {
       }
     }
 
-    const fileName = path.basename(filePath);
+    const fileName = path.basename(sourcePath);
     const targetName = `${Date.now()}_${fileName}`;
     const targetPath = path.join(evidenceDir, targetName);
 
-    fs.copyFileSync(filePath, targetPath);
+    fs.copyFileSync(sourcePath, targetPath);
 
     const relativePath = await toRelativePath(targetPath);
     return { path: relativePath, name: targetName };
@@ -258,7 +262,7 @@ export function registerScreenshotHandlers(): void {
 
     // 容错：如果精确路径不存在，尝试在同目录下按原始文件名（去时间戳）模糊匹配
     if (!fs.existsSync(resolvedPath)) {
-      const fuzzyPath = findFuzzyMatch(resolvedPath);
+      const fuzzyPath = await resolveFuzzyMatch(resolvedPath);
       if (fuzzyPath) {
         log.info(`[screenshot:getBase64] 精确路径不存在，使用模糊匹配: ${resolvedPath} -> ${fuzzyPath}`);
         resolvedPath = fuzzyPath;
@@ -287,7 +291,7 @@ export function registerScreenshotHandlers(): void {
 
     let resolvedPath = await resolveUserFilePath(filePath);
     if (!fs.existsSync(resolvedPath)) {
-      const fuzzyPath = findFuzzyMatch(resolvedPath);
+      const fuzzyPath = await resolveFuzzyMatch(resolvedPath);
       if (fuzzyPath) {
         log.info(`[screenshot:readText] 使用模糊匹配: ${resolvedPath} -> ${fuzzyPath}`);
         resolvedPath = fuzzyPath;
@@ -317,7 +321,7 @@ export function registerScreenshotHandlers(): void {
 
     let resolvedPath = await resolveUserFilePath(filePath);
     if (!fs.existsSync(resolvedPath)) {
-      const fuzzyPath = findFuzzyMatch(resolvedPath);
+      const fuzzyPath = await resolveFuzzyMatch(resolvedPath);
       if (fuzzyPath) {
         log.info(`[screenshot:readWord] 使用模糊匹配: ${resolvedPath} -> ${fuzzyPath}`);
         resolvedPath = fuzzyPath;

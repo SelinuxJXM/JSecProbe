@@ -9,7 +9,10 @@ import { toRelativePath } from '../utils/path-resolver';
 const MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024;
 
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'];
-const DOCUMENT_EXTENSIONS = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.md', '.txt', '.csv', '.log', '.json', '.xml', '.html', '.css', '.js', '.ts'];
+// 脚本/代码类扩展名不再放行：附件会在应用内预览，`.js`/`.ts` 属可执行代码载体，
+// 一旦预览链路存在任何执行面即构成代码执行风险，且对测评取证没有实际用途。
+// 注意：`.html` 保留（报告导出场景存在），但预览侧必须净化后再展示。
+const DOCUMENT_EXTENSIONS = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.md', '.txt', '.csv', '.log', '.json', '.xml', '.html'];
 
 const IMAGE_MAGIC_NUMBERS: Record<string, Buffer> = {
   '.png': Buffer.from([0x89, 0x50, 0x4E, 0x47]),

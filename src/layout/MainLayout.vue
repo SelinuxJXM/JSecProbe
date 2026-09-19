@@ -66,7 +66,8 @@
       
       <div class="sidebar-footer" v-if="!appStore.sidebarCollapsed">
         <div class="sidebar-footer-card">
-          <div class="sf-version">v2.4.1</div>
+          <!-- 版本号由主进程 app.getVersion() 提供，不在此硬编码 -->
+          <div class="sf-version">v{{ currentVersion || '-' }}</div>
           <a href="https://github.com/SelinuxJXM/JSecProbe" target="_blank" class="sf-github" title="访问 GitHub 仓库">
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
@@ -131,13 +132,16 @@
       
       <main class="main-content">
         <router-view v-slot="{ Component }">
-          <!-- 恢复 out-in「先淡出、再淡入」的原动画效果（0.3s + 0.3s）。
-               防呆保障（针对当初「内容区永久空白」）：
-               1) 主进程已关闭后台节流 setBackgroundThrottling(false)，窗口隐藏/遮挡时 rAF 仍会运行，
-                  离场过渡能正常推进并触发结束——这是当初卡死的根因；
-               2) 显式 :duration 让 Vue 以定时器判定过渡结束，不再单纯依赖 transitionend，
-                  进一步降低动画事件丢失导致卡住的风险。 -->
-          <transition name="page-fade" mode="out-in" :duration="{ enter: 300, leave: 300 }">
+          <!-- 页面过渡调参说明（手感是主观的，改这两个数即可）：
+                 leave 决定「点击后多久新页面开始挂载」——它是纯等待，越长越显迟滞；
+                 enter 决定动画本身能被看清的程度。
+                 历史：各 300ms（合计 600ms，明显卡顿）→ leave 0（响应最快，但完全看不见
+                 切换）→ 260/90（过场清晰，但整体偏慢）→ 两段均 90ms（偏快，几乎没有过渡
+                 感）→ 现在 leave 90ms + enter 200ms：等待段保持在「即时」感知阈值（约
+                 100ms）以内，把预算全给入场，过渡因此重新看得见而响应不迟滞。
+                 若嫌慢：把 enter 降到 120~150ms；若想更明显：enter 提到 260~320ms、
+                 位移改 16px（响应几乎不变，因为 leave 仍只有 90ms）。 -->
+          <transition name="page-fade" mode="out-in" :duration="{ enter: 200, leave: 90 }">
             <component :is="Component" :key="route.fullPath" />
           </transition>
         </router-view>
@@ -840,25 +844,33 @@ function handleLogout() {
   background: var(--color-bg-base);
 }
 
-.page-fade-enter-active,
+/* 页面切换过渡。调参见模板中的「页面过渡调参说明」注释，此处只放呈现。
+   离场 90ms / 缓入，向上收 6px；入场 200ms / quart 缓出，由下浮上 14px。
+   两段同向（都是向上），读起来是一次连贯的「翻页」而不是两段各自独立的动画。
+   离场刻意压在 100ms 的「即时」感知阈值内——多给它一毫秒，新页面的数据请求
+   就晚一毫秒发出；入场才是用户真正欣赏的部分，所以预算优先给它。 */
+.page-fade-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.22, 1, 0.36, 1), transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 .page-fade-leave-active {
-  transition: opacity 0.3s ease, transform 0.3s ease;
+  transition: opacity 0.09s ease-in, transform 0.09s ease-in;
 }
 
 .page-fade-enter-from {
   opacity: 0;
-  transform: translateX(-30px);
+  transform: translateY(14px);
 }
 
 .page-fade-leave-to {
   opacity: 0;
-  transform: translateX(30px);
+  transform: translateY(-6px);
 }
 
 .page-fade-enter-to,
 .page-fade-leave-from {
   opacity: 1;
-  transform: translateX(0);
+  transform: translateY(0);
 }
 
 .notification-bell {

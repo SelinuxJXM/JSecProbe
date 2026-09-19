@@ -79,8 +79,14 @@
           <el-icon :size="32"><CircleCheckFilled /></el-icon>
         </div>
         <div class="stat-info">
-          <el-statistic :value="complianceRateValue" :precision="2" suffix="%" />
-          <div class="stat-label">符合率</div>
+          <el-tooltip placement="top" :show-after="300">
+            <template #content>
+              测评符合率 = 符合 /（已判定 − 不适用）<br />
+              统计自现场核查的测评记录，与「问题总数」不是同一口径，两者不能相减或相除。
+            </template>
+            <el-statistic :value="complianceRateValue" :precision="2" suffix="%" />
+          </el-tooltip>
+          <div class="stat-label">测评符合率</div>
         </div>
       </div>
       <div class="stat-card stat-total">

@@ -2,12 +2,20 @@ import { ipcMain, dialog } from 'electron';
 import log from 'electron-log';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, like, and, desc, count, sql, not, or, lte, inArray } from 'drizzle-orm';
+import { eq, like, and, desc, count, sql, not, or, lte, inArray, isNull } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import ExcelJS from 'exceljs';
 import type { ProjectListParams } from '../../shared/types';
 import { writeOperationLog } from '../utils/operation-log';
 import { wrap, wrapRaw } from '../utils/ipc-wrapper';
+import { resolveStandardIdForProject } from '../services/assessment-progress';
+import {
+  exportProjectArchive,
+  previewProjectArchive,
+  importProjectArchive,
+  isArchiveEncrypted,
+} from '../services/project-archive.service';
+import { validateFsPath, validateReadablePath, authorizeUserFiles } from '../utils/path-resolver';
 
 async function calcProjectProgress(projectId: string): Promise<number> {
   try {
@@ -367,6 +375,13 @@ export function registerProjectHandlers(): void {
     })
   );
 
+  // 解析项目适用的标准 ID（项目绑定值 → 同等级 → 默认 → 首条；绑定值指向已删除标准时自动回落）。
+  // 前端 onsite-verification 依赖它避免硬编码标准 ID；此前只有 preload 声明、主进程未注册 → 调用必失败。
+  ipcMain.handle('project:resolveStandardId', wrap(async (_event, projectId: string) => {
+      return await resolveStandardIdForProject(projectId);
+    })
+  );
+
   ipcMain.handle('project:create', wrap(async (_event, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
@@ -502,8 +517,10 @@ export function registerProjectHandlers(): void {
         // 先收集关联 id，再级联删除，避免遗留孤儿数据
         const assetRows = tx.select({ id: schema.assets.id }).from(schema.assets).where(eq(schema.assets.projectId, id)).all();
         const assetIds = assetRows.map(a => a.id);
-        const taskRows = tx.select({ id: schema.collectionTasks.id }).from(schema.collectionTasks).where(eq(schema.collectionTasks.projectId, id)).all();
+        const taskRows = tx.select({ id: schema.collectionTasks.id, connectionId: schema.collectionTasks.connectionId }).from(schema.collectionTasks).where(eq(schema.collectionTasks.projectId, id)).all();
         const taskIds = taskRows.map(t => t.id);
+        // 采集任务引用的连接配置 id（去重、排除本地兜底的空串）
+        const taskConnIds = [...new Set(taskRows.map(t => t.connectionId).filter(Boolean))] as string[];
 
         tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.projectId, id)).run();
         tx.delete(schema.issues).where(eq(schema.issues.projectId, id)).run();
@@ -513,6 +530,33 @@ export function registerProjectHandlers(): void {
         }
         tx.delete(schema.collectionTasks).where(eq(schema.collectionTasks.projectId, id)).run();
         tx.delete(schema.collectionDocuments).where(eq(schema.collectionDocuments.projectId, id)).run();
+        // P1-14：清理「无资产归属」的孤儿连接配置。
+        // connection_profiles.asset_id 允许为空（手动投放的采集目标），这类行无法随资产级联删除，
+        // 项目删掉后仍留在库里 —— 而它携带 password_encrypted，等同于凭据残留。
+        // 只清理已不被任何采集任务引用的配置，避免误删仍在其他项目中使用的共用配置。
+        if (taskConnIds.length > 0) {
+          const stillUsedRows = tx
+            .select({ connectionId: schema.collectionTasks.connectionId })
+            .from(schema.collectionTasks)
+            .where(inArray(schema.collectionTasks.connectionId, taskConnIds))
+            .all();
+          const stillUsed = new Set(stillUsedRows.map(r => r.connectionId));
+          const orphanConnIds = taskConnIds.filter(cid => !stillUsed.has(cid));
+          if (orphanConnIds.length > 0) {
+            const res = tx.delete(schema.connectionProfiles).where(
+              and(
+                inArray(schema.connectionProfiles.id, orphanConnIds),
+                or(
+                  isNull(schema.connectionProfiles.assetId),
+                  eq(schema.connectionProfiles.assetId, '')
+                )
+              )
+            ).run();
+            if (res.changes > 0) {
+              log.info(`[project:remove] 已清理 ${res.changes} 条无资产归属的孤儿连接配置（含加密凭据）`);
+            }
+          }
+        }
         if (assetIds.length > 0) {
           tx.delete(schema.assetConnections).where(inArray(schema.assetConnections.assetId, assetIds)).run();
           tx.delete(schema.connectionProfiles).where(inArray(schema.connectionProfiles.assetId, assetIds)).run();
@@ -591,10 +635,19 @@ export function registerProjectHandlers(): void {
     }
   }, { moduleName: 'project', requireSession: true }));
 
-  ipcMain.handle('project:exportAll', wrapRaw(async () => {
+  ipcMain.handle('project:exportAll', wrapRaw(async (_event, projectIds?: string[]) => {
     try {
       const db = getDb();
-      const projects = await db.select().from(schema.projects);
+      const projects = (projectIds && projectIds.length
+        ? await db.select().from(schema.projects).where(inArray(schema.projects.id, projectIds))
+        : await db.select().from(schema.projects)) as Array<typeof schema.projects.$inferSelect>;
+
+      const STATUS_LABEL: Record<string, string> = {
+        draft: '草稿',
+        in_progress: '进行中',
+        completed: '已完成',
+        archived: '已归档',
+      };
 
       const workbook = new ExcelJS.Workbook();
       const ws = workbook.addWorksheet('项目列表');
@@ -604,10 +657,16 @@ export function registerProjectHandlers(): void {
         { header: '项目编号', key: 'projectNo', width: 18 },
         { header: '系统名称', key: 'systemName', width: 20 },
         { header: '被测单位', key: 'assessedUnit', width: 20 },
+        { header: '客户名称', key: 'customerName', width: 20 },
         { header: '保护等级', key: 'level', width: 10 },
         { header: '等级组合', key: 'levelCombo', width: 12 },
         { header: '标准体系', key: 'standardSystem', width: 16 },
         { header: '扩展类型', key: 'extensionType', width: 20 },
+        { header: '测评师', key: 'assessor', width: 14 },
+        { header: '开始日期', key: 'startDate', width: 14 },
+        { header: '结束日期', key: 'endDate', width: 14 },
+        { header: '说明', key: 'description', width: 30 },
+        { header: '资产数', key: 'assetCount', width: 10 },
         { header: '状态', key: 'status', width: 12 },
         { header: '进度', key: 'progress', width: 10 },
       ];
@@ -615,80 +674,165 @@ export function registerProjectHandlers(): void {
       for (const p of projects) {
         ws.addRow({
           name: p.name,
-          projectNo: p.projectNo,
+          projectNo: p.projectNo ?? '',
           systemName: p.systemName,
-          assessedUnit: p.assessedUnit,
+          assessedUnit: p.assessedUnit ?? '',
+          customerName: p.customerName ?? '',
           level: `第${p.level}级`,
-          levelCombo: p.levelCombo,
-          standardSystem: p.standardSystem,
-          extensionType: p.extensionType,
-          status: p.status,
+          levelCombo: p.levelCombo ?? '',
+          standardSystem: p.standardSystem ?? '',
+          extensionType: p.extensionType ?? '',
+          assessor: p.assessor ?? '',
+          startDate: p.startDate ?? '',
+          endDate: p.endDate ?? '',
+          description: p.description ?? '',
+          assetCount: p.assetCount ?? 0,
+          status: STATUS_LABEL[p.status] ?? p.status,
           progress: `${p.progress}%`,
         });
       }
 
       const result = await dialog.showSaveDialog({
-        defaultPath: `全部项目列表.xlsx`,
+        defaultPath: projects.length === 1 ? `${projects[0].name}_项目清单.xlsx` : `项目清单_${projects.length}个.xlsx`,
         filters: [{ name: 'Excel文件', extensions: ['xlsx'] }],
       });
-      if (result.canceled) return { success: false, error: new Error('用户取消') };
+      if (result.canceled || !result.filePath) return { success: false, error: new Error('用户取消') };
+      const safePath = await validateFsPath(result.filePath);
 
-      await workbook.xlsx.writeFile(result.filePath!);
-      return { success: true, data: { path: result.filePath } };
+      await workbook.xlsx.writeFile(safePath);
+      return { success: true, data: { path: safePath } };
     } catch (error: any) {
       return { success: false, error };
     }
   }, { moduleName: 'project', requireSession: true }));
 
-  ipcMain.handle('project:import', wrapRaw(async () => {
+  // ============ 项目归档：把项目的全部数据（含附件与依赖标准）整体导出 / 还原 ============
+  //
+  // 与上面 Excel 清单导出的分工：
+  //  - Excel 清单 = 给人看/给台账用的表格，只含项目字段，不可回导；
+  //  - 项目归档   = 含资产、测评记录、问题、采集结果、附件、依赖标准的完整数据包，可原样还原。
+
+  /** 选择待导入的归档包，返回路径与是否加密（加密时前端需先要口令再预览） */
+  ipcMain.handle('project:selectArchive', wrapRaw(async () => {
     try {
       const result = await dialog.showOpenDialog({
-        filters: [{ name: 'Excel文件', extensions: ['xlsx', 'xls'] }],
+        filters: [{ name: '项目归档包', extensions: ['zip'] }],
         properties: ['openFile'],
       });
       if (result.canceled || !result.filePaths.length) {
         return { success: false, error: new Error('用户取消') };
       }
+      authorizeUserFiles(result.filePaths);
+      const safePath = await validateReadablePath(result.filePaths[0], '归档文件');
+      return { success: true, data: { path: safePath, encrypted: isArchiveEncrypted(safePath) } };
+    } catch (error: any) {
+      return { success: false, error };
+    }
+  }, { moduleName: 'project', requireSession: true }));
+
+  ipcMain.handle('project:exportArchive', wrapRaw(async (
+    _event,
+    payload: { projectIds: string[]; password?: string; includeStandards?: boolean; includeCredentials?: boolean },
+  ) => {
+    try {
+      const projectIds = payload?.projectIds || [];
+      if (!projectIds.length) return { success: false, error: new Error('请至少选择一个项目') };
 
       const db = getDb();
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(result.filePaths[0]);
-      const ws = workbook.getWorksheet(1);
-      if (!ws) return { success: false, error: new Error('工作表为空') };
+      const rows = (await db
+        .select({ id: schema.projects.id, name: schema.projects.name })
+        .from(schema.projects)
+        .where(inArray(schema.projects.id, projectIds))) as Array<{ id: string; name: string }>;
+      if (!rows.length) return { success: false, error: new Error('所选项目不存在') };
 
-      let imported = 0;
-      const now = new Date().toISOString();
+      const stamp = new Date().toISOString().slice(0, 10);
+      const defaultName = rows.length === 1
+        ? `${rows[0].name}_项目归档_${stamp}.zip`
+        : `项目归档_${rows.length}个项目_${stamp}.zip`;
 
-      for (let rowNumber = 2; rowNumber <= ws.rowCount; rowNumber++) {
-        const row = ws.getRow(rowNumber);
-        const name = row.getCell(1).text;
-        const systemName = row.getCell(3).text;
-        if (!name || !systemName) continue;
+      const result = await dialog.showSaveDialog({
+        defaultPath: defaultName,
+        filters: [{ name: '项目归档包', extensions: ['zip'] }],
+      });
+      if (result.canceled || !result.filePath) return { success: false, error: new Error('用户取消') };
+      const safePath = await validateFsPath(result.filePath);
 
+      const res = await exportProjectArchive({
+        projectIds,
+        destPath: safePath,
+        password: payload?.password,
+        includeStandards: payload?.includeStandards !== false,
+        includeCredentials: payload?.includeCredentials === true,
+      });
+      if (!res.success) return { success: false, error: new Error(res.error || '导出失败') };
+
+      await writeOperationLog({
+        action: 'export',
+        module: 'project',
+        targetId: projectIds.join(','),
+        targetName: rows.map(r => r.name).join('、'),
+        description: `导出项目归档: ${rows.length} 个项目 / ${res.fileCount || 0} 个附件`,
+      });
+      return { success: true, data: res };
+    } catch (error: any) {
+      return { success: false, error };
+    }
+  }, { moduleName: 'project', requireSession: true }));
+
+  ipcMain.handle('project:previewArchive', wrapRaw(async (
+    _event,
+    payload: { archivePath: string; password?: string },
+  ) => {
+    try {
+      if (!payload?.archivePath) return { success: false, error: new Error('未选择归档文件') };
+      const safePath = await validateReadablePath(payload.archivePath, '归档文件');
+      const res = await previewProjectArchive(safePath, payload?.password);
+      if (!res.success) return { success: false, error: new Error(res.error || '无法读取归档') };
+      return { success: true, data: res };
+    } catch (error: any) {
+      return { success: false, error };
+    }
+  }, { moduleName: 'project', requireSession: true }));
+
+  ipcMain.handle('project:importArchive', wrapRaw(async (
+    _event,
+    payload: { archivePath: string; password?: string; strategy: 'skip' | 'overwrite' | 'copy' },
+  ) => {
+    try {
+      if (!payload?.archivePath) return { success: false, error: new Error('未选择归档文件') };
+      const safePath = await validateReadablePath(payload.archivePath, '归档文件');
+      const res = await importProjectArchive({
+        archivePath: safePath,
+        password: payload?.password,
+        strategy: payload?.strategy || 'skip',
+      });
+      if (!res.success) return { success: false, error: new Error(res.error || '导入失败') };
+
+      // 冗余字段回写：assetCount / progress 都是快照值，归档带来的是导出当时的数字，
+      // 按本机真实的资产数与测评记录重算，避免列表页显示与点进去看到的不一致
+      await recalculateProjectAssetCounts();
+      const db = getDb();
+      for (const item of res.imported) {
         try {
-          await db.insert(schema.projects).values({
-            id: randomUUID(),
-            name,
-            projectNo: row.getCell(2).text || undefined,
-            systemName,
-            assessedUnit: row.getCell(4).text || undefined,
-            level: parseInt(row.getCell(5).text.replace(/[^\d]/g, '')) || 3,
-            levelCombo: row.getCell(6).text || undefined,
-            standardSystem: row.getCell(7).text || undefined,
-            extensionType: row.getCell(8).text || undefined,
-            standardId: 'gb-t-22239-2019-l3',
-            status: 'draft',
-            progress: 0,
-            createdAt: now,
-            updatedAt: now,
-          });
-          imported++;
-        } catch {
-          // 跳过重复或错误行
+          const progress = await calcProjectProgress(item.id);
+          await db
+            .update(schema.projects)
+            .set({ progress, updatedAt: new Date().toISOString() })
+            .where(eq(schema.projects.id, item.id));
+        } catch (e) {
+          log.warn(`[项目归档] 进度重算失败（沿用归档值）: ${item.id}`, e);
         }
       }
 
-      return { success: true, data: { imported } };
+      await writeOperationLog({
+        action: 'import',
+        module: 'project',
+        targetId: res.imported.map(i => i.id).join(','),
+        targetName: res.imported.map(i => i.name).join('、'),
+        description: `导入项目归档: ${res.imported.length} 个项目 / ${res.restoredFiles} 个附件（冲突策略: ${payload?.strategy || 'skip'}）`,
+        detailJson: JSON.stringify({ warnings: res.warnings, skipped: res.skipped }),
+      });
+      return { success: true, data: res };
     } catch (error: any) {
       return { success: false, error };
     }

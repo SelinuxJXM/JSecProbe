@@ -41,7 +41,11 @@ export interface SeedAssessmentItem {
   presetByType: string | null;
 }
 
-const STANDARDS: SeedStandard[] = [
+// 注意：这里用「函数内构造」而非模块级常量（P2-18）。
+// 模块级常量会让约 548KB 的 seed 数据在整个进程生命周期内常驻堆内存，
+// 而这些数据只在"标准库入驻"时用一次；改为惰性构造 + 用后释放，可在初始化完成后回收。
+function buildStandards(): SeedStandard[] {
+  return [
   {
     "id": "gb-t-22239-2019-s2a2g2-l2",
     "name": "国标（S2A2G2）",
@@ -99,9 +103,11 @@ const STANDARDS: SeedStandard[] = [
     "columnMap": null,
     "levelCombo": "S3A3G3"
   }
-];
+  ];
+}
 
-const ITEMS: SeedAssessmentItem[] = [
+function buildItems(): SeedAssessmentItem[] {
+  return [
   {
     "id": "itm-288fc528-1",
     "standardId": "gb-t-22239-2019-s2a2g2-l2",
@@ -13889,10 +13895,29 @@ const ITEMS: SeedAssessmentItem[] = [
     "presetRecord": null,
     "presetByType": null
   }
-];
-
-export function getStandardSeeds(): { standards: SeedStandard[]; items: SeedAssessmentItem[] } {
-  return { standards: STANDARDS, items: ITEMS };
+  ];
 }
 
-export const standardSeedDataVersion = STANDARDS.length;
+let seedCache: { standards: SeedStandard[]; items: SeedAssessmentItem[] } | null = null;
+
+export function getStandardSeeds(): { standards: SeedStandard[]; items: SeedAssessmentItem[] } {
+  if (!seedCache) {
+    seedCache = { standards: buildStandards(), items: buildItems() };
+  }
+  return seedCache;
+}
+
+/**
+ * 释放 seed 数据引用，使大数组可被 GC 回收。
+ * 仅在"标准库入驻"完成后调用；后续若再次调用 getStandardSeeds() 会重新构造。
+ */
+export function releaseStandardSeeds(): void {
+  seedCache = null;
+}
+
+/**
+ * 内置标准条数（用于 seed 数据版本判定）。
+ * 写死而不用 `buildStandards().length`，是为了避免为了取一个数字而构造整个大数据数组；
+ * **新增/删除内置标准时必须同步更新此常量**。
+ */
+export const standardSeedDataVersion = 2;

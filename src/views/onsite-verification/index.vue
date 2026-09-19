@@ -1261,6 +1261,13 @@ const handleBeforeUnload = (e: BeforeUnloadEvent) => {
 // 保存 AI 进度订阅的退订函数，便于组件卸载时移除监听，避免泄漏
 let removeAnalysisProgress: (() => void) | undefined;
 
+/**
+ * AI 批量分析进度轮询定时器句柄（P2-10）。
+ * 原实现挂在 `window.__aiBatchPollTimer` 上：多实例或重复挂载会互相覆盖，
+ * 被覆盖的那个句柄再也拿不到，卸载后仍在轮询。改为组件级变量后由 onBeforeUnmount 清理。
+ */
+let aiBatchPollTimer: number | null = null;
+
 onMounted(async () => {
   try {
     await loadProject();
@@ -1299,10 +1306,15 @@ onMounted(async () => {
           current.stage = res.data.stage || '';
         }
       }
-    } catch {}
+    } catch (e) {
+      // 轮询失败若完全静默，用户会误以为"AI 一直在跑"。这里只告警，不打断轮询。
+      console.warn('[AI批量分析] 进度轮询失败:', e);
+    }
   };
   const pollTimer = window.setInterval(pollProgress, 2000);
-  (window as any).__aiBatchPollTimer = pollTimer;
+  // 定时器句柄改为组件级变量（P2-10）：挂在 window 上会让多个实例/重复挂载互相覆盖，
+  // 前一个定时器再也无法被清理，卸载后仍在轮询
+  aiBatchPollTimer = pollTimer;
 
   autoSave.startPeriodicSave();
 
@@ -1314,9 +1326,10 @@ onBeforeUnmount(() => {
   autoSave.stopPeriodicSave();
   document.removeEventListener('keydown', handleKeyDown);
   window.removeEventListener('beforeunload', handleBeforeUnload);
-  if ((window as any).__aiBatchPollTimer) {
-    clearInterval((window as any).__aiBatchPollTimer);
-    (window as any).__aiBatchPollTimer = null;
+  // 组件级定时器句柄（原实现挂在 window.__aiBatchPollTimer 上，多实例会互相覆盖）
+  if (aiBatchPollTimer !== null) {
+    clearInterval(aiBatchPollTimer);
+    aiBatchPollTimer = null;
   }
   // 移除 AI 进度订阅与全局粘贴监听，避免组件卸载后监听器泄漏
   removeAnalysisProgress?.();
@@ -1324,11 +1337,26 @@ onBeforeUnmount(() => {
   clipboardHandler.removeGlobalPasteHandler();
 });
 
+// 自适应行高（P2-8）。
+// 原实现对全部 .cell-textarea 逐元素「读-写」style.height：每写一次布局就失效，下一个元素的
+// 读取又要重新计算 —— 测评表常 100+ 行，敲每个字都会跑一遍强制同步布局。
+// 这里改成「写-读-写」三段分离：先统一置 auto，再统一读 scrollHeight，最后统一写回，
+// 整轮只触发一次强制布局；目标值与当前值相同则原样恢复，不做无谓写入。
 onUpdated(() => {
-  const textareas = document.querySelectorAll('.cell-textarea');
-  textareas.forEach((ta: any) => {
-    ta.style.height = 'auto';
-    ta.style.height = ta.scrollHeight + 2 + 'px';
+  const textareas = Array.from(document.querySelectorAll<HTMLTextAreaElement>('.cell-textarea'));
+  if (textareas.length === 0) return;
+
+  // 关键：scrollHeight 只在 height 未被写死时才等于「真实内容高度」。
+  // 若先读 scrollHeight 再置 auto，读到的是上一轮写死的高度（内容不足时 scrollHeight = clientHeight），
+  // 算出的目标值每次都会 +2，行高逐次累加 —— 表现为「每点一下表格就长一点」。
+  // 因此必须先统一置 auto，再统一读取，最后统一写回：写-读-写三段分离，整轮只触发一次强制布局。
+  const prevHeights = textareas.map((ta) => ta.style.height);
+  textareas.forEach((ta) => { ta.style.height = 'auto'; });
+
+  const targets = textareas.map((ta) => `${ta.scrollHeight + 2}px`);
+
+  textareas.forEach((ta, i) => {
+    ta.style.height = prevHeights[i] === targets[i] ? prevHeights[i] : targets[i];
   });
 });
 </script>

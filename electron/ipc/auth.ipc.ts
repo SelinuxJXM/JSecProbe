@@ -193,7 +193,8 @@ export function registerAuthHandlers(): void {
       user,
       token: session.token,
     };
-  }, 'auth'));
+    // 登录前必须可用：跳过会话校验
+  }, { moduleName: 'auth', requireSession: false }));
 
   ipcMain.handle('auth:logout', wrap(async (_event, token?: string): Promise<void> => {
     if (token) {
@@ -205,13 +206,15 @@ export function registerAuthHandlers(): void {
       module: 'auth',
       description: '用户登出系统',
     });
-  }, 'auth'));
+    // 会话已过期时仍需允许登出，避免用户被卡在已登录界面
+  }, { moduleName: 'auth', requireSession: false }));
 
   ipcMain.handle('auth:getCurrentUser', wrap(async (_event, token: string): Promise<{ userId: string; username: string } | null> => {
     const session = AuthService.getSession(token);
     if (!session) return null;
     return { userId: session.userId, username: session.username };
-  }, 'auth'));
+    // 通道自身按 token 校验，放行会话校验
+  }, { moduleName: 'auth', requireSession: false }));
 
   ipcMain.handle('auth:changePassword', wrap(async (_event, params: { token: string; oldPassword: string; newPassword: string }): Promise<void> => {
     const { token, oldPassword, newPassword } = params;
@@ -220,7 +223,8 @@ export function registerAuthHandlers(): void {
       throw new Error('会话无效或已过期，请重新登录');
     }
     await AuthService.changePassword(session.userId, oldPassword, newPassword);
-  }, 'auth'));
+    // 强制改密场景：会话可能已因改密被销毁，通道自身按 token 校验
+  }, { moduleName: 'auth', requireSession: false }));
 
   ipcMain.handle('auth:validateSession', wrap(async (_event, token: string): Promise<{ valid: boolean; userId?: string; username?: string; user?: User }> => {
     const session = AuthService.getSession(token);
@@ -231,7 +235,8 @@ export function registerAuthHandlers(): void {
       return { valid: false };
     }
     return { valid: true, userId: session.userId, username: session.username, user };
-  }, 'auth'));
+    // 会话恢复入口：必须可在未确认登录态时调用
+  }, { moduleName: 'auth', requireSession: false }));
 
   ipcMain.handle('auth:encryptCredential', wrap(async (_event, plaintext: string) => {
     const { safeStorage } = await import('electron');
@@ -243,7 +248,8 @@ export function registerAuthHandlers(): void {
     } catch (err: any) {
       return { success: false, error: err.message || '加密失败' };
     }
-  }, 'auth'));
+    // 登录页"记住密码"在登录前调用，必须放行会话校验（仍受 requireAuth 来源校验保护）
+  }, { moduleName: 'auth', requireSession: false }));
 
   ipcMain.handle('auth:decryptCredential', wrap(async (_event, encrypted: string) => {
     const { safeStorage } = await import('electron');
@@ -253,10 +259,12 @@ export function registerAuthHandlers(): void {
     } catch (err: any) {
       return { success: false, error: err.message || '解密失败' };
     }
-  }, 'auth'));
+    // 登录页回填"记住的密码"在登录前调用，必须放行会话校验（仍受 requireAuth 来源校验保护）
+  }, { moduleName: 'auth', requireSession: false }));
 
   ipcMain.handle('auth:isEncryptionAvailable', wrap(async () => {
     const { safeStorage } = await import('electron');
     return { available: await safeStorage.isEncryptionAvailable() };
-  }, 'auth'));
+    // 登录页能力探测，放行会话校验（仍受 requireAuth 来源校验保护）
+  }, { moduleName: 'auth', requireSession: false }));
 }

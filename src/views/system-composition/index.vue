@@ -76,192 +76,92 @@
             <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             <input v-model="keyword" type="text" placeholder="搜索资产" class="search-input" @input="onSearch" />
           </div>
-          <button class="toolbar-icon-btn" title="筛选">
+          <button class="toolbar-icon-btn" title="筛选" :class="{ active: showFilter }" @click="showFilter = !showFilter">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
           </button>
         </div>
       </div>
 
+      <!-- 筛选面板：作用于当前页已加载的资产 -->
+      <div v-if="showFilter" class="filter-panel">
+        <div class="filter-item">
+          <label class="filter-label">重要程度</label>
+          <select v-model="filterImportance" class="filter-select">
+            <option value="">全部</option>
+            <option value="high">关键</option>
+            <option value="medium">重要</option>
+            <option value="low">一般</option>
+          </select>
+        </div>
+        <div class="filter-item">
+          <label class="filter-label">设备形态</label>
+          <select v-model="filterVirtual" class="filter-select">
+            <option value="">全部</option>
+            <option value="yes">虚拟设备</option>
+            <option value="no">物理设备</option>
+          </select>
+        </div>
+        <div class="filter-item">
+          <label class="filter-label">测评对象</label>
+          <select v-model="filterTarget" class="filter-select">
+            <option value="">全部</option>
+            <option value="yes">是</option>
+            <option value="no">否</option>
+          </select>
+        </div>
+        <button class="filter-reset" :disabled="activeFilterCount === 0" @click="resetFilter">清除筛选</button>
+        <span class="filter-summary">筛选出 {{ visibleAssets.length }} / {{ assetList.length }} 条（当前页）</span>
+      </div>
+
       <div ref="tableWrapperRef" class="table-wrapper">
       <el-table
-        :data="assetList"
+        :data="visibleAssets"
         style="width: 100%"
         :row-height="44"
         v-loading="loading"
         header-cell-class-name="design-header-cell"
       >
         <el-table-column type="index" label="序号" width="50" align="center" />
-        <!-- 机房名称 / 边界名称 / 文档名称 / 设备名称 -->
-        <el-table-column v-if="currentCategory === 'machine_room'" label="机房名称" min-width="140">
+        <!--
+          以下 6 组列的共同点：同一个资产字段在不同类别下叫不同名字。
+          原先是 25 个几乎逐字相同的 <el-table-column v-if="currentCategory === ...">，
+          兜底分支还写成一长串 `!== 'a' && !== 'b' && ...`，改一个类别要在模板里复制粘贴整块。
+          现在收敛为「配置表 + 单个列」（见脚本区 VARIANT_COLUMN 相关定义）。
+        -->
+        <el-table-column v-if="nameColumn" :label="nameColumn.label" :min-width="nameColumn.minWidth">
           <template #default="{ row }">
-            <el-input v-model="row.name" placeholder="机房名称" size="small" class="cell-input" @input="markModified(row)" />
+            <el-input v-model="row.name" :placeholder="nameColumn.label" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory === 'network_boundary'" label="边界名称" min-width="180">
-          <template #default="{ row }">
-            <el-input v-model="row.name" placeholder="边界名称" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'sys_doc'" label="文档名称" min-width="160">
-          <template #default="{ row }">
-            <el-input v-model="row.name" placeholder="文档名称" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'management_platform'" label="系统名称" min-width="160">
-          <template #default="{ row }">
-            <el-input v-model="row.name" placeholder="系统名称" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'business_app'" label="应用系统名称" min-width="180">
-          <template #default="{ row }">
-            <el-input v-model="row.name" placeholder="应用系统名称" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'data_resource'" label="数据类别" min-width="180">
-          <template #default="{ row }">
-            <el-input v-model="row.name" placeholder="数据类别" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'crypto_product'" label="产品/模块名称" min-width="180">
-          <template #default="{ row }">
-            <el-input v-model="row.name" placeholder="产品/模块名称" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'security_personnel'" label="姓名" min-width="140">
-          <template #default="{ row }">
-            <el-input v-model="row.name" placeholder="姓名" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'crypto_product' && currentCategory !== 'security_personnel'" label="设备名称" min-width="140">
-          <template #default="{ row }">
-            <el-input v-model="row.name" placeholder="设备名称" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <!-- 虚拟设备 -->
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'crypto_product' && currentCategory !== 'security_personnel'" label="虚拟设备" width="80" align="center">
+        <!-- 虚拟设备（仅设备类资产区分虚拟/物理） -->
+        <el-table-column v-if="isDeviceCategory" label="虚拟设备" width="80" align="center">
           <template #default="{ row }">
             <el-checkbox v-model="row.isVirtual" @change="markModified(row)" />
           </template>
         </el-table-column>
-        <!-- 机房位置 -->
-        <el-table-column v-if="currentCategory === 'machine_room'" label="机房位置" min-width="130">
+        <el-table-column v-if="osColumn" :label="osColumn.label" :min-width="osColumn.minWidth">
           <template #default="{ row }">
-            <el-input v-model="row.os" placeholder="机房位置" size="small" class="cell-input" @input="markModified(row)" />
+            <el-input v-model="row.os" :placeholder="osColumn.label" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <!-- 系统及版本 -->
-        <el-table-column v-if="currentCategory === 'network_device' || currentCategory === 'security_device'" label="系统及版本" min-width="140">
+        <el-table-column v-if="versionColumn" :label="versionColumn.label" :min-width="versionColumn.minWidth">
           <template #default="{ row }">
-            <el-input v-model="row.os" placeholder="系统及版本" size="small" class="cell-input" @input="markModified(row)" />
+            <el-input v-model="row.version" :placeholder="versionColumn.label" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory === 'server_storage'" label="操作系统及版本" min-width="160">
+        <el-table-column v-if="dbSystemColumn" :label="dbSystemColumn.label" :min-width="dbSystemColumn.minWidth">
           <template #default="{ row }">
-            <el-input v-model="row.os" placeholder="操作系统及版本" size="small" class="cell-input" @input="markModified(row)" />
+            <el-input v-model="row.dbSystem" :placeholder="dbSystemColumn.placeholder" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory === 'sys_doc'" label="文档主要内容" min-width="160">
+        <el-table-column v-if="middlewareColumn" :label="middlewareColumn.label" :min-width="middlewareColumn.minWidth">
           <template #default="{ row }">
-            <el-input v-model="row.os" placeholder="文档主要内容" size="small" class="cell-input" @input="markModified(row)" />
+            <el-input v-model="row.middleware" :placeholder="middlewareColumn.placeholder" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
-        <el-table-column v-if="currentCategory === 'management_platform'" label="所在设备名称" min-width="160">
+        <el-table-column v-if="usageColumn" :label="usageColumn.label" :min-width="usageColumn.minWidth">
           <template #default="{ row }">
-            <el-input v-model="row.os" placeholder="所在设备名称" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'business_app'" label="软件及版本" min-width="160">
-          <template #default="{ row }">
-            <el-input v-model="row.os" placeholder="软件及版本" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'data_resource'" label="所属业务应用" min-width="180">
-          <template #default="{ row }">
-            <el-input v-model="row.os" placeholder="所属业务应用" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'terminal'" label="操作系统及版本" min-width="160">
-          <template #default="{ row }">
-            <el-input v-model="row.os" placeholder="操作系统及版本" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'other_asset'" label="系统及版本" min-width="140">
-          <template #default="{ row }">
-            <el-input v-model="row.os" placeholder="系统及版本" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'network_device' && currentCategory !== 'security_device' && currentCategory !== 'server_storage' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'terminal' && currentCategory !== 'other_asset' && currentCategory !== 'security_personnel' && currentCategory !== 'crypto_product'" label="操作系统" min-width="130">
-          <template #default="{ row }">
-            <el-input v-model="row.os" placeholder="操作系统" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <!-- 品牌及型号+设备用途（网络设备/安全设备）/ 数据库系统及版本+中间件及版本（服务器）/ 文档主要内容（系统管理文档） -->
-        <el-table-column v-if="currentCategory === 'network_device' || currentCategory === 'security_device'" label="品牌及型号" min-width="140">
-          <template #default="{ row }">
-            <el-input v-model="row.version" placeholder="品牌及型号" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'network_device' || currentCategory === 'security_device'" label="设备用途" min-width="100">
-          <template #default="{ row }">
-            <el-input v-model="row.deviceUsage" placeholder="设备用途" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'server_storage'" label="数据库系统及版本" min-width="160">
-          <template #default="{ row }">
-            <el-input v-model="row.dbSystem" placeholder="如 MySQL 8.0" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'server_storage'" label="中间件及版本" min-width="150">
-          <template #default="{ row }">
-            <el-input v-model="row.middleware" placeholder="如 Tomcat 9.0" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-
-        <!-- 密码产品专属列 -->
-        <el-table-column v-if="currentCategory === 'crypto_product'" label="生产厂商" min-width="140">
-          <template #default="{ row }">
-            <el-input v-model="row.version" placeholder="生产厂商" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'crypto_product'" label="证书编号" min-width="160">
-          <template #default="{ row }">
-            <el-input v-model="row.dbSystem" placeholder="如 GM/T 00xx-20xx" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'crypto_product'" label="密码算法" min-width="140">
-          <template #default="{ row }">
-            <el-input v-model="row.middleware" placeholder="如 SM2/SM3/SM4" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'crypto_product'" label="用途" min-width="160">
-          <template #default="{ row }">
-            <el-input v-model="row.deviceUsage" placeholder="如 数据加密、签名验签" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-
-        <el-table-column v-if="currentCategory === 'management_platform'" label="版本" min-width="140">
-          <template #default="{ row }">
-            <el-input v-model="row.version" placeholder="版本" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'business_app' || currentCategory === 'management_platform'" label="主要功能" min-width="160">
-          <template #default="{ row }">
-            <el-input v-model="row.deviceUsage" placeholder="主要功能描述" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'data_resource'" label="安全防护需求" min-width="200">
-          <template #default="{ row }">
-            <el-input v-model="row.deviceUsage" placeholder="如 保密性、完整性" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory === 'security_personnel'" label="岗位/角色" min-width="140">
-          <template #default="{ row }">
-            <el-input v-model="row.deviceUsage" placeholder="如 安全管理员" size="small" class="cell-input" @input="markModified(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'network_device' && currentCategory !== 'security_device' && currentCategory !== 'server_storage' && currentCategory !== 'sys_doc' && currentCategory !== 'management_platform' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'crypto_product' && currentCategory !== 'security_personnel'" label="设备类别/用途" min-width="140">
-          <template #default="{ row }">
-            <el-input v-model="row.deviceUsage" placeholder="设备用途" size="small" class="cell-input" @input="markModified(row)" />
+            <el-input v-model="row.deviceUsage" :placeholder="usageColumn.placeholder" size="small" class="cell-input" @input="markModified(row)" />
           </template>
         </el-table-column>
         <!-- 备注 -->
@@ -313,8 +213,11 @@
             <span style="font-size:12px; color:#4B5563; margin-left:4px;">是</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="80" fixed="right">
+        <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
+            <el-button type="primary" link size="small" @click="openEditDialog(row)">
+              编辑
+            </el-button>
             <el-button type="danger" link size="small" @click="handleDelete(row)">
               删除
             </el-button>
@@ -368,10 +271,10 @@
       </div>
     </div>
 
-    <!-- 新增/编辑对话框 -->
+    <!-- 编辑资产对话框（新增入口已移除：资产通过「导入资产 / AI 识别 / 新增一行」产生） -->
     <el-dialog
       v-model="showAddDialog"
-      :title="editingAsset ? '编辑资产' : '新增资产'"
+      title="编辑资产"
       width="560px"
       :close-on-click-modal="false"
     >
@@ -464,7 +367,7 @@
             <input
               ref="aiIdentifyDocInput"
               type="file"
-              accept=".pdf,.doc,.docx,.xls,.xlsx,.md,.txt,.csv,.log,.json,.xml,.html,.css,.js,.ts"
+              accept=".pdf,.doc,.docx,.xls,.xlsx,.md,.txt,.csv,.log,.json,.xml,.html"
               multiple
               style="display:none"
               @change="onDocFileSelect"
@@ -621,6 +524,36 @@ const editingAsset = ref<Asset | null>(null);
 const currentCategory = ref('machine_room');
 const keyword = ref('');
 
+// 筛选（此前筛选图标是纯装饰，没有任何 @click，也无消费者）
+const showFilter = ref(false);
+const filterImportance = ref('');
+const filterVirtual = ref('');
+const filterTarget = ref('');
+
+const visibleAssets = computed(() => {
+  return assetList.value.filter((row: any) => {
+    if (filterImportance.value && row.importance !== filterImportance.value) return false;
+    if (filterVirtual.value === 'yes' && !row.isVirtual) return false;
+    if (filterVirtual.value === 'no' && row.isVirtual) return false;
+    if (filterTarget.value === 'yes' && !row.isAssessmentTarget) return false;
+    if (filterTarget.value === 'no' && row.isAssessmentTarget) return false;
+    return true;
+  });
+});
+
+const activeFilterCount = computed(
+  () =>
+    (filterImportance.value ? 1 : 0) +
+    (filterVirtual.value ? 1 : 0) +
+    (filterTarget.value ? 1 : 0)
+);
+
+function resetFilter() {
+  filterImportance.value = '';
+  filterVirtual.value = '';
+  filterTarget.value = '';
+}
+
 // 记录修改过的行ID（新增行用临时负数ID标记）
 const modifiedRows = reactive(new Set<string>());
 const deletedIds = reactive(new Set<string>());
@@ -710,6 +643,115 @@ const CATEGORY_ICONS: Record<string, string> = {
 };
 
 const currentCategoryName = computed(() => CATEGORY_NAMES[currentCategory.value] || currentCategory.value);
+
+// ==================== 表格「同字段异名」列配置（P3-2） ====================
+/**
+ * 资产表里大量列其实是同一个字段、只是随类别换了个名字：
+ * `os` 在机房叫「机房位置」、在服务器叫「操作系统及版本」、在文档叫「文档主要内容」……
+ * 原实现把每种叫法写成一个独立的 <el-table-column v-if="...">，共 25 个几乎逐字相同的块，
+ * 兜底分支还是 `!== 'a' && !== 'b' && ...` 的长串 —— 既读不出到底排除了哪些类别，
+ * 加新类别时也必然要回来复制粘贴。改成本配置表后，模板只剩 6 个列，改文案只动这里。
+ */
+interface VariantColumnDef {
+  /** 绑定的资产字段名 */
+  field: 'name' | 'os' | 'version' | 'dbSystem' | 'middleware' | 'deviceUsage';
+  label: string;
+  placeholder: string;
+  minWidth: number;
+}
+
+type VariantSpec = { label: string; placeholder: string; minWidth: number };
+
+/** 名称列：所有类别都有，仅叫法不同 */
+const NAME_COLUMN: Record<string, VariantSpec> = {
+  machine_room: { label: '机房名称', placeholder: '机房名称', minWidth: 140 },
+  network_boundary: { label: '边界名称', placeholder: '边界名称', minWidth: 180 },
+  sys_doc: { label: '文档名称', placeholder: '文档名称', minWidth: 160 },
+  management_platform: { label: '系统名称', placeholder: '系统名称', minWidth: 160 },
+  business_app: { label: '应用系统名称', placeholder: '应用系统名称', minWidth: 180 },
+  data_resource: { label: '数据类别', placeholder: '数据类别', minWidth: 180 },
+  crypto_product: { label: '产品/模块名称', placeholder: '产品/模块名称', minWidth: 180 },
+  security_personnel: { label: '姓名', placeholder: '姓名', minWidth: 140 },
+};
+const NAME_COLUMN_FALLBACK: VariantSpec = { label: '设备名称', placeholder: '设备名称', minWidth: 140 };
+
+/** os 列：机房/边界/密码产品/人员这四类不在此处渲染（人员的「所属单位」在表尾单独一列） */
+const OS_COLUMN: Record<string, VariantSpec> = {
+  machine_room: { label: '机房位置', placeholder: '机房位置', minWidth: 130 },
+  network_device: { label: '系统及版本', placeholder: '系统及版本', minWidth: 140 },
+  security_device: { label: '系统及版本', placeholder: '系统及版本', minWidth: 140 },
+  server_storage: { label: '操作系统及版本', placeholder: '操作系统及版本', minWidth: 160 },
+  sys_doc: { label: '文档主要内容', placeholder: '文档主要内容', minWidth: 160 },
+  management_platform: { label: '所在设备名称', placeholder: '所在设备名称', minWidth: 160 },
+  business_app: { label: '软件及版本', placeholder: '软件及版本', minWidth: 160 },
+  data_resource: { label: '所属业务应用', placeholder: '所属业务应用', minWidth: 180 },
+  terminal: { label: '操作系统及版本', placeholder: '操作系统及版本', minWidth: 160 },
+  other_asset: { label: '系统及版本', placeholder: '系统及版本', minWidth: 140 },
+};
+const OS_COLUMN_FALLBACK: VariantSpec = { label: '操作系统', placeholder: '操作系统', minWidth: 130 };
+/** 这些类别在本位置不显示 os 列 */
+const OS_COLUMN_EXCLUDED = new Set(['network_boundary', 'crypto_product', 'security_personnel']);
+
+/** version 列 */
+const VERSION_COLUMN: Record<string, VariantSpec> = {
+  network_device: { label: '品牌及型号', placeholder: '品牌及型号', minWidth: 140 },
+  security_device: { label: '品牌及型号', placeholder: '品牌及型号', minWidth: 140 },
+  management_platform: { label: '版本', placeholder: '版本', minWidth: 140 },
+  crypto_product: { label: '生产厂商', placeholder: '生产厂商', minWidth: 140 },
+};
+
+/** dbSystem 列（服务器/存储设备、密码产品） */
+const DBSYSTEM_COLUMN: Record<string, VariantSpec> = {
+  server_storage: { label: '数据库系统及版本', placeholder: '如 MySQL 8.0', minWidth: 160 },
+  crypto_product: { label: '证书编号', placeholder: '如 GM/T 00xx-20xx', minWidth: 160 },
+};
+
+/** middleware 列 */
+const MIDDLEWARE_COLUMN: Record<string, VariantSpec> = {
+  server_storage: { label: '中间件及版本', placeholder: '如 Tomcat 9.0', minWidth: 150 },
+  crypto_product: { label: '密码算法', placeholder: '如 SM2/SM3/SM4', minWidth: 140 },
+};
+
+/** deviceUsage 列 */
+const USAGE_COLUMN: Record<string, VariantSpec> = {
+  network_device: { label: '设备用途', placeholder: '设备用途', minWidth: 100 },
+  security_device: { label: '设备用途', placeholder: '设备用途', minWidth: 100 },
+  management_platform: { label: '主要功能', placeholder: '主要功能描述', minWidth: 160 },
+  business_app: { label: '主要功能', placeholder: '主要功能描述', minWidth: 160 },
+  data_resource: { label: '安全防护需求', placeholder: '如 保密性、完整性', minWidth: 200 },
+  crypto_product: { label: '用途', placeholder: '如 数据加密、签名验签', minWidth: 160 },
+  security_personnel: { label: '岗位/角色', placeholder: '如 安全管理员', minWidth: 140 },
+};
+const USAGE_COLUMN_FALLBACK: VariantSpec = { label: '设备类别/用途', placeholder: '设备用途', minWidth: 140 };
+
+/** 非设备类资产：不区分虚拟/物理，不显示「虚拟设备」列 */
+const NON_DEVICE_CATEGORIES = new Set([
+  'machine_room', 'network_boundary', 'sys_doc', 'management_platform',
+  'business_app', 'data_resource', 'crypto_product', 'security_personnel',
+]);
+
+function resolveVariantColumn(
+  table: Record<string, VariantSpec>,
+  fallback: VariantSpec | null,
+  excluded: Set<string> | null,
+  field: VariantColumnDef['field'],
+): VariantColumnDef | null {
+  const category = currentCategory.value;
+  if (excluded?.has(category)) return null;
+  const spec = table[category] ?? fallback;
+  if (!spec) return null;
+  return { field, ...spec };
+}
+
+// 列顺序与 EDITABLE_COLUMNS 保持一致：name → isVirtual → os → version → dbSystem → middleware → deviceUsage。
+// 粘贴导入（handlePaste）按 EDITABLE_COLUMNS 的顺序往右铺开，两者错位会导致数据串列。
+const nameColumn = computed(() => resolveVariantColumn(NAME_COLUMN, NAME_COLUMN_FALLBACK, null, 'name'));
+const osColumn = computed(() => resolveVariantColumn(OS_COLUMN, OS_COLUMN_FALLBACK, OS_COLUMN_EXCLUDED, 'os'));
+const versionColumn = computed(() => resolveVariantColumn(VERSION_COLUMN, null, null, 'version'));
+const dbSystemColumn = computed(() => resolveVariantColumn(DBSYSTEM_COLUMN, null, null, 'dbSystem'));
+const middlewareColumn = computed(() => resolveVariantColumn(MIDDLEWARE_COLUMN, null, null, 'middleware'));
+const usageColumn = computed(() => resolveVariantColumn(USAGE_COLUMN, USAGE_COLUMN_FALLBACK, null, 'deviceUsage'));
+const isDeviceCategory = computed(() => !NON_DEVICE_CATEGORIES.has(currentCategory.value));
 
 const EDITABLE_COLUMNS: Record<string, string[]> = {
   machine_room: ['name', 'os', 'description', 'importance', 'isAssessmentTarget'],
@@ -965,7 +1007,7 @@ function openAiIdentify() {
 
 // 附件类型常量（与后端 attachment.ipc.ts 的 IMAGE/DOCUMENT 白名单一致）
 const IDENTIFY_IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'];
-const IDENTIFY_DOC_EXT = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.md', '.txt', '.csv', '.log', '.json', '.xml', '.html', '.css', '.js', '.ts'];
+const IDENTIFY_DOC_EXT = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.md', '.txt', '.csv', '.log', '.json', '.xml', '.html'];
 const IDENTIFY_IMAGE_MAX = 10 * 1024 * 1024;
 const IDENTIFY_DOC_MAX = 20 * 1024 * 1024;
 const IDENTIFY_MAX_IMAGES = 20;
@@ -1183,45 +1225,31 @@ function onSearch() {
   }, 300);
 }
 
-// 保存（弹窗）
+// 保存（编辑弹窗）。弹窗已不提供新增，editingAsset 为空属于异常情况，直接关闭不做写入。
 async function handleSave() {
   if (!formData.name.trim()) {
     ElMessage.warning('请输入设备名称');
     return;
   }
-  
-  const projectId = route.params.id as string;
+  if (!editingAsset.value) {
+    showAddDialog.value = false;
+    return;
+  }
+
   saving.value = true;
   try {
-    if (editingAsset.value) {
-      const res = await window.api.asset.update(editingAsset.value.id, {
-        ...formData,
-        category: currentCategory.value,
-      });
-      if (res.success) {
-        ElMessage.success('保存成功');
-        showAddDialog.value = false;
-        editingAsset.value = null;
-        resetForm();
-        loadAssets();
-      } else {
-        ElMessage.error(res.error?.message || '保存失败');
-      }
+    const res = await window.api.asset.update(editingAsset.value.id, {
+      ...formData,
+      category: currentCategory.value,
+    });
+    if (res.success) {
+      ElMessage.success('保存成功');
+      showAddDialog.value = false;
+      editingAsset.value = null;
+      resetForm();
+      loadAssets();
     } else {
-      const res = await window.api.asset.create({
-        ...formData,
-        projectId,
-        category: currentCategory.value,
-        isAssessmentTarget: !['sys_doc', 'other_asset', 'crypto_product', 'security_personnel'].includes(currentCategory.value),
-      });
-      if (res.success) {
-        ElMessage.success('添加成功');
-        showAddDialog.value = false;
-        resetForm();
-        loadAssets();
-      } else {
-        ElMessage.error(res.error?.message || '添加失败');
-      }
+      ElMessage.error(res.error?.message || '保存失败');
     }
   } finally {
     saving.value = false;
@@ -1299,6 +1327,9 @@ async function handleDelete(row: Asset) {
   deletedIds.add(String(row.id));
   modifiedRows.delete(String(row.id));
   assetList.value = assetList.value.filter(r => r.id !== row.id);
+  // 必须触发自动保存：周期保存的门槛 hasUnsavedChanges 只在 debounceAutoSave 中置位，
+  // 此前删除后不调用它，导致删除不手动保存就会被静默丢弃（切分类/翻页后"复活"）
+  debounceAutoSave();
 }
 
 // 导出全部
@@ -1308,6 +1339,10 @@ async function handleExportAll() {
 
   if (res.success && res.data) {
     ElMessage.success('导出成功');
+  } else if (res.success) {
+    // 4.2「半假成功」：success=true 但 data 为空时，上面的两个分支都不命中，
+    // 界面完全零反馈 —— 用户点了导出，既没成功提示也没失败提示，只能反复点
+    ElMessage.warning('导出已返回成功但未携带文件信息，请确认导出目录是否已生成文件');
   } else if (res.error?.message !== '用户取消') {
     ElMessage.error(res.error?.message || '导出失败');
   }
@@ -1319,6 +1354,9 @@ async function handleDownloadTemplate() {
   const res = await window.api.asset.downloadTemplate(projectId);
   if (res.success && res.data) {
     ElMessage.success('模板下载成功');
+  } else if (res.success) {
+    // 同上：success=true 但 data 为空时原本零反馈
+    ElMessage.warning('模板下载已返回成功但未携带文件信息，请确认保存目录');
   } else if (res.error?.message !== '用户取消') {
     ElMessage.error(res.error?.message || '下载模板失败');
   }
@@ -1381,6 +1419,25 @@ function resetForm() {
   });
 }
 
+// 打开「编辑资产」弹窗：把表格行回填到表单，交给 handleSave() 更新。
+// 弹窗只保留编辑用途 —— 新增资产走「导入资产 / AI 识别 / 新增一行」，不在此弹窗中新建。
+function openEditDialog(row: Asset) {
+  editingAsset.value = row;
+  Object.assign(formData, {
+    name: (row as any).name || '',
+    os: (row as any).os || '',
+    version: (row as any).version || '',
+    deviceUsage: (row as any).deviceUsage || '',
+    description: (row as any).description || '',
+    quantity: (row as any).quantity ?? 1,
+    ip: (row as any).ip || '',
+    importance: (row as any).importance || 'medium',
+    isVirtual: (row as any).isVirtual ?? false,
+    isAssessmentTarget: (row as any).isAssessmentTarget ?? true,
+  });
+  showAddDialog.value = true;
+}
+
 function handleTablePaste(event: ClipboardEvent) {
   const target = event.target as HTMLElement;
   if (!target) return;
@@ -1435,6 +1492,13 @@ onMounted(() => {
 
 onUnmounted(() => {
   cleanup();
+  // P2-12：搜索防抖定时器此前从未清理。组件卸载后若定时器仍在等待，
+  // 回调里的 loadAssets() 会对已销毁的组件发起请求并写入响应式状态，
+  // 快速切换页面时会打出"组件已卸载"类告警，甚至用旧页面的结果覆盖新数据。
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  }
   if (pasteHandler && tableWrapperRef.value) {
     tableWrapperRef.value.removeEventListener('paste', pasteHandler as EventListener);
   }
@@ -1684,6 +1748,12 @@ onUnmounted(() => {
           background: var(--color-bg-page);
           color: var(--color-text-primary);
           border-color: var(--color-border-default);
+        }
+
+        &.active {
+          background: var(--color-primary-light, rgba(27, 95, 217, 0.08));
+          color: var(--color-primary);
+          border-color: var(--color-primary);
         }
       }
 
@@ -2232,6 +2302,72 @@ onUnmounted(() => {
         }
       }
     }
+  }
+}
+
+.filter-panel {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  background: var(--color-bg-card);
+  margin-bottom: 12px;
+
+  .filter-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .filter-label {
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+  }
+
+  .filter-select {
+    height: 30px;
+    min-width: 120px;
+    padding: 0 8px;
+    border: 1px solid var(--color-border-default);
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--color-text-primary);
+    background: var(--color-bg-card);
+    outline: none;
+
+    &:focus {
+      border-color: var(--color-primary);
+    }
+  }
+
+  .filter-reset {
+    height: 30px;
+    padding: 0 12px;
+    border: 1px solid var(--color-border-default);
+    border-radius: 6px;
+    background: var(--color-bg-card);
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      border-color: var(--color-primary);
+      color: var(--color-primary);
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+
+  .filter-summary {
+    font-size: 12px;
+    color: var(--color-text-tertiary);
   }
 }
 </style>

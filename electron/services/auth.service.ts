@@ -182,6 +182,35 @@ export class AuthService {
     return activeToken !== null && sessions.has(activeToken);
   }
 
+  /** 获取当前进程的活动会话（未登录返回 null）。
+   *  注意：不做过期清理，仅用于读取会话主体做权限判定；过期判定由 getSession 负责。 */
+  static getActiveSession(): Session | null {
+    if (!activeToken) return null;
+    return sessions.get(activeToken) || null;
+  }
+
+  /** 查询指定用户的角色（不存在或已禁用返回 null） */
+  static async getUserRole(userId: string): Promise<string | null> {
+    try {
+      const db = getDb();
+      const user = await db.query.users.findFirst({
+        where: eq(schema.users.id, userId),
+      });
+      if (!user || !user.isActive) return null;
+      return user.role || null;
+    } catch (e) {
+      log.warn('查询用户角色失败:', e);
+      return null;
+    }
+  }
+
+  /** 当前活动会话用户的角色（未登录/查询失败返回 null） */
+  static async getActiveUserRole(): Promise<string | null> {
+    const session = this.getActiveSession();
+    if (!session) return null;
+    return this.getUserRole(session.userId);
+  }
+
   private static cleanupExpiredSessions(): void {
     const now = Date.now();
     for (const [token, session] of sessions) {
@@ -215,6 +244,9 @@ export class AuthService {
       .set({ passwordHash: newHash, mustChangePassword: 0, updatedAt: now })
       .where(eq(schema.users.id, userId));
 
+    // 改密完成：立即失效缓存，否则服务端强制改密会因 3 秒缓存继续拦截刚改完密码的用户
+    this.invalidateMustChangeCache(userId);
+
     for (const session of sessions.values()) {
       if (session.userId === userId) {
         sessions.delete(session.token);
@@ -223,6 +255,53 @@ export class AuthService {
           persistActiveSession();
         }
       }
+    }
+  }
+
+  /**
+   * 「必须改密」查询缓存（E2 服务端强制改密）。
+   *
+   * 强制改密需要在**每次 IPC** 上判断，逐次查库会让自动保存、列表刷新等高频通道明显变慢。
+   * 这里缓存 3 秒，并在改密成功 / 登出时主动失效，避免"密码已改却仍被拦截"。
+   */
+  private static mustChangeCache = new Map<string, { value: boolean; expiresAt: number }>();
+  private static readonly MUST_CHANGE_TTL_MS = 3000;
+
+  /** 使「必须改密」缓存失效；不传 userId 时清空全部 */
+  static invalidateMustChangeCache(userId?: string): void {
+    if (userId) {
+      this.mustChangeCache.delete(userId);
+    } else {
+      this.mustChangeCache.clear();
+    }
+  }
+
+  /**
+   * 指定用户是否仍在使用初始口令（mustChangePassword=1）。
+   *
+   * 实现为**同步**：better-sqlite3 本身就是同步驱动，而该判断发生在每一次 IPC 上，
+   * 走 async 会迫使 `assertTrusted()`（ai.ipc.ts 中 22 处裸通道的守卫）连带改成异步，
+   * 波及全部调用点。
+   *
+   * 查询失败时返回 false（放行）—— 相较"因数据库抖动把整个应用锁死"，
+   * 短暂放开是更合理的取舍，且该状态在日志中会留痕。
+   */
+  static mustChangePassword(userId: string): boolean {
+    const now = Date.now();
+    const hit = this.mustChangeCache.get(userId);
+    if (hit && hit.expiresAt > now) return hit.value;
+    try {
+      const db = getDb();
+      const user = db.select({ mustChangePassword: schema.users.mustChangePassword })
+        .from(schema.users)
+        .where(eq(schema.users.id, userId))
+        .get();
+      const value = !!user?.mustChangePassword;
+      this.mustChangeCache.set(userId, { value, expiresAt: now + this.MUST_CHANGE_TTL_MS });
+      return value;
+    } catch (e) {
+      log.warn('查询用户是否需强制改密失败:', e);
+      return false;
     }
   }
 

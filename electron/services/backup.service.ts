@@ -5,16 +5,26 @@ const require = createRequire(import.meta.url);
 const compressing = require('compressing');
 const AdmZip = require('adm-zip');
 import Database from 'better-sqlite3';
+import { app } from 'electron';
 import { getDbPath, getAppDataPath } from '../main/paths';
 import { join } from 'path';
-import { closeDb, getDb, walCheckpoint, initDatabase } from '../db';
+import { closeDb, getDb, walCheckpoint, initDatabase, getSqlite } from '../db';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
 import log from 'electron-log';
+import {
+  isEncryptedBackupFile,
+  openBackupZip,
+  sealZipFile,
+  MIN_BACKUP_PASSWORD_LENGTH,
+  type OpenedBackupZip,
+} from './backup-crypto';
 
 export interface BackupManifest {
   version: string;
   timestamp: string;
+  /** 产生该备份的应用版本（用于跨版本恢复提示；老备份可能没有此字段） */
+  appVersion?: string;
   contents: {
     database: boolean;
     screenshots: boolean;
@@ -53,10 +63,40 @@ export interface BackupPreview {
   projects: BackupProjectInfo[];
   totalRecords: number;
   totalAssets: number;
+  /** 跨版本恢复提示（如备份由不同版本程序生成）；为空表示无提示 */
+  versionWarning?: string;
 }
 
 type ContentKey = 'screenshots' | 'evidence' | 'attachments' | 'standards' | 'templates' | 'knowledge' | 'logs';
 const BACKUP_DIRS: ContentKey[] = ['screenshots', 'evidence', 'attachments', 'standards', 'templates', 'knowledge', 'logs'];
+
+/**
+ * 当前程序可读取的备份格式版本。
+ * 增量恢复只覆盖 5 张表，跨大版本恢复会留下残缺数据却提示"恢复成功"，
+ * 因此必须在恢复前比对格式版本，不兼容直接拒绝而不是静默产出半残库。
+ */
+const BACKUP_FORMAT_VERSION = '3.0';
+const SUPPORTED_BACKUP_VERSIONS = ['3.0'];
+
+/**
+ * 校验备份格式版本。返回错误文案，兼容时返回 null。
+ */
+function checkBackupVersion(manifest: BackupManifest): string | null {
+  if (!SUPPORTED_BACKUP_VERSIONS.includes(manifest.version)) {
+    return (
+      `备份格式版本 ${manifest.version} 与当前程序不兼容（支持 ${SUPPORTED_BACKUP_VERSIONS.join('、')}）。` +
+      `请使用与该备份相同版本的程序恢复，或联系开发者获取迁移方案。`
+    );
+  }
+  const currentAppVersion = app.getVersion();
+  if (manifest.appVersion && manifest.appVersion !== currentAppVersion) {
+    log.warn(
+      `[备份] 跨版本恢复：备份由 v${manifest.appVersion} 生成，当前程序为 v${currentAppVersion}。` +
+        `增量恢复仅覆盖项目/成员/资产/测评记录/问题 5 张表，其余表将保持当前数据不变。`
+    );
+  }
+  return null;
+}
 
 function getBackupRootPath(): Promise<string> {
   return getAppDataPath().then(p => path.join(p, 'backups'));
@@ -105,7 +145,21 @@ function validateExtractedPaths(extractDir: string): void {
   walk(extractDir);
 }
 
-export async function createFullBackup(customPath?: string): Promise<BackupResult> {
+/**
+ * 创建完整备份。
+ * @param customPath 自定义输出路径（省略则落到默认备份目录并纳入保留策略）
+ * @param password   可选。提供则对整个备份做 AES-256-GCM 加密（备份内含凭据哈希与 API Key，
+ *                   外发备份时必须加密）。口令短于 MIN_BACKUP_PASSWORD_LENGTH 时拒绝并报错，
+ *                   避免用户误以为已加密。
+ */
+export async function createFullBackup(customPath?: string, password?: string): Promise<BackupResult> {
+  if (password !== undefined && password.length > 0 && password.length < MIN_BACKUP_PASSWORD_LENGTH) {
+    return {
+      success: false,
+      error: `备份密码至少需要 ${MIN_BACKUP_PASSWORD_LENGTH} 位`,
+    };
+  }
+
   try {
     const dataPath = await getAppDataPath();
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -127,7 +181,8 @@ export async function createFullBackup(customPath?: string): Promise<BackupResul
     }
 
     const manifest: BackupManifest = {
-      version: '3.0',
+      version: BACKUP_FORMAT_VERSION,
+      appVersion: app.getVersion(),
       timestamp: new Date().toISOString(),
       contents: {
         database: false,
@@ -150,10 +205,29 @@ export async function createFullBackup(customPath?: string): Promise<BackupResul
 
     const dbPath = await getDbPath();
     if (fs.existsSync(dbPath)) {
-      // 强制将 WAL 中的更改写入主数据库文件，保证备份数据的完整性
-      walCheckpoint();
+      // 备份一致性：优先使用 SQLite 在线备份 API（可覆盖尚未 checkpoint 的 WAL 内容），
+      // 失败再降级到 "checkpoint + copyFileSync"，并校验 checkpoint 结果。
+      // 原实现直接 copyFileSync 主库文件，WAL 中未落盘的事务会被静默丢弃。
       const backupDbPath = path.join(tempBackupDir, 'mlps.db');
-      fs.copyFileSync(dbPath, backupDbPath);
+      const sqlite = getSqlite();
+      let backupOk = false;
+      if (sqlite && typeof (sqlite as any).backup === 'function') {
+        try {
+          await (sqlite as any).backup(backupDbPath);
+          backupOk = fs.existsSync(backupDbPath) && fs.statSync(backupDbPath).size > 0;
+          log.info('[备份] 使用 SQLite 在线备份 API 完成数据库快照');
+        } catch (e) {
+          log.warn('[备份] SQLite 在线备份 API 失败，降级为 checkpoint + 文件复制:', e);
+          backupOk = false;
+        }
+      }
+      if (!backupOk) {
+        const cp = walCheckpoint();
+        if (cp && cp.busy !== 0) {
+          log.warn(`[备份] WAL checkpoint 未完成(busy=${cp.busy})，备份可能缺少部分最新事务`);
+        }
+        fs.copyFileSync(dbPath, backupDbPath);
+      }
       // 验证备份文件头，确保备份有效
       const fd = fs.openSync(backupDbPath, 'r');
       const buffer = Buffer.alloc(16);
@@ -195,6 +269,13 @@ export async function createFullBackup(customPath?: string): Promise<BackupResul
 
     await compressing.zip.compressDir(tempBackupDir, backupFilePath);
 
+    // 加密（可选）：对已生成的 ZIP 整体做信封加密，保持 .zip 扩展名与既有流程不变。
+    // 采用「先写临时文件再原子替换」，加密中途失败不会留下半个损坏的备份。
+    if (password) {
+      sealZipFile(backupFilePath, backupFilePath, password);
+      log.info('[备份] 备份已加密（AES-256-GCM）');
+    }
+
     fs.rmSync(tempBackupDir, { recursive: true, force: true });
 
     const totalSize = fs.statSync(backupFilePath).size;
@@ -202,8 +283,15 @@ export async function createFullBackup(customPath?: string): Promise<BackupResul
 
     log.info(`[备份] 完整备份完成: ${backupFilePath}, 大小: ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
 
-    if (!customPath) {
+    // 保留策略按"备份落在哪里"判定，而不是"是否手动备份"。
+    // 原实现只在非自定义路径时清理，导致用户每次手动选目录（哪怕就选在默认备份目录）
+    // 都会绕过 BACKUP_RETENTION_COUNT，备份含全量截图/证据，可迅速撑爆磁盘。
+    const backupRoot = path.resolve(await getBackupRootPath());
+    const resolvedBackupFile = path.resolve(backupFilePath);
+    if (resolvedBackupFile.startsWith(backupRoot + path.sep)) {
       await cleanupOldBackups();
+    } else {
+      log.info(`[备份] 目标不在默认备份目录，跳过保留策略清理: ${resolvedBackupFile}`);
     }
 
     return { success: true, path: backupFilePath, size: totalSize };
@@ -213,7 +301,35 @@ export async function createFullBackup(customPath?: string): Promise<BackupResul
   }
 }
 
-export async function restoreFromZipBackup(backupPath: string): Promise<BackupResult> {
+/**
+ * 打开待读取的备份：未加密则直接返回原路径；已加密则解密到临时明文 ZIP。
+ * 返回的 cleanup 必须在使用完毕后调用，避免明文凭据残留在磁盘上。
+ */
+async function openBackupForRead(backupPath: string, password?: string): Promise<OpenedBackupZip> {
+  const dataPath = await getAppDataPath();
+  return openBackupZip(backupPath, password, path.join(dataPath, '.backup_decrypt'));
+}
+
+/** 备份是否已加密（供 UI 决定是否需要弹出口令输入） */
+export function isBackupEncrypted(backupPath: string): boolean {
+  return isEncryptedBackupFile(backupPath);
+}
+
+export async function restoreFromZipBackup(backupPath: string, password?: string): Promise<BackupResult> {
+  let opened: OpenedBackupZip;
+  try {
+    opened = await openBackupForRead(backupPath, password);
+  } catch (e: any) {
+    return { success: false, error: e?.message || '无法打开备份文件' };
+  }
+  try {
+    return await restoreFromZipBackupInner(opened.zipPath);
+  } finally {
+    opened.cleanup();
+  }
+}
+
+async function restoreFromZipBackupInner(backupPath: string): Promise<BackupResult> {
   try {
     if (!fs.existsSync(backupPath)) {
       return { success: false, error: '备份文件不存在' };
@@ -287,6 +403,12 @@ export async function restoreFromZipBackup(backupPath: string): Promise<BackupRe
     if (!manifest.version || !manifest.contents) {
       fs.rmSync(tempExtractPath, { recursive: true, force: true });
       return { success: false, error: '备份清单格式无效' };
+    }
+
+    const versionError = checkBackupVersion(manifest);
+    if (versionError) {
+      fs.rmSync(tempExtractPath, { recursive: true, force: true });
+      return { success: false, error: versionError };
     }
 
     const dbBackupPath = path.join(tempExtractPath, 'mlps.db');
@@ -527,7 +649,9 @@ export async function restoreFromLegacyBackup(backupPath: string): Promise<Backu
   }
 }
 
-export async function listBackups(): Promise<Array<{ name: string; path: string; size: number; timestamp: string }>> {
+export async function listBackups(): Promise<
+  Array<{ name: string; path: string; size: number; timestamp: string; encrypted: boolean }>
+> {
   try {
     const backupDir = await getBackupRootPath();
     if (!fs.existsSync(backupDir)) {
@@ -539,18 +663,25 @@ export async function listBackups(): Promise<Array<{ name: string; path: string;
       .filter((e: any) => e.isFile() && e.name.startsWith('backup_') && e.name.endsWith('.zip'))
       .map((e: any) => {
         const filePath = path.join(backupDir, e.name);
+        // 加密备份不是合法 ZIP，直接交给 AdmZip 只会抛错刷日志；先识别出来，
+        // 跳过清单解析（时间戳走文件名兜底），并把 encrypted 标记透出给 UI 以便弹口令框。
+        const encrypted = isEncryptedBackupFile(filePath);
         let timestamp = '';
-        try {
-          const zip = new AdmZip(filePath);
-          let manifestEntry = zip.getEntry('manifest.json');
-          if (!manifestEntry) {
-            manifestEntry = zip.getEntry('.backup_staging/manifest.json');
+        if (!encrypted) {
+          try {
+            const zip = new AdmZip(filePath);
+            let manifestEntry = zip.getEntry('manifest.json');
+            if (!manifestEntry) {
+              manifestEntry = zip.getEntry('.backup_staging/manifest.json');
+            }
+            if (manifestEntry) {
+              const manifest = JSON.parse(manifestEntry.getData().toString('utf-8'));
+              timestamp = manifest.timestamp || '';
+            }
+          } catch (e) {
+            // 清单损坏不应让整条备份记录不可用（下方还有文件名时间戳兜底），但必须留痕
+            log.warn(`[备份] 读取备份清单失败(${filePath}):`, e);
           }
-          if (manifestEntry) {
-            const manifest = JSON.parse(manifestEntry.getData().toString('utf-8'));
-            timestamp = manifest.timestamp || '';
-          }
-        } catch {
         }
         if (!timestamp) {
           const m = e.name.match(/^backup_(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})\.zip$/);
@@ -566,6 +697,7 @@ export async function listBackups(): Promise<Array<{ name: string; path: string;
           path: filePath,
           size: fs.statSync(filePath).size,
           timestamp,
+          encrypted,
         };
       })
       .sort((a: any, b: any) => b.name.localeCompare(a.name));
@@ -576,7 +708,23 @@ export async function listBackups(): Promise<Array<{ name: string; path: string;
   }
 }
 
-export async function previewZipBackup(backupPath: string): Promise<BackupPreview | null> {
+export async function previewZipBackup(backupPath: string, password?: string): Promise<BackupPreview | null> {
+  let opened: OpenedBackupZip;
+  try {
+    opened = await openBackupForRead(backupPath, password);
+  } catch (e: any) {
+    // 预览对"口令未提供"这类可控错误返回 null（UI 提示后重试），
+    // 但把"口令错误"这类明确错误以抛错形式交给上层提示，避免静默显示"无法预览"。
+    throw new Error(e?.message || '无法打开备份文件');
+  }
+  try {
+    return await previewZipBackupInner(opened.zipPath);
+  } finally {
+    opened.cleanup();
+  }
+}
+
+async function previewZipBackupInner(backupPath: string): Promise<BackupPreview | null> {
   try {
     if (!fs.existsSync(backupPath) || !backupPath.endsWith('.zip')) {
       return null;
@@ -643,6 +791,16 @@ export async function previewZipBackup(backupPath: string): Promise<BackupPrevie
       return null;
     }
 
+    if (!SUPPORTED_BACKUP_VERSIONS.includes(manifest.version)) {
+      log.error(`[备份] 预览失败：备份格式版本 ${manifest.version} 不受支持`);
+      fs.rmSync(tempExtractPath, { recursive: true, force: true });
+      return null;
+    }
+    const versionWarning =
+      manifest.appVersion && manifest.appVersion !== app.getVersion()
+        ? `该备份由 v${manifest.appVersion} 生成，当前程序为 v${app.getVersion()}。增量恢复仅覆盖项目/成员/资产/测评记录/问题 5 张表。`
+        : undefined;
+
     const dbBackupPath = path.join(tempExtractPath, 'mlps.db');
     if (!fs.existsSync(dbBackupPath)) {
       fs.rmSync(tempExtractPath, { recursive: true, force: true });
@@ -686,6 +844,7 @@ export async function previewZipBackup(backupPath: string): Promise<BackupPrevie
         projects: projectInfos,
         totalRecords: totalRecords?.cnt || 0,
         totalAssets: totalAssets?.cnt || 0,
+        versionWarning,
       };
     } catch {
       if (backupDb) {
@@ -704,6 +863,24 @@ export async function previewZipBackup(backupPath: string): Promise<BackupPrevie
 }
 
 export async function restoreFromZipBackupIncremental(
+  backupPath: string,
+  projectIds?: string[],
+  password?: string
+): Promise<BackupResult> {
+  let opened: OpenedBackupZip;
+  try {
+    opened = await openBackupForRead(backupPath, password);
+  } catch (e: any) {
+    return { success: false, error: e?.message || '无法打开备份文件' };
+  }
+  try {
+    return await restoreFromZipBackupIncrementalInner(opened.zipPath, projectIds);
+  } finally {
+    opened.cleanup();
+  }
+}
+
+async function restoreFromZipBackupIncrementalInner(
   backupPath: string,
   projectIds?: string[]
 ): Promise<BackupResult> {
@@ -783,6 +960,12 @@ export async function restoreFromZipBackupIncremental(
     if (!manifest.version || !manifest.contents) {
       fs.rmSync(tempExtractPath, { recursive: true, force: true });
       return { success: false, error: '备份清单格式无效' };
+    }
+
+    const versionError = checkBackupVersion(manifest);
+    if (versionError) {
+      fs.rmSync(tempExtractPath, { recursive: true, force: true });
+      return { success: false, error: versionError };
     }
 
     const dbBackupPath = path.join(tempExtractPath, 'mlps.db');

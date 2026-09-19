@@ -8,8 +8,8 @@ import * as path from 'path';
 import log from 'electron-log';
 import sharp from 'sharp';
 import { writeOperationLog } from '../utils/operation-log';
-import { resolvePath, validateDataPath } from '../utils/path-resolver';
-import { requireSession } from '../utils/auth-guard';
+import { validateDataPath, validateReadablePath } from '../utils/path-resolver';
+import { requireAuth, requireSession, requirePasswordChanged } from '../utils/auth-guard';
 import { wrap as globalWrap } from '../utils/ipc-wrapper';
 import { getDbPath } from '../main/paths';
 import {
@@ -162,6 +162,37 @@ function repairAiJson(raw: string): string {
 // 统一追加到各 AI 分析通道 userPrompt 末尾的严格 JSON 输出约束，降低模型输出非标准 JSON 的概率
 const STRICT_JSON_HINT = '\n\n【输出格式硬性要求】只输出一个合法的严格 JSON 对象：所有键名和字符串值必须使用双引号；禁止单引号、禁止尾逗号、禁止注释；不要输出 Markdown 代码块标记或 JSON 以外的任何文字。';
 
+/**
+ * 「输出被截断」标记（审查项 E7）。
+ *
+ * 以**不可枚举**属性挂在解析结果上：调用方可用 `isAiJsonTruncated(result)` 判断是否残缺，
+ * 从而决定重试或降级；同时它不会出现在 `JSON.stringify` / 落库 / 前端展示的数据里，
+ * 不污染业务字段。此前该状态只在函数内部 log 一行就丢弃，调用方无从感知，
+ * 测评结论可能基于一段被截断的 JSON 生成却显示为成功。
+ */
+const AI_TRUNCATED_FLAG = '__aiTruncated';
+
+function markTruncated<T>(obj: T): T {
+  if (obj && typeof obj === 'object') {
+    try {
+      Object.defineProperty(obj, AI_TRUNCATED_FLAG, {
+        value: true,
+        enumerable: false,
+        configurable: true,
+        writable: true,
+      });
+    } catch {
+      // 对象被冻结或为特殊宿主对象时忽略：标记失败不应影响主流程
+    }
+  }
+  return obj;
+}
+
+/** 判断 extractAiJson 的返回值是否来自一段被截断（大括号未配平）的 AI 输出 */
+export function isAiJsonTruncated(value: unknown): boolean {
+  return !!value && typeof value === 'object' && (value as Record<string, unknown>)[AI_TRUNCATED_FLAG] === true;
+}
+
 // 从 AI 自由文本中稳健地提取顶层 JSON 对象（去代码块包裹 + 按大括号配平 + 兜底截取）
 // 避免「首个 { 到末个 }」在内容含数组/嵌套大括号时多截取导致的解析失败
 function extractAiJson(text: string, label: string): Record<string, any> {
@@ -186,11 +217,23 @@ function extractAiJson(text: string, label: string): Record<string, any> {
       else if (c === '}') { depth--; if (depth === 0) { end = i; break; } }
     }
   }
-  if (end === -1) end = s.lastIndexOf('}');
-  if (end <= start) throw new Error(`${label} 返回格式异常：JSON 不完整`);
+  // 括号未配平：说明模型输出被截断（或结尾有多余的未闭合内容）。
+  // 原实现直接用 lastIndexOf('}') 兜底，可能截取到一个「语法合法但内容残缺」的对象并静默采用，
+  // 导致测评结论基于不完整数据生成。此处显式留痕并向上层暴露，由调用方决定重试或降级。
+  let truncated = false;
+  if (end === -1) {
+    truncated = true;
+    end = s.lastIndexOf('}');
+    log.warn(`${label} AI 输出疑似被截断（大括号未配平），将尝试解析已产出部分`);
+  }
+  if (end <= start) throw new Error(`${label} 返回格式异常：JSON 不完整（输出被截断）`);
   const candidate = s.slice(start, end + 1);
   try {
     const obj = JSON.parse(candidate);
+    if (truncated) {
+      log.warn(`${label} 已解析被截断的 JSON，结果可能不完整：${candidate.slice(0, 120)}...`);
+      return markTruncated((obj && typeof obj === 'object') ? obj : {});
+    }
     return (obj && typeof obj === 'object') ? obj : {};
   } catch (e: any) {
     // 严格解析失败时尝试容错修复（模型常输出单引号/裸键/尾逗号/注释等非标准 JSON），修复成功则放行
@@ -198,7 +241,7 @@ function extractAiJson(text: string, label: string): Record<string, any> {
       const fixed = JSON.parse(repairAiJson(candidate));
       if (fixed && typeof fixed === 'object') {
         log.warn(`${label} 返回非严格 JSON，已通过容错修复解析成功`);
-        return fixed;
+        return truncated ? markTruncated(fixed) : fixed;
       }
     } catch { /* 修复后仍失败，保留原始错误信息抛出 */ }
     throw new Error(`${label} 返回格式异常：JSON 解析失败（${e?.message || ''}）`);
@@ -236,11 +279,9 @@ function isImageFile(filePath: string): boolean {
 }
 
 async function validateScreenshotPath(inputPath: string): Promise<string> {
-  const resolved = await resolvePath(inputPath);
-  const normalized = path.resolve(resolved);
-  if (normalized.includes('..')) {
-    throw new Error(`路径访问被拒绝: 非法的路径格式`);
-  }
+  // 统一走可读路径校验（受管数据目录内，或用户亲手挑选并登记的文件）。
+  // 此前这里用 resolvePath 原样放行任意绝对路径，是全应用最后一个"可读任意文件"的口子。
+  const normalized = await validateReadablePath(inputPath);
 
   // 容错：如果精确路径不存在，尝试按文件名（去时间戳）模糊匹配
   if (!fs.existsSync(normalized)) {
@@ -259,8 +300,10 @@ async function validateScreenshotPath(inputPath: string): Promise<string> {
         }))
         .sort((a, b) => b.mtime - a.mtime);
       if (candidates.length > 0) {
-        log.info(`[AI截图] 路径已更新: ${normalized} -> ${candidates[0].fullPath}`);
-        return candidates[0].fullPath;
+        // 模糊命中的文件同样是"新路径"，必须再过一遍校验，防止借文件名前缀读到邻居文件
+        const fuzzyPath = await validateReadablePath(candidates[0].fullPath);
+        log.info(`[AI截图] 路径已更新: ${normalized} -> ${fuzzyPath}`);
+        return fuzzyPath;
       }
     }
   }
@@ -386,14 +429,87 @@ async function desensitizeImage(imagePath: string): Promise<string> {
   }
 }
 
+/**
+ * SSRF 防护：判定 hostname 是否属于禁止访问的地址。
+ *
+ * 说明边界：仅能拦截**字面量 IP 与已知内网域名后缀**。域名解析到内网地址的情况
+ * （如 ai.internal.corp → 10.0.0.5）在发起请求前无法静态判定，不在本函数覆盖范围内。
+ *
+ * 内网部署场景（自建大模型服务）可通过环境变量 `JSECPROBE_ALLOW_PRIVATE_API=1` 显式豁免，
+ * 豁免会在日志中留痕。
+ */
+const AI_ALLOW_PRIVATE_API = process.env.JSECPROBE_ALLOW_PRIVATE_API === '1';
+
+/** 把 IPv4 字面量转成的整数，便于做网段包含判断；非 IPv4 返回 null */
+function ipv4ToInt(hostname: string): number | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (!m) return null;
+  const octets = m.slice(1).map(Number);
+  if (octets.some(o => o > 255)) return null;
+  return ((octets[0] << 24) >>> 0) + (octets[1] << 16) + (octets[2] << 8) + octets[3];
+}
+
 function isBlockedIp(hostname: string): boolean {
-  // 云元数据端点
-  if (hostname === '169.254.169.254' || hostname === '169.254.170.2') return true;
-  // 链路本地 169.254.0.0/16
-  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
-  // 0.0.0.0
-  if (hostname === '0.0.0.0') return true;
+  const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, ''); // IPv6 字面量去方括号
+  if (!host) return false;
+
+  // 云元数据端点（AWS/GCP/Azure/阿里云等）
+  if (host === '169.254.169.254' || host === '169.254.170.2' || host === '100.100.100.200') return true;
+  // 本机与内网常见域名
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host === 'metadata.google.internal') return true;
+
+  // IPv6 回环 / 唯一本地 / 链路本地
+  if (host === '::1' || host === '::' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:')) return true;
+
+  const ip = ipv4ToInt(host);
+  if (ip !== null) {
+    const inRange = (base: number, bits: number) => {
+      const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+      return ((ip & mask) >>> 0) === ((base & mask) >>> 0);
+    };
+    // 0.0.0.0/8（本网络）
+    if (inRange(0x00000000, 8)) return true;
+    // 127.0.0.0/8（回环）
+    if (inRange(0x7f000000, 8)) return true;
+    // 10.0.0.0/8（私有 A 类）
+    if (inRange(0x0a000000, 8)) return true;
+    // 172.16.0.0/12（私有 B 类）
+    if (inRange(0xac100000, 12)) return true;
+    // 192.168.0.0/16（私有 C 类）
+    if (inRange(0xc0a80000, 16)) return true;
+    // 169.254.0.0/16（链路本地 / 元数据）
+    if (inRange(0xa9fe0000, 16)) return true;
+    // 192.0.0.0/24（IETF 协议分配，含 192.0.0.170 NAT64）
+    if (inRange(0xc0000000, 24)) return true;
+    // 198.18.0.0/15（网络设备基准测试，常被用于探测）
+    if (inRange(0xc6120000, 15)) return true;
+    // 100.64.0.0/10（运营商级 NAT）
+    if (inRange(0x64400000, 10)) return true;
+  }
+
   return false;
+}
+
+/** 云端 AI 请求默认超时（毫秒）。无超时时云端挂起会让 ai:chat 永久悬挂。 */
+const AI_FETCH_TIMEOUT_MS = 120_000;
+
+/**
+ * 带超时的 AI 请求。三处 callWithFailover 的 aiFetch 此前均未创建 AbortController，
+ * 云端无响应时请求会一直悬挂，故障转移会串行叠加多个悬挂请求。
+ */
+async function aiFetchWithTimeout(url: string, init: any, timeoutMs = AI_FETCH_TIMEOUT_MS): Promise<any> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await aiFetch(url, { ...init, signal: controller.signal });
+  } catch (error: any) {
+    if (error?.name === 'AbortError' || controller.signal.aborted) {
+      throw new Error(`请求超时（${Math.round(timeoutMs / 1000)}秒无响应）`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const MAX_CHAT_DOC_TEXT_LENGTH = 200 * 1024;
@@ -410,7 +526,7 @@ async function buildChatMessageContent(msg: { role: string; content: string; att
 
   for (const att of attachments) {
     try {
-      const absPath = await resolvePath(att.path);
+      const absPath = await validateReadablePath(att.path);
       if (att.type === 'image') {
         const base64 = await encodeImageToBase64(absPath);
         if (base64) {
@@ -466,7 +582,15 @@ function ensureApiUrl(baseUrl: string | null | undefined, mode?: string): string
       throw new Error('API地址格式无效');
     }
     if (isBlockedIp(hostname)) {
-      throw new Error(`API地址被禁止访问: ${hostname}`);
+      if (AI_ALLOW_PRIVATE_API) {
+        // 内网部署场景的显式豁免：记录留痕，便于事后审计
+        log.warn(`[SSRF] 已按 JSECPROBE_ALLOW_PRIVATE_API=1 放行内网地址: ${hostname}`);
+      } else {
+        throw new Error(
+          `API地址被禁止访问: ${hostname}。` +
+          `云端模型不允许指向内网/回环/链路本地地址（内网部署的自建服务请设置环境变量 JSECPROBE_ALLOW_PRIVATE_API=1 显式放行）`
+        );
+      }
     }
   }
 
@@ -576,8 +700,23 @@ function desensitizeText(text: string, extraWords?: string[]): string {
 function wrap<T>(event: any, fn: () => T | Promise<T>): Promise<any> {
   // 统一走全局 wrap：默认 requireAuth: true（受信来源校验），与全应用 IPC 鉴权契约一致，
   // 拦截非受信来源（如被注入的恶意网页）调用 AI 通道；同时保留响应体脱敏（sanitize）。
+  // requireSession 沿用全局默认（开启），未登录不得调用任何 AI 通道。
   const handler = globalWrap(async () => fn() as any, { moduleName: 'ai', requireAuth: true });
   return handler(event).then(sanitize);
+}
+
+/**
+ * 裸 ipcMain.handle 通道的统一守卫：来源校验 + 会话校验。
+ *
+ * 这些通道自行返回 { success, data, error }（不经 globalWrap 二次包装），
+ * 因此只做前置鉴权，不改变返回结构，避免破坏前端既有解析逻辑。
+ */
+function assertTrusted(event: any): void {
+  requireAuth(event);
+  requireSession(event);
+  // 服务端强制改密（E2）：AI 通道同样不允许带着初始口令使用 ——
+  // 它会消耗云端 API Key，并可能把本地知识库外发到配置的 apiBase
+  requirePasswordChanged(event);
 }
 
 /**
@@ -651,7 +790,8 @@ export function registerAIHandlers(): void {
     mode?: string;
     config?: any;
   }): Promise<{ success: boolean; modelId?: string; modelName?: string; content: string; error?: string }> {
-    const { messages, temperature = 0.3, mode = 'cloud', config } = params;
+    // 默认温度对齐 ai_configs 建表与初始化值（0.7）；此前此处为 0.3，与配置漂移
+    const { messages, temperature = 0.7, mode = 'cloud', config } = params;
     const db = getDb();
 
     // 优先使用云端模型列表（mode === 'cloud'）
@@ -699,7 +839,7 @@ export function registerAIHandlers(): void {
             const bodySizeKB = Buffer.byteLength(requestBody, 'utf8') / 1024;
             log.info(`[AI故障转移] 尝试模型: ${model.name} (${model.model}), URL: ${apiUrl}, 请求体: ${bodySizeKB.toFixed(1)}KB`);
 
-            const response = await aiFetch(apiUrl, {
+            const response = await aiFetchWithTimeout(apiUrl, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -715,6 +855,10 @@ export function registerAIHandlers(): void {
 
             const data = await response.json();
             const content = data.choices?.[0]?.message?.content || '';
+            // 空内容视为失败：否则会把"模型返回空"当成成功，上层静默产出空结果并继续故障转移
+            if (!content || !String(content).trim()) {
+              throw new Error('模型返回内容为空');
+            }
             log.info(`[AI故障转移] 模型 ${model.name} 调用成功, 返回内容长度: ${content.length}字符`);
             return { success: true, modelId: model.id, modelName: model.name, content };
           } catch (error: any) {
@@ -741,7 +885,7 @@ export function registerAIHandlers(): void {
           messages,
           temperature,
         });
-        const response = await aiFetch(apiUrl, {
+        const response = await aiFetchWithTimeout(apiUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -757,6 +901,9 @@ export function registerAIHandlers(): void {
 
         const data = await response.json();
         const content = data.choices?.[0]?.message?.content || '';
+        if (!content || !String(content).trim()) {
+          throw new Error('本地引擎返回内容为空');
+        }
         return { success: true, modelName: model, content };
       } catch (error: any) {
         throw error;
@@ -774,7 +921,7 @@ export function registerAIHandlers(): void {
         messages,
         temperature,
       });
-      const response = await aiFetch(apiUrl, {
+      const response = await aiFetchWithTimeout(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -790,6 +937,9 @@ export function registerAIHandlers(): void {
 
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content || '';
+      if (!content || !String(content).trim()) {
+        throw new Error('模型返回内容为空');
+      }
       return { success: true, modelName: model, content };
     }
 
@@ -1039,6 +1189,7 @@ export function registerAIHandlers(): void {
   );
 
   ipcMain.handle('ollama:pullModel', async (_event, modelName: string, url?: string, engine?: string) => {
+    assertTrusted(_event);
     if (engine === 'herdsman') {
       return sanitize({ success: false, error: { code: 'PULL_MODEL_NOT_SUPPORTED', message: 'Herdsman 不支持通过 API 下载模型，请在 Herdsman 模型库中下载' } });
     }
@@ -1064,6 +1215,7 @@ export function registerAIHandlers(): void {
   });
 
   ipcMain.handle('ollama:deleteModel', async (_event, modelName: string, url?: string, engine?: string) => {
+    assertTrusted(_event);
     if (engine === 'herdsman') {
       return sanitize({ success: false, error: { code: 'DELETE_MODEL_NOT_SUPPORTED', message: 'Herdsman 不支持通过 API 删除模型，请在 Herdsman 中管理模型' } });
     }
@@ -1079,6 +1231,7 @@ export function registerAIHandlers(): void {
   });
 
   ipcMain.handle('ollama:start', async (_event, url?: string, engine?: string) => {
+    assertTrusted(_event);
     requireSession(_event);
     try {
       const result = engine === 'herdsman' ? await startHerdsman(url) : await startOllama(url);
@@ -1095,6 +1248,7 @@ export function registerAIHandlers(): void {
   );
 
   ipcMain.handle('ollama:testConnection', async (_event, url?: string, engine?: string) => {
+    assertTrusted(_event);
     requireSession(_event);
     try {
       const result = engine === 'herdsman' ? await testHerdsmanConnection(url) : await testOllamaConnection(url);
@@ -1184,7 +1338,8 @@ export function registerAIHandlers(): void {
   );
 
   // 进度轮询（fallback 机制）
-  ipcMain.handle('ai:getProgress', async () => {
+  ipcMain.handle('ai:getProgress', async (_event: any) => {
+    assertTrusted(_event);
     // 过期进度返回 null，避免读到陈旧数据
     if (currentProgress && Date.now() - currentProgress.timestamp > PROGRESS_EXPIRE_MS) {
       currentProgress = null;
@@ -1193,6 +1348,7 @@ export function registerAIHandlers(): void {
   });
 
   ipcMain.handle('ai:testConnection', async (_event, params?: { apiBase?: string; apiKey?: string; model?: string; mode?: string; ollamaUrl?: string; herdsmanUrl?: string; localEngine?: string }) => {
+    assertTrusted(_event);
     try {
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
@@ -1286,6 +1442,7 @@ export function registerAIHandlers(): void {
     temperature?: number;
     context?: string;
   }) => {
+    assertTrusted(_event);
     try {
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
@@ -1353,6 +1510,7 @@ export function registerAIHandlers(): void {
   });
 
   ipcMain.handle('ai:analyzeAssessment', async (_event, rawParams: any) => {
+    assertTrusted(_event);
     const params = sanitize(rawParams) as {
       controlPoint: string;
       requirement: string;
@@ -1501,6 +1659,7 @@ export function registerAIHandlers(): void {
   });
 
   ipcMain.handle('ai:batchAnalyzeScreenshots', async (_event, rawParams: any) => {
+    assertTrusted(_event);
     const params = sanitize(rawParams) as {
       items: { id: string; controlPoint: string; requirement: string }[];
       screenshots: string[];
@@ -1737,6 +1896,7 @@ export function registerAIHandlers(): void {
     controlPoint: string;
     controlName: string;
   }) => {
+    assertTrusted(_event);
     try {
       const params = sanitize(rawParams);
       log.info('[ai:analyzeIssue] 调用参数:', JSON.stringify({
@@ -1829,6 +1989,7 @@ export function registerAIHandlers(): void {
     controlPoint: string;
     controlName: string;
   }) => {
+    assertTrusted(_event);
     try {
       const params = sanitize(rawParams);
       log.info('[ai:analyzeIssueDescription] 调用参数:', JSON.stringify({
@@ -1923,6 +2084,7 @@ export function registerAIHandlers(): void {
       controlName: string;
     }>;
   }) => {
+    assertTrusted(_event);
     const sendProgress = (data: { stage: string; message: string; percent: number; current: number; total: number }) => {
       currentProgress = { ...data, timestamp: Date.now() };
       try { _event.sender.send('ai:batchIssueProgress', data); } catch (innerErr: any) {
@@ -2043,6 +2205,7 @@ export function registerAIHandlers(): void {
 
   // OCR 相关 IPC 处理器
   ipcMain.handle('ocr:extractText', async (_event, imagePath: string, options?: any) => {
+    assertTrusted(_event);
     requireSession(_event);
     try {
       const safePath = await validateDataPath(imagePath);
@@ -2055,6 +2218,7 @@ export function registerAIHandlers(): void {
   });
 
   ipcMain.handle('ocr:extractTextFromMultiple', async (_event, imagePaths: string[], options?: any) => {
+    assertTrusted(_event);
     requireSession(_event);
     try {
       const safePaths = await Promise.all(imagePaths.map((p: string) => validateDataPath(p)));
@@ -2067,6 +2231,7 @@ export function registerAIHandlers(): void {
   });
 
   ipcMain.handle('ocr:isEnabled', async (_event) => {
+    assertTrusted(_event);
     requireSession(_event);
     return sanitize({ success: true, data: isOCREnabled() });
   });
@@ -2204,6 +2369,7 @@ export function registerAIHandlers(): void {
    * 检索策略：关键词打分排序取 Top5 文档，每篇正文截断，控制上下文长度
    */
   ipcMain.handle('ai:searchKnowledge', async (_event, rawParams: { question: string }) => {
+    assertTrusted(_event);
     try {
       const params = sanitize(rawParams);
       const question = String(params.question || '').trim();
@@ -2329,6 +2495,7 @@ export function registerAIHandlers(): void {
     os?: string;
     deviceType?: string;
   }) => {
+    assertTrusted(_event);
     try {
       const params = sanitize(rawParams);
       if (!params.requirement && !params.controlPoint) {
@@ -2517,6 +2684,7 @@ export function registerAIHandlers(): void {
     documents?: string[];
     ocrPreprocess?: boolean;
   }) => {
+    assertTrusted(_e);
     try {
       const params = sanitize(rawParams);
       const description = String(params.description || '').trim();
@@ -2626,7 +2794,7 @@ export function registerAIHandlers(): void {
       if (documentPathsInput.length > 0) {
         for (const docPath of documentPathsInput) {
           try {
-            const absPath = await resolvePath(docPath);
+            const absPath = await validateReadablePath(docPath);
             const text = await extractTextFromFile(absPath);
             const truncated = text.length > MAX_CHAT_DOC_TEXT_LENGTH
               ? text.slice(0, MAX_CHAT_DOC_TEXT_LENGTH) + '\n...(内容过长已截断)'
@@ -2731,6 +2899,7 @@ export function registerAIHandlers(): void {
     projectId?: string;
     systemName?: string;
   }) => {
+    assertTrusted(_e);
     try {
       const params = sanitize(rawParams);
       const db = getDb();
@@ -2900,6 +3069,7 @@ export function registerAIHandlers(): void {
   }
 
   ipcMain.handle('ai:dashboardInsight', async (_e, _rawParams: any) => {
+    assertTrusted(_e);
     // 并发防护：同通道串行，避免连续触发造成重复请求/结果覆盖
     if (aiLocks.get('dashboardInsight')) {
       return sanitize({ success: false, error: { code: 'AI_BUSY', message: '上一次 AI 分析仍在执行中，请稍候（请勿重复点击），完成后可重新触发' } });
@@ -3063,6 +3233,7 @@ export function registerAIHandlers(): void {
   // ====== 标准差异智能解读（ai:explainStandardDiff） ======
   // 入参：前端 standard:compare 返回的对照结果（含 stats/rows），字段白名单 + 截断，上限 200 行
   ipcMain.handle('ai:explainStandardDiff', async (_e, rawParams: any) => {
+    assertTrusted(_e);
     // 并发防护：同通道串行，避免连续触发造成重复请求/结果覆盖
     if (aiLocks.get('explainStandardDiff')) {
       log.warn('[ai:explainStandardDiff] 并发拒绝：上一次分析仍在执行中');
@@ -3183,6 +3354,7 @@ export function registerAIHandlers(): void {
   // ====== 合规差距智能分析（ai:standardComplianceGap） ======
   // 入参：projectId + standardId（可附 precomputed 统计以跳过二次全量查库），再调 AI 分析差距
   ipcMain.handle('ai:standardComplianceGap', async (_e, rawParams: any) => {
+    assertTrusted(_e);
     // 并发防护：同通道串行，避免连续触发造成重复请求/结果覆盖
     if (aiLocks.get('standardComplianceGap')) {
       log.warn('[ai:standardComplianceGap] 并发拒绝：上一次分析仍在执行中');

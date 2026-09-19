@@ -1,6 +1,7 @@
 import { ipcMain, shell } from 'electron';
 import { wrap } from '../utils/ipc-wrapper';
 import { validateNotEmpty } from '../utils/validation';
+import { validateUserSelectedDir } from '../utils/path-resolver';
 import * as collectionService from '../services/collection.service';
 
 export function registerCollectionHandlers(): void {
@@ -129,7 +130,10 @@ export function registerCollectionHandlers(): void {
   ipcMain.handle('collection:saveDocument', wrap(async (_event, data: any) => {
     validateNotEmpty(data?.taskId, '任务ID');
     validateNotEmpty(data?.dirPath, '保存目录');
-    return collectionService.saveDocument({ taskId: data.taskId, dirPath: data.dirPath });
+    // 用户自选的导出目录：允许 appData 之外（否则无法导出到桌面/移动盘），
+    // 但拒绝磁盘根目录与系统保护目录，避免渲染层被挟持后往系统路径写文件。
+    const dirPath = validateUserSelectedDir(data.dirPath, '保存目录');
+    return collectionService.saveDocument({ taskId: data.taskId, dirPath });
   }, { moduleName: 'collection', requireSession: true }));
 
   ipcMain.handle('collection:listDocuments', wrap(async (_event, projectId: string) => {

@@ -251,7 +251,10 @@ function waitForDrain(stream: fs.WriteStream): Promise<void> {
 }
 
 async function downloadFromR2(version: string, expectedSha512: string): Promise<string> {
-  const installerName = `JSecProbe Setup ${version}.exe`;
+  // 必须与 scripts/upload-to-r2.js / upload-to-github.js 上传的对象名完全一致（连字符）。
+  // 此前此处用 "JSecProbe Setup ${version}.exe"（空格），与上传的 "JSecProbe-Setup-${version}.exe"
+  // 不匹配，导致 R2 备用源必然 404 —— GitHub 不可达时用户看到"有更新"却永远下载失败。
+  const installerName = `JSecProbe-Setup-${version}.exe`;
   const downloadUrl = `${R2_CONFIG.baseUrl}/${encodeURIComponent(installerName)}`;
   const tempDir = getSafeTempDir();
   const destPath = path.join(tempDir, installerName);
@@ -259,7 +262,11 @@ async function downloadFromR2(version: string, expectedSha512: string): Promise<
   log.info(`[更新-R2] 开始下载: ${downloadUrl}`);
   const response = await net.fetch(downloadUrl, { method: 'GET' });
   if (!response.ok) {
-    throw new Error(`下载失败: HTTP ${response.status}`);
+    // 404 绝大多数是"版本尚未同步到 R2"或对象名不一致，给出可诊断的提示而非裸抛错
+    const detail = response.status === 404
+      ? `R2 上不存在 ${installerName}（可能该版本尚未同步到备用源），请改用 GitHub 源更新`
+      : `HTTP ${response.status}`;
+    throw new Error(`下载失败: ${detail}`);
   }
 
   const contentLength = parseInt(response.headers.get('content-length') || '0', 10);
@@ -468,12 +475,75 @@ export function triggerUpdateCheck(): void {
 }
 
 /**
+ * 校验安装包的 Authenticode 数字签名（P1-5）。
+ *
+ * 背景：更新包的 sha512 与安装包**同源**获取（同一个 latest.yml / R2 对象），
+ * 服务端被控或证书被劫持时，攻击者可以同时替换摘要与安装包 —— 校验 sha512 形同虚设。
+ * 数字签名是唯一能脱离传输通道独立验证发布者身份的手段，必须在执行前完成校验。
+ *
+ * 说明：仅在 Windows 上校验；非 Windows 或无 PowerShell 时按"无法校验"处理并明确告警。
+ * 自签测试包场景可用环境变量 `JSECPROBE_SKIP_SIGNATURE_CHECK=1` 跳过（会留痕）。
+ */
+async function verifyInstallerSignature(installerPath: string): Promise<{ ok: boolean; reason: string }> {
+  if (process.env.JSECPROBE_SKIP_SIGNATURE_CHECK === '1') {
+    log.warn('[更新] 已按 JSECPROBE_SKIP_SIGNATURE_CHECK=1 跳过安装包签名校验（仅限自测场景）');
+    return { ok: true, reason: '已跳过' };
+  }
+  if (process.platform !== 'win32') {
+    return { ok: false, reason: '非 Windows 平台，无法校验 Authenticode 签名' };
+  }
+
+  // 路径以单引号包裹并转义内部单引号，避免路径拼接破坏命令
+  const escaped = installerPath.replace(/'/g, "''");
+  const script = `(Get-AuthenticodeSignature -FilePath '${escaped}').Status`;
+
+  return new Promise((resolve) => {
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (d) => { stdout += String(d); });
+    child.stderr?.on('data', (d) => { stderr += String(d); });
+    // 超时保护：PowerShell 冷启动可能较慢，但不应无限等待
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* 已退出 */ } resolve({ ok: false, reason: '签名校验超时' }); }, 30000);
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve({ ok: false, reason: '无法执行签名校验（PowerShell 不可用）' });
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      const status = stdout.trim();
+      if (status === 'Valid') {
+        resolve({ ok: true, reason: '签名有效' });
+      } else if (status === 'ValidButExpired') {
+        // 证书过期但签名本身有效：企业环境常见，放行但明确告警
+        log.warn('[更新] 安装包签名有效但证书已过期，仍允许安装');
+        resolve({ ok: true, reason: '签名有效（证书已过期）' });
+      } else {
+        resolve({
+          ok: false,
+          reason: `安装包签名校验未通过（状态：${status || '未知'}${stderr ? `，${stderr.trim()}` : ''}）`,
+        });
+      }
+    });
+  });
+}
+
+/**
  * 启动已下载的 R2 安装包执行静默安装。
  * 返回 true 表示安装进程已成功启动；false 表示启动失败（原因已记录日志）。
  * 注意：shell.openPath 失败时 resolve 错误描述字符串（空串代表成功）而非 reject，
  * 必须通过返回值判断成败；spawn 的 error 事件必须监听，否则会变成未捕获异常。
  */
 async function launchR2Installer(installerPath: string): Promise<boolean> {
+  // 执行前必须校验签名：否则服务端/传输通道被劫持即可向所有测评终端推送并执行任意安装包
+  const sig = await verifyInstallerSignature(installerPath);
+  if (!sig.ok) {
+    log.error(`[更新] 拒绝执行安装包：${sig.reason}`);
+    return false;
+  }
   log.info(`[更新-${updateSource}] 安装更新: ${installerPath}`);
   try {
     const openResult = await shell.openPath(installerPath);

@@ -442,6 +442,18 @@ const selectAllIndeterminate = computed(
   () => selectedProfileIds.value.length > 0 && selectedProfileIds.value.length < profiles.value.length
 );
 
+/**
+ * 判断异常是否只是「用户在确认框点了取消/关闭」（4.2 静默吞错）。
+ *
+ * Element Plus 的 ElMessageBox 在用户取消时抛出 'cancel'（或 message 为 'cancel' 的 Error）。
+ * 此前所有 `await ElMessageBox.confirm(...)` 的 catch 都直接 `return`，
+ * 真实异常（渲染失败、组件异常）也被当成"用户取消"静默吞掉，排障时没有任何线索。
+ * 现在只有用户取消才静默返回，其余一律留痕。
+ */
+function isUserCancel(e: unknown): boolean {
+  return e === 'cancel' || e === 'close' || (e as { message?: string } | null)?.message === 'cancel';
+}
+
 // 每个连接的任务统计
 function getProfileTaskCount(profileId: string): number {
   return tasks.value.filter((t) => t.profileId === profileId && isTaskRunning(t.status)).length;
@@ -486,7 +498,8 @@ async function handleBatchDelete() {
         '警告',
         { type: 'warning', confirmButtonText: '强制删除', cancelButtonText: '取消' }
       );
-    } catch {
+    } catch (e) {
+      if (!isUserCancel(e)) console.warn('[auto-collection] 强制删除确认失败:', e);
       return;
     }
   } else {
@@ -496,7 +509,8 @@ async function handleBatchDelete() {
         '批量删除',
         { type: 'warning' }
       );
-    } catch {
+    } catch (e) {
+      if (!isUserCancel(e)) console.warn('[auto-collection] 批量删除确认失败:', e);
       return;
     }
   }
@@ -1049,7 +1063,8 @@ async function handleDeleteTask(t: any) {
       '删除任务',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
     );
-  } catch {
+  } catch (e) {
+    if (!isUserCancel(e)) console.warn('[auto-collection] 删除任务确认失败:', e);
     return;
   }
   const res = await window.api.collection.deleteTask(t.id);
@@ -1117,7 +1132,9 @@ function stateTagType(s: string): 'info' | 'warning' | 'success' | 'danger' {
 function formatParsed(data: string): string {
   try {
     return JSON.stringify(JSON.parse(data), null, 2);
-  } catch {
+  } catch (e) {
+    // 4.2：解析失败时回退原文是对的，但不应完全无声 —— 用户会以为看到的是格式化后的规范 JSON
+    console.warn('[auto-collection] 结果内容不是合法 JSON，已按原文展示:', e);
     return data;
   }
 }

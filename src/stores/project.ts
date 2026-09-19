@@ -74,9 +74,9 @@ export const useProjectStore = defineStore('project', () => {
     return res;
   }
 
-  async function importProjects() {
-    return await window.api.project.import();
-  }
+  // 说明：旧的「从 Excel 导入项目」已移除——它只写 8 个字段、把 standard_id 写死成 L3，
+  // 导入的项目在测评页会因标准不匹配而取不到题。完整数据的导入/导出请走项目归档
+  // （window.api.project.exportArchive / importArchive）。
 
   async function exportAll() {
     return await window.api.project.exportAll();
@@ -94,7 +94,6 @@ export const useProjectStore = defineStore('project', () => {
     create,
     update,
     remove,
-    importProjects,
     exportAll,
   };
 });

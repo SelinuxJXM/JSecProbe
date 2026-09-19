@@ -167,8 +167,16 @@ export function translateNetworkError(err: any): Error {
  */
 export async function aiFetch(url: string, init?: RequestInit): Promise<Response> {
   await syncAiProxyFromDb();
+  const ses = getOrCreateAiSession();
+  // 规避部分 API 中转站的 HTTP/2 长连接缺陷：实测（api.agnes-ai.cn）同一条 h2
+  // 连接复用到第 3 个请求起，服务端不再返回任何字节也不报错，Chromium 不会
+  // 重试，请求只能一直悬挂到上层超时——表现为「AI 助手发消息半天没反应，
+  // 120 秒后报请求超时」，而「测试连接」因连接较新总是成功，极具迷惑性。
+  // 每次请求前关闭本会话的闲置连接，强制走全新连接。所有 AI 网络调用均为
+  // 串行（无并行 fetch），此刻不存在仍在读取中的响应体，关闭是安全的。
+  try { await ses.closeAllConnections(); } catch { /* 忽略：旧版 Electron 无此 API */ }
   try {
-    return await getOrCreateAiSession().fetch(url, init);
+    return await ses.fetch(url, init);
   } catch (err) {
     throw translateNetworkError(err);
   }

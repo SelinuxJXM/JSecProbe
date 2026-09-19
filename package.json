@@ -1,6 +1,6 @@
 {
   "name": "mlps-assessment-tool",
-  "version": "2.4.1",
+  "version": "2.4.2",
   "description": "JSecProbe - 等级保护现场测评系统",
   "main": "dist-electron/main/index.js",
   "author": "景景",
@@ -10,6 +10,9 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit",
+    "check:version": "node scripts/check-version-consistency.js",
+    "check:schema": "node scripts/check-schema-drift.js",
+    "check": "npm run typecheck && npm run check:version && npm run check:schema",
     "build": "vue-tsc --noEmit && vite build && electron-builder",
     "build:win": "vue-tsc --noEmit && vite build && electron-builder --win",
     "build:win:full": "node scripts/build-win.js",
@@ -88,7 +91,11 @@
     ],
     "asar": true,
     "asarUnpack": [
-      "**/node_modules/better-sqlite3/**"
+      "**/node_modules/better-sqlite3/**",
+      "**/node_modules/sharp/**",
+      "**/node_modules/@img/**",
+      "**/node_modules/tesseract.js/**",
+      "**/node_modules/tesseract.js-core/**"
     ],
     "extraResources": [
       {
@@ -105,9 +112,8 @@
         "portable"
       ],
       "icon": "build/icon.ico",
-      "sign": null,
-      "signAndEditExecutable": false,
-      "verifyUpdateCodeSignature": false
+      "signAndEditExecutable": true,
+      "verifyUpdateCodeSignature": true
     },
     "publish": {
       "provider": "github",

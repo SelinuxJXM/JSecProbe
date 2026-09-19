@@ -1,6 +1,7 @@
 import { ref, type Ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import type { Asset } from '@shared/types';
+import { formatSaveTime } from '@/utils/format-save-time';
 
 interface AssetAutoSaveOptions {
   assetList: Ref<Asset[]>;
@@ -33,12 +34,20 @@ export function useAssetAutoSave(options: AssetAutoSaveOptions) {
 
   let autoSaveTimer: number | null = null;
   let periodicSaveTimer: number | null = null;
+  // 并发互斥：防抖触发 / 周期触发 / 手动保存三条路径可能同时进入 saveAllChanges。
+  // 不加锁时，await loadAssets() 返回前 temp_ 临时行仍在列表中且 modifiedRows 未清，
+  // 第二次进入会对同一临时行重复 asset.create，产生重复资产。
+  let saveInProgress = false;
 
   async function saveAllChanges(): Promise<boolean> {
+    if (saveInProgress) {
+      return false;
+    }
     if (modifiedRows.size === 0 && deletedIds.size === 0) {
       return false;
     }
 
+    saveInProgress = true;
     const projectId = route.params.id as string;
     saveStatus.value = 'saving';
     let created = 0;
@@ -105,6 +114,8 @@ export function useAssetAutoSave(options: AssetAutoSaveOptions) {
       console.error('保存失败:', error);
       saveStatus.value = 'error';
       return false;
+    } finally {
+      saveInProgress = false;
     }
   }
 
@@ -136,6 +147,10 @@ export function useAssetAutoSave(options: AssetAutoSaveOptions) {
   }
 
   async function triggerManualSave(): Promise<boolean> {
+    if (saveInProgress) {
+      ElMessage.info('正在保存中，请稍候');
+      return false;
+    }
     const success = await saveAllChanges();
     if (success) {
       ElMessage.success('保存成功');
@@ -145,14 +160,7 @@ export function useAssetAutoSave(options: AssetAutoSaveOptions) {
     return success;
   }
 
-  function formatSaveTime(date: Date): string {
-    const now = new Date();
-    const diff = Math.floor((now.getTime() - date.getTime()) / 1000);
-    if (diff < 5) return '刚刚';
-    if (diff < 60) return `${diff}秒前`;
-    if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  }
+  // formatSaveTime 已提升到 @/utils/format-save-time（三个自动保存 composable 共用同一份）
 
   function cleanup() {
     if (autoSaveTimer) {

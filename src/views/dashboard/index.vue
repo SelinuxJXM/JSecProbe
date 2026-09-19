@@ -528,10 +528,12 @@ const aiInsightData = ref<AiInsightData | null>(null);
 const aiInsightLoading = ref(false);
 const aiInsightError = ref('');
 
-const aiInsightDisabled = computed(() => {
-  if (!window.api?.ai) return true;
-  return false;
-});
+// P3-8：原实现用 computed 依赖 `window.api?.ai` —— window.api 由 preload 注入，
+// 是**非响应式**的普通对象，computed 不会因它变化而重新求值，
+// 等价于"首次求值时就固化"的常量。若求值发生在 preload 注入完成之前，
+// AI 洞察按钮会被永久禁用且再也不会恢复。改为 ref，在挂载完成后按实际可用性置位。
+const aiApiReady = ref(false);
+const aiInsightDisabled = computed(() => !aiApiReady.value);
 
 async function runAiInsight() {
   if (!window.api?.ai) {
@@ -571,7 +573,11 @@ function highlightInsight(text: string): string {
   return html;
 }
 
-onMounted(loadData);
+onMounted(() => {
+  // preload 已完成注入，此时判定 AI 通道可用性才是可靠的
+  aiApiReady.value = !!window.api?.ai;
+  loadData();
+});
 </script>
 
 <style lang="scss" scoped>

@@ -1,6 +1,7 @@
 import { Client } from 'pg';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
+import { logger as log } from '../../utils/logger';
 import type { IConnector, ExecResult } from './connector';
 import {
   parseExtraConfig,
@@ -8,7 +9,30 @@ import {
   formatRows,
   splitSqlStatements,
   assertReadonlySql,
+  isTlsHandshakeError,
 } from './db.util';
+
+/** 构造 pg 客户端（含 TLS 选项），失败时由调用方决定是否降级 */
+function createPgClient(profile: ConnectionProfile, cfg: ReturnType<typeof parseExtraConfig>, password: string, commandTimeoutMs: number, useTls: boolean): Client {
+  const client = new Client({
+    host: profile.host,
+    port: profile.port || 5432,
+    user: profile.username || undefined,
+    password: password || undefined,
+    database: cfg.database || 'postgres',
+    connectionTimeoutMillis: profile.timeoutMs || 10000,
+    query_timeout: commandTimeoutMs,
+    statement_timeout: commandTimeoutMs,
+    // 传输安全：优先 TLS（rejectUnauthorized:false = 接受自签/内网证书）。
+    // 原实现完全不启用 ssl，口令与查询结果明文过网。
+    ...(useTls ? { ssl: { rejectUnauthorized: cfg.rejectUnauthorized === true } } : {}),
+  });
+  // 连接存活期间服务端断连/网络中断会在 client 上 emit 'error'；
+  // 不挂监听会成为未捕获异常直接打崩主进程（uncaughtException → 应用退出）。
+  // 连接级错误交由后续 query 的异常捕获路径处理，这里仅需兜底防崩。
+  client.on('error', () => {});
+  return client;
+}
 
 export class PostgresqlConnector implements IConnector {
   private client: Client | null = null;
@@ -19,21 +43,20 @@ export class PostgresqlConnector implements IConnector {
     const cfg = parseExtraConfig(profile.extraConfig);
     const password = decryptSecret(profile.passwordEncrypted);
     this.commandTimeoutMs = getCommandTimeout(profile);
-    const client = new Client({
-      host: profile.host,
-      port: profile.port || 5432,
-      user: profile.username || undefined,
-      password: password || undefined,
-      database: cfg.database || 'postgres',
-      connectionTimeoutMillis: profile.timeoutMs || 10000,
-      query_timeout: this.commandTimeoutMs,
-      statement_timeout: this.commandTimeoutMs,
-    });
-    // 连接存活期间服务端断连/网络中断会在 client 上 emit 'error'；
-    // 不挂监听会成为未捕获异常直接打崩主进程（uncaughtException → 应用退出）。
-    // 连接级错误交由后续 query 的异常捕获路径处理，这里仅需兜底防崩。
-    client.on('error', () => {});
-    await client.connect();
+    const useTls = cfg.ssl === undefined ? true : !!cfg.ssl;
+    const client = createPgClient(profile, cfg, password, this.commandTimeoutMs, useTls);
+    try {
+      await client.connect();
+    } catch (err) {
+      if (useTls && isTlsHandshakeError(err)) {
+        log.warn(`[PostgreSQL] ${profile.host} 不支持 TLS，已降级为明文连接（凭据与结果将以明文传输）`);
+        const fallback = createPgClient(profile, cfg, password, this.commandTimeoutMs, false);
+        await fallback.connect();
+        this.client = fallback;
+        return;
+      }
+      throw err;
+    }
     this.client = client;
   }
 

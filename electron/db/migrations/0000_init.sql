@@ -226,7 +226,11 @@ CREATE TABLE IF NOT EXISTS system_settings (
   auto_backup_enabled INTEGER NOT NULL DEFAULT 1,
   auto_backup_days INTEGER NOT NULL DEFAULT 7,
   data_path TEXT,
-  default_standard TEXT DEFAULT 'gb-t-22239-2019-l3',
+  -- P2-15：原默认 'gb-t-22239-2019-l3' 在种子标准库中并不存在，
+  -- 新建库因此得到一个指向空标准的默认值。与 schema.ts 对齐为空串，由业务侧动态解析有效标准。
+  -- 说明：自建迁移器（db/migrator.ts）按 _journal 的 when 时间戳跳过已应用的迁移、不校验文件 hash，
+  -- 因此修正历史迁移文件不会影响存量库，只作用于全新库。
+  default_standard TEXT DEFAULT '',
   standard_data_version INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL
 );

@@ -39,6 +39,18 @@ function pumpTaskQueue(): void {
   }
 }
 
+/**
+ * 队列长度上限（P2）。原实现队列无界：批量发起采集时所有任务都会在内存里排队，
+ * 每个待执行任务都持有闭包（含命令清单与连接配置），长时间运行会持续累积内存。
+ * 超过上限直接拒绝并给出明确错误，让调用方改为分批提交。
+ */
+const DEFAULT_MAX_QUEUE = 200;
+
+function getMaxQueue(): number {
+  const v = Number(process.env.COLLECTION_MAX_QUEUE);
+  return Number.isFinite(v) && v > 0 ? v : DEFAULT_MAX_QUEUE;
+}
+
 async function runWithConcurrency(task: () => Promise<void>): Promise<void> {
   const max = getMaxConcurrent();
   if (activeTaskCount < max) {
@@ -50,6 +62,12 @@ async function runWithConcurrency(task: () => Promise<void>): Promise<void> {
       pumpTaskQueue();
     }
     return;
+  }
+  const maxQueue = getMaxQueue();
+  if (taskQueue.length >= maxQueue) {
+    throw new Error(
+      `采集队列已满（${taskQueue.length}/${maxQueue}），请等待当前任务完成后再提交。如需提高上限请设置环境变量 COLLECTION_MAX_QUEUE`
+    );
   }
   await new Promise<void>((resolve) => {
     taskQueue.push(async () => {

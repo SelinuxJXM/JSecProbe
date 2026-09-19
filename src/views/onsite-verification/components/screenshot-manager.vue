@@ -131,6 +131,27 @@ async function loadScreenshotDataUrl(filePath: string) {
 
 // ==================== 上传截图 ====================
 
+/**
+ * 生成行的更新副本（P2-11）。
+ *
+ * 原实现直接 `props.row.screenshots.push/splice`，绕过单向数据流就地修改父组件数据：
+ * ① Vue 的响应式依赖链被绕过，截图列表偶发不刷新；
+ * ② `emit('update:row', {...props.row})` 是浅拷贝，screenshots 仍指向同一个数组，
+ *    父组件拿到的"新"对象和旧对象共享同一份数据，diff 时看不出变化。
+ * 这里改为复制受影响的数组/对象后再交给 patch 修改，emit 出去的是真正的新对象。
+ */
+function buildNextRow(patch: (row: any) => void): any {
+  const next: any = {
+    ...props.row,
+    screenshots: [...(props.row.screenshots || [])],
+  };
+  if (props.row.screenshotUrls) {
+    next.screenshotUrls = { ...props.row.screenshotUrls };
+  }
+  patch(next);
+  return next;
+}
+
 async function handleUploadScreenshot() {
   if (!window.api) {
     ElMessage.error('上传功能不可用');
@@ -186,14 +207,16 @@ async function handleUploadScreenshot() {
       if (uploadError) {
         ElMessage.error(`${filePath.split('\\').pop()}: ${uploadError}`);
       } else if (savedPath) {
-        props.row.screenshots = props.row.screenshots || [];
-        if (!props.row.screenshots.includes(savedPath)) {
-          props.row.screenshots.push(savedPath);
-        }
-        emit('update:row', { ...props.row });
+        // 不直接改 props.row（见 buildNextRow 的说明）
+        const nextRow = buildNextRow((row) => {
+          if (!row.screenshots.includes(savedPath)) {
+            row.screenshots.push(savedPath);
+          }
+        });
+        emit('update:row', nextRow);
         const fileName = savedPath.split('\\').pop()?.split('/').pop() || '文件';
         ElMessage.success(`已添加 ${fileName}`);
-        emit('auto-save', props.row);
+        emit('auto-save', nextRow);
       }
     }
   } catch (error: any) {
@@ -282,10 +305,12 @@ function openFileExternal(file: any) {
 
 async function handleRemoveScreenshot(index: number) {
   const filePath = props.row.screenshots[index];
-  props.row.screenshots.splice(index, 1);
-  if (props.row.screenshotUrls) {
-    delete props.row.screenshotUrls[filePath];
-  }
+  const nextRow = buildNextRow((row) => {
+    row.screenshots.splice(index, 1);
+    if (row.screenshotUrls) {
+      delete row.screenshotUrls[filePath];
+    }
+  });
   if (filePath && window.api) {
     try {
       await window.api.screenshot.deleteFile({ filePath });
@@ -293,8 +318,8 @@ async function handleRemoveScreenshot(index: number) {
       console.warn('删除文件失败:', e);
     }
   }
-  emit('update:row', { ...props.row });
-  emit('auto-save', props.row);
+  emit('update:row', nextRow);
+  emit('auto-save', nextRow);
 }
 </script>
 

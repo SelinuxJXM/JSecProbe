@@ -28,7 +28,7 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             <span>导入</span>
           </button>
-          <button class="toolbar-btn" @click="handleExport">
+          <button class="toolbar-btn" title="导出项目完整数据（含资产、测评记录、附件）" @click="exportDialogVisible = true">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             <span>导出</span>
           </button>
@@ -51,6 +51,31 @@
         </div>
       </div>
 
+      <!-- 筛选面板：状态 + 标准体系，作用于当前页已加载数据 -->
+      <div v-if="showFilter" class="filter-panel">
+        <div class="filter-item">
+          <label class="filter-label">状态</label>
+          <select v-model="filterStatus" class="filter-select">
+            <option value="">全部</option>
+            <option value="draft">草稿</option>
+            <option value="in_progress">进行中</option>
+            <option value="completed">已完成</option>
+            <option value="archived">已归档</option>
+          </select>
+        </div>
+        <div class="filter-item">
+          <label class="filter-label">标准体系</label>
+          <select v-model="filterStandard" class="filter-select">
+            <option value="">全部</option>
+            <option v-for="std in standards" :key="std.id" :value="std.id">{{ std.name }}</option>
+          </select>
+        </div>
+        <button class="filter-reset" :disabled="activeFilterCount === 0" @click="resetFilter">清除筛选</button>
+        <span class="filter-summary">
+          筛选出 {{ filteredRows.length }} / {{ projectList.length }} 条
+        </span>
+      </div>
+
       <!-- 数据表格 -->
       <div class="table-wrapper" v-loading="loading" element-loading-text="正在加载项目列表...">
         <table class="data-table">
@@ -70,7 +95,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(row, index) in projectList" :key="row.id" :class="{ active: currentRowIndex === index, new: row.id < 0 }" @click="selectRow(index)" @dblclick="goToDetail(row)">
+            <tr v-for="(row, index) in filteredRows" :key="row.id" :class="{ active: currentRowIndex === index, new: row.id < 0 }" @click="selectRow(index)" @dblclick="goToDetail(row)">
               <td class="col-index">{{ row.id < 0 ? '新' : index + 1 }}</td>
               <td class="col-no">
                 <input v-if="row.id < 0 || editedRows.includes(String(row.id))" v-model="row.projectNo" class="cell-input mono" placeholder="DJCP-001（留空自动生成）" />
@@ -126,6 +151,9 @@
                 <button class="action-btn enter" @click.stop="goToDetail(row)" title="进入项目">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
                 </button>
+                <button class="action-btn export" @click.stop="exportSingleProject(row)" title="导出项目归档（含全部数据与附件）">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                </button>
                 <button class="action-btn edit" @click.stop="toggleEdit(row)" title="编辑">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                 </button>
@@ -138,11 +166,12 @@
               </td>
             </tr>
           </tbody>
-          <tbody v-if="!loading && projectList.length === 0">
+          <tbody v-if="!loading && filteredRows.length === 0">
             <tr>
               <td colspan="11" class="empty-cell">
-                <el-empty :description="emptyStateText">
-                  <el-button v-if="activeTab === 'active' && !keyword" type="primary" @click="addEmptyRow">新建第一个项目</el-button>
+                <el-empty :description="activeFilterCount > 0 ? '当前筛选条件下无匹配项目' : emptyStateText">
+                  <el-button v-if="activeFilterCount > 0" @click="resetFilter">清除筛选</el-button>
+                  <el-button v-else-if="activeTab === 'active' && !keyword" type="primary" @click="addEmptyRow">新建第一个项目</el-button>
                 </el-empty>
               </td>
             </tr>
@@ -184,9 +213,16 @@
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             <span>刷新</span>
           </button>
-          <button class="footer-btn primary" @click="saveAllChanges" :loading="saving" :disabled="editedCount === 0">
+          <!-- P3-7：`:loading` 是 Element Plus 的 prop，用在原生 <button> 上不会有任何效果，
+               保存过程中按钮既不变灰也不转圈（此前唯一的反馈是左下角那行"保存中..."）。
+               改用原生语义的 disabled，并让文案随状态变化，保存期间无法重复点击。 -->
+          <button
+            class="footer-btn primary"
+            @click="saveAllChanges"
+            :disabled="saving || editedCount === 0"
+          >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
-            <span>保存修改</span>
+            <span>{{ saving ? '保存中...' : '保存修改' }}</span>
           </button>
         </div>
       </div>
@@ -214,6 +250,20 @@
         @click="changeStatus(statusDropdownRow, 'completed')"
       >已完成</div>
     </div>
+
+    <!-- 项目归档：导出 / 导入 -->
+    <ProjectExportDialog
+      v-model:visible="exportDialogVisible"
+      :projects="exportOptions"
+      :busy="archiveBusy"
+      @confirm="confirmExport"
+    />
+    <ProjectImportDialog
+      v-model:visible="importDialogVisible"
+      :preview="archivePreview"
+      :busy="archiveBusy"
+      @confirm="confirmImport"
+    />
 
     <!-- 扩展类型多选弹窗 -->
     <div v-if="extDialogVisible" class="dialog-overlay" @click.self="closeExtDialog">
@@ -243,6 +293,8 @@ import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useAppStore } from '@/stores/app';
 import { useProjectAutoSave } from './composables/useProjectAutoSave';
+import ProjectExportDialog from './components/ProjectExportDialog.vue';
+import ProjectImportDialog from './components/ProjectImportDialog.vue';
 
 const router = useRouter();
 const appStore = useAppStore();
@@ -251,6 +303,9 @@ const saving = ref(false);
 const activeTab = ref('active');
 const keyword = ref('');
 const showFilter = ref(false);
+// 筛选条件（此前 showFilter 只切换自身布尔值、无任何消费者，点击筛选图标毫无效果）
+const filterStatus = ref('');
+const filterStandard = ref('');
 const projectList = ref<any[]>([]);
 const stats = reactive({ activeCount: 0, archivedCount: 0 });
 const currentRowIndex = ref(-1);
@@ -262,6 +317,24 @@ const emptyStateText = computed(() => {
   }
   return keyword.value ? '未找到匹配的项目' : '暂无项目';
 });
+
+// 表格实际渲染的行：在已加载数据上做本地筛选
+const filteredRows = computed(() => {
+  return projectList.value.filter((row: any) => {
+    if (filterStatus.value && row.status !== filterStatus.value) return false;
+    if (filterStandard.value && row.standardId !== filterStandard.value) return false;
+    return true;
+  });
+});
+
+const activeFilterCount = computed(
+  () => (filterStatus.value ? 1 : 0) + (filterStandard.value ? 1 : 0)
+);
+
+function resetFilter() {
+  filterStatus.value = '';
+  filterStandard.value = '';
+}
 
 // 标准库列表（新建项目时动态加载，替代硬编码 standardSystem 下拉框）
 const standards = ref<any[]>([]);
@@ -565,6 +638,9 @@ async function handleDelete(row: any) {
     deletedIds.value.push(String(row.id));
     editedRows.value = editedRows.value.filter(x => x !== String(row.id));
     projectList.value = projectList.value.filter(r => r.id !== row.id);
+    // 必须触发自动保存：周期保存的门槛 hasUnsavedChanges 只在 debounceAutoSave 中置位，
+    // 此前删除后不调用它，导致删除不手动保存就会被静默丢弃
+    debounceAutoSave();
   }
 }
 
@@ -598,20 +674,155 @@ async function toggleArchive(row: any) {
   }
 }
 
-async function handleImport() {
-  const res = await window.api.project.import();
-  if (res.success) {
-    ElMessage.success(`导入成功，共导入 ${res.data?.imported || 0} 个项目`);
-    loadProjects();
-  } else if (res.error?.message !== '用户取消') {
-    ElMessage.error(res.error?.message || '导入失败');
+// ============ 项目归档：整包导出 / 整包还原 ============
+//
+// 导出的不是"项目字段表"，而是这个项目在本系统里的全部：资产、测评记录、问题、
+// 采集任务与结果、截图证据等附件，以及测评记录依赖的标准与测评项。
+// 换台电脑或交给同事时，用「导入」可原样还原，不需要重新录入。
+const exportDialogVisible = ref(false);
+const importDialogVisible = ref(false);
+const archiveBusy = ref(false);
+const archivePreview = ref<any>(null);
+const pendingArchive = ref<{ path: string; password: string } | null>(null);
+
+// 导出候选 = 当前筛选后的可见行（与表格所见一致）
+const exportOptions = computed(() =>
+  filteredRows.value.map((r: any) => ({
+    id: r.id,
+    name: r.name,
+    systemName: r.systemName || '',
+    assetCount: r.assetCount || 0,
+  })),
+);
+
+async function confirmExport(payload: any) {
+  if (payload.format === 'excel') {
+    const res = await window.api.project.exportAll(payload.projectIds);
+    if (res.success) {
+      ElMessage.success('清单导出成功');
+      exportDialogVisible.value = false;
+    } else if (res.error?.message !== '用户取消') {
+      ElMessage.error(res.error?.message || '导出失败');
+    }
+    return;
+  }
+
+  archiveBusy.value = true;
+  try {
+    const res = await window.api.project.exportArchive({
+      projectIds: payload.projectIds,
+      password: payload.password || undefined,
+      includeStandards: payload.includeStandards,
+      includeCredentials: payload.includeCredentials,
+    });
+    if (res.success) {
+      const d: any = res.data || {};
+      exportDialogVisible.value = false;
+      const mb = ((d.size || 0) / 1024 / 1024).toFixed(2);
+      const missing = d.missingFiles?.length || 0;
+      ElMessage({
+        type: 'success',
+        duration: 4500,
+        showClose: true,
+        message: `归档导出成功：${mb} MB，含 ${d.fileCount || 0} 个附件${missing ? `（${missing} 个附件在磁盘上已找不到）` : ''}`,
+      });
+    } else if (res.error?.message !== '用户取消') {
+      ElMessage.error(res.error?.message || '导出失败');
+    }
+  } finally {
+    archiveBusy.value = false;
   }
 }
 
-async function handleExport() {
-  const res = await window.api.project.exportAll();
-  if (res.success) ElMessage.success('导出成功');
-  else if (res.error?.message !== '用户取消') ElMessage.error(res.error?.message || '导出失败');
+/** 操作列：单个项目直接打包（默认带标准、不带设备口令） */
+async function exportSingleProject(row: any) {
+  const res = await window.api.project.exportArchive({
+    projectIds: [row.id],
+    includeStandards: true,
+    includeCredentials: false,
+  });
+  if (res.success) {
+    const d: any = res.data || {};
+    ElMessage({
+      type: 'success',
+      duration: 4500,
+      showClose: true,
+      message: `已导出「${row.name}」：${((d.size || 0) / 1024 / 1024).toFixed(2)} MB，含 ${d.fileCount || 0} 个附件`,
+    });
+  } else if (res.error?.message !== '用户取消') {
+    ElMessage.error(res.error?.message || '导出失败');
+  }
+}
+
+async function handleImport() {
+  const sel = await window.api.project.selectArchive();
+  if (!sel.success) {
+    if (sel.error?.message !== '用户取消') ElMessage.error(sel.error?.message || '选择归档失败');
+    return;
+  }
+  const archivePath = sel.data?.path;
+  if (!archivePath) return;
+
+  let password = '';
+  if (sel.data?.encrypted) {
+    try {
+      const input = await ElMessageBox.prompt(
+        '该归档包已加密，请输入导出时设置的口令',
+        '需要口令',
+        { inputType: 'password', inputPlaceholder: '归档口令', confirmButtonText: '确定', cancelButtonText: '取消' },
+      );
+      password = input.value || '';
+    } catch {
+      return; // 用户取消
+    }
+  }
+
+  const pv = await window.api.project.previewArchive({ archivePath, password });
+  if (!pv.success) {
+    ElMessage.error(pv.error?.message || '无法读取该归档包');
+    return;
+  }
+  archivePreview.value = pv.data;
+  pendingArchive.value = { path: archivePath, password };
+  importDialogVisible.value = true;
+}
+
+async function confirmImport(strategy: 'skip' | 'overwrite' | 'copy') {
+  if (!pendingArchive.value) return;
+  archiveBusy.value = true;
+  try {
+    const res = await window.api.project.importArchive({
+      archivePath: pendingArchive.value.path,
+      password: pendingArchive.value.password,
+      strategy,
+    });
+    if (!res.success) {
+      ElMessage.error(res.error?.message || '导入失败');
+      return;
+    }
+    const d: any = res.data || {};
+    importDialogVisible.value = false;
+    archivePreview.value = null;
+    pendingArchive.value = null;
+    await loadProjects();
+
+    ElMessage({
+      type: 'success',
+      duration: 4500,
+      showClose: true,
+      message:
+        `导入完成：${d.imported?.length || 0} 个项目，${d.restoredFiles || 0} 个附件` +
+        (d.skipped?.length ? `，跳过 ${d.skipped.length} 个` : ''),
+    });
+    if (d.warnings?.length) {
+      ElMessageBox.alert(d.warnings.join('\n'), '导入提示', {
+        confirmButtonText: '知道了',
+        customStyle: { whiteSpace: 'pre-wrap' },
+      }).catch(() => {});
+    }
+  } finally {
+    archiveBusy.value = false;
+  }
 }
 
 onMounted(() => {
@@ -623,6 +834,12 @@ onMounted(() => {
 
 onUnmounted(() => {
   cleanup();
+  // P2-12：搜索防抖定时器此前从未清理，组件卸载后回调仍会触发 loadProjects()，
+  // 对已销毁的组件写入响应式状态，快速切换页面时可能用旧请求结果覆盖新数据。
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  }
   document.removeEventListener('click', handleGlobalClick);
 });
 </script>
@@ -810,6 +1027,72 @@ onUnmounted(() => {
   }
 }
 
+.filter-panel {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border: 1px solid var(--color-border-default, #E5E7EB);
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-bg-card, #FFFFFF);
+  margin-bottom: 12px;
+
+  .filter-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .filter-label {
+    font-size: 12px;
+    color: var(--color-text-secondary, #4B5563);
+    white-space: nowrap;
+  }
+
+  .filter-select {
+    height: 30px;
+    min-width: 140px;
+    padding: 0 8px;
+    border: 1px solid var(--color-border-default, #E5E7EB);
+    border-radius: var(--radius-md, 6px);
+    font-size: 12px;
+    color: var(--color-text-primary, #111827);
+    background: var(--color-bg-card, #FFFFFF);
+    outline: none;
+
+    &:focus {
+      border-color: var(--color-primary, #1B5FD9);
+    }
+  }
+
+  .filter-reset {
+    height: 30px;
+    padding: 0 12px;
+    border: 1px solid var(--color-border-default, #E5E7EB);
+    border-radius: var(--radius-md, 6px);
+    background: var(--color-bg-card, #FFFFFF);
+    font-size: 12px;
+    color: var(--color-text-secondary, #4B5563);
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      border-color: var(--color-primary, #1B5FD9);
+      color: var(--color-primary, #1B5FD9);
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+
+  .filter-summary {
+    font-size: 12px;
+    color: var(--color-text-tertiary, #9CA3AF);
+  }
+}
+
 .table-wrapper {
   overflow-x: auto;
 
@@ -822,7 +1105,7 @@ onUnmounted(() => {
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
-    min-width: 1100px;
+    min-width: 1180px;
 
     thead tr {
       background: var(--color-bg-hover);
@@ -847,7 +1130,7 @@ onUnmounted(() => {
         &.col-progress { width: 120px; }
         &.col-time { width: 140px; }
         &.col-status { width: 100px; position: sticky; right: 0; background: var(--color-bg-card, rgba(255, 255, 255, 0.85)); backdrop-filter: blur(8px); z-index: 2; border-left: 1px solid var(--color-border-light, #E5E7EB); border-right: none; }
-        &.col-actions { width: 120px; position: sticky; right: 0; background: var(--color-bg-card, rgba(255, 255, 255, 0.85)); backdrop-filter: blur(8px); z-index: 2; }
+        &.col-actions { width: 190px; position: sticky; right: 0; background: var(--color-bg-card, rgba(255, 255, 255, 0.85)); backdrop-filter: blur(8px); z-index: 2; }
       }
     }
 
@@ -1016,7 +1299,9 @@ onUnmounted(() => {
         z-index: 2;
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 6px;
+        padding: 0 8px;
+        box-sizing: border-box;
 
         .action-btn {
           display: flex;

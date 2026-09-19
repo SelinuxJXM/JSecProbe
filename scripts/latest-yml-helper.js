@@ -21,11 +21,16 @@ function ensureBlockmapInLatestYml(distDir, version) {
 
   for (const line of lines) {
     out.push(line);
-    if (inserted) continue;
     if (/^files:/.test(line)) {
       inFiles = true;
       continue;
     }
+    // 遇到下一个顶层键（非缩进）即视为离开 files 块，避免 inFiles 永不复位
+    if (inFiles && /^\S/.test(line)) {
+      inFiles = false;
+      continue;
+    }
+    // files 列表里的每个条目都补 blockmap，而不是只补第一个
     if (inFiles && /^\s+- url:/.test(line)) {
       out.push(`    blockmap: ${blockmapName}`);
       inserted = true;

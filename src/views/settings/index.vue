@@ -468,22 +468,35 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
+import { ref, reactive, onMounted, onUnmounted, watch, computed } from 'vue';
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus';
 import DOMPurify from 'dompurify';
 import { Download, Upload, InfoFilled, Plus, Refresh } from '@element-plus/icons-vue';
+import { useUserStore } from '@/stores/user';
 import { applyPrimaryColor, getSavedPrimaryColor, clearPrimaryColor, reapplyPrimaryColor, DEFAULT_PRIMARY_COLOR } from '@/utils/theme';
 import type { UpdateStatus } from '../../../shared/types';
 import StandardsTab from './components/StandardsTab.vue';
 
-const tabs = [
+const allTabs = [
   { key: 'settings', label: '常规设置' },
-  { key: 'users', label: '用户管理' },
+  { key: 'users', label: '用户管理', adminOnly: true },
   { key: 'logs', label: '操作日志' },
   { key: 'standards', label: '标准库管理' },
   { key: 'maintenance', label: '系统维护' },
 ];
 const activeTab = ref('settings');
+
+// 用户管理为管理员专属能力（后端 user:* 通道已强制 admin 角色）
+const userStore = useUserStore();
+const isAdmin = computed(() => userStore.user?.role === 'admin');
+const tabs = computed(() => allTabs.filter(t => !t.adminOnly || isAdmin.value));
+
+// 防止停留在无权限的标签页（如会话中角色被降权）
+watch(isAdmin, (admin) => {
+  if (!admin && activeTab.value === 'users') {
+    activeTab.value = 'settings';
+  }
+}, { immediate: true });
 
 const themeMode = ref('light');
 const primaryColor = ref(DEFAULT_PRIMARY_COLOR);
@@ -588,6 +601,8 @@ const showRestoreDialog = ref(false);
 const selectedBackupPath = ref('');
 const restoreMode = ref<'full' | 'incremental'>('full');
 const selectedProjectIds = ref<string[]>([]);
+/** 加密备份的解密口令（仅在恢复该备份期间存在于内存，不落盘） */
+const restorePassword = ref('');
 
 async function handleBackup() {
   try {
@@ -601,10 +616,35 @@ async function handleBackup() {
     if (!saveRes.success || !saveRes.data) {
       return;
     }
+
+    // 备份内含账号密码哈希、AI API Key、设备连接凭据。默认不加密以保持兼容，
+    // 但明确询问一次——备份外发（迁移到另一台机器）时这等于全量凭据泄露。
+    let password: string | undefined;
+    try {
+      const { value } = await ElMessageBox.prompt(
+        '备份文件包含账号密码哈希、AI API Key 与设备连接凭据。若备份需要拷出本机，强烈建议设置密码（请妥善保管，丢失后无法恢复）。留空表示不加密。',
+        '备份加密（可选）',
+        {
+          confirmButtonText: '开始备份',
+          cancelButtonText: '取消',
+          inputType: 'password',
+          inputPlaceholder: '留空表示不加密',
+          inputValidator: (v: string) =>
+            !v || v.length >= 8 ? true : '密码至少需要 8 位',
+        },
+      );
+      password = value && value.length >= 8 ? value : undefined;
+    } catch {
+      return; // 用户取消
+    }
     
-    const backupRes = await window.api.system.backupData(saveRes.data);
+    const backupRes = await window.api.system.backupData(saveRes.data, password);
     if (backupRes.success && backupRes.data) {
-      ElMessage.success(`备份成功，文件已保存至: ${backupRes.data}`);
+      ElMessage.success(
+        password
+          ? `备份成功（已加密），文件已保存至: ${backupRes.data}`
+          : `备份成功，文件已保存至: ${backupRes.data}`,
+      );
     } else {
       ElMessage.error(backupRes.error?.message || '备份失败');
     }
@@ -628,11 +668,36 @@ async function handleRestore() {
     backupPreview.value = null;
     selectedProjectIds.value = [];
     restoreMode.value = 'full';
-    
+    restorePassword.value = '';
+
     if (filePath.endsWith('.zip')) {
-      const previewRes = await window.api.system.previewBackup(filePath);
+      // 加密备份必须先拿到口令才能预览/恢复
+      const encRes = await window.api.system.isBackupEncrypted(filePath);
+      if (encRes.success && encRes.data) {
+        try {
+          const { value } = await ElMessageBox.prompt(
+            '该备份已加密，请输入备份密码。',
+            '需要备份密码',
+            {
+              confirmButtonText: '确定',
+              cancelButtonText: '取消',
+              inputType: 'password',
+              inputPlaceholder: '备份密码',
+              inputValidator: (v: string) => (v && v.length > 0 ? true : '请输入备份密码'),
+            },
+          );
+          restorePassword.value = value || '';
+        } catch {
+          return;
+        }
+      }
+
+      const previewRes = await window.api.system.previewBackup(filePath, restorePassword.value || undefined);
       if (previewRes.success && previewRes.data) {
         backupPreview.value = previewRes.data;
+      } else {
+        ElMessage.error(previewRes.error?.message || '无法预览备份文件');
+        return;
       }
     }
     
@@ -672,14 +737,16 @@ async function confirmRestore() {
       cancelButtonText: '取消',
     });
     
-    let options: { incremental: boolean; projectIds?: string[] } | undefined;
+    const options: { incremental: boolean; projectIds?: string[]; password?: string } = {
+      incremental: restoreMode.value === 'incremental',
+    };
     if (restoreMode.value === 'incremental') {
-      options = {
-        incremental: true,
-        projectIds: selectedProjectIds.value.length > 0 
-          ? JSON.parse(JSON.stringify(selectedProjectIds.value)) 
-          : undefined,
-      };
+      options.projectIds = selectedProjectIds.value.length > 0
+        ? JSON.parse(JSON.stringify(selectedProjectIds.value))
+        : undefined;
+    }
+    if (restorePassword.value) {
+      options.password = restorePassword.value;
     }
     
     const backupPath = String(selectedBackupPath.value);

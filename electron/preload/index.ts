@@ -95,10 +95,37 @@ const api = {
     create: ipc<any>('project:create'),
     update: ipc<any>('project:update'),
     remove: ipc<void>('project:remove'),
-    import: ipc<{ imported: number }>('project:import'),
     export: ipc<{ path: string }>('project:export'),
     exportAll: ipc<{ path: string }>('project:exportAll'),
     resolveStandardId: ipc<string>('project:resolveStandardId'),
+    // 项目归档：完整数据（资产/测评记录/问题/采集/附件/依赖标准）的导出与还原
+    exportArchive: ipc<{
+      success: boolean; path?: string; size?: number; fileCount?: number; missingFiles?: string[];
+    }>('project:exportArchive'),
+    selectArchive: ipc<{ path: string; encrypted: boolean }>('project:selectArchive'),
+    previewArchive: ipc<{
+      success: boolean;
+      manifest?: {
+        version: string; appVersion: string; createdAt: string;
+        projects: Array<{
+          id: string; name: string; systemName: string; level: number; status: string;
+          createdAt: string; assetCount: number; recordCount: number; issueCount: number; taskCount: number;
+        }>;
+        counts: Record<string, number>;
+        includeStandards: boolean; credentialsIncluded: boolean; encrypted: boolean;
+      };
+      projects?: Array<{ id: string; name: string; existsLocally: boolean; localName?: string; assetCount: number; recordCount: number; issueCount: number }>;
+      encrypted?: boolean;
+      warnings?: string[];
+    }>('project:previewArchive'),
+    importArchive: ipc<{
+      success: boolean;
+      imported: Array<{ id: string; name: string; mode: 'new' | 'overwrite' | 'copy' }>;
+      skipped: string[];
+      restoredFiles: number;
+      missingFiles: number;
+      warnings: string[];
+    }>('project:importArchive'),
   },
   asset: {
     list: ipc<any>('asset:list'),
@@ -212,6 +239,7 @@ const api = {
     backupData: ipc<string>('system:backupData'),
     restoreData: ipc<void>('system:restoreData'),
     previewBackup: ipc<any>('system:previewBackup'),
+    isBackupEncrypted: ipc<boolean>('system:isBackupEncrypted'),
     listBackups: ipc<any[]>('system:listBackups'),
     changeDataPath: ipc<string>('system:changeDataPath'),
   },

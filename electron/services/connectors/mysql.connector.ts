@@ -1,6 +1,7 @@
 import mysql from 'mysql2/promise';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
+import { logger as log } from '../../utils/logger';
 import type { IConnector, ExecResult } from './connector';
 import {
   parseExtraConfig,
@@ -9,6 +10,7 @@ import {
   formatRows,
   splitSqlStatements,
   assertReadonlySql,
+  isTlsHandshakeError,
 } from './db.util';
 
 export class MySqlConnector implements IConnector {
@@ -20,14 +22,30 @@ export class MySqlConnector implements IConnector {
     const cfg = parseExtraConfig(profile.extraConfig);
     const password = decryptSecret(profile.passwordEncrypted);
     this.commandTimeoutMs = getCommandTimeout(profile);
-    const conn = await mysql.createConnection({
+    const baseConfig = {
       host: profile.host,
       port: profile.port || 3306,
       user: profile.username || undefined,
       password: password || undefined,
       database: cfg.database || undefined,
       connectTimeout: profile.timeoutMs || 10000,
-    });
+    };
+    // 传输安全：优先以 TLS 连接（rejectUnauthorized:false = 接受自签/内网证书）。
+    // 原实现完全不启用 TLS，口令与查询结果明文过网。
+    // 服务端不支持 TLS 时自动降级并告警，避免内网老库直接连不上。
+    const useTls = cfg.ssl === undefined ? true : !!cfg.ssl;
+    const tlsConfig = useTls ? { ssl: { rejectUnauthorized: cfg.rejectUnauthorized === true } } : {};
+    let conn: mysql.Connection;
+    try {
+      conn = await mysql.createConnection({ ...baseConfig, ...tlsConfig });
+    } catch (err) {
+      if (useTls && isTlsHandshakeError(err)) {
+        log.warn(`[MySQL] ${profile.host} 不支持 TLS，已降级为明文连接（凭据与结果将以明文传输）`);
+        conn = await mysql.createConnection(baseConfig);
+      } else {
+        throw err;
+      }
+    }
     // mysql2 空闲期间服务端断连会在底层连接上 emit 'error'，无监听会打崩主进程；
     // 挂兜底监听防止进程级崩溃，连接错误交由后续 query 的异常捕获路径处理
     (conn as any).connection?.on?.('error', () => {});

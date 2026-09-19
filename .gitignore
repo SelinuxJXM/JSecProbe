@@ -26,6 +26,14 @@ dev-data
 .vscode
 .idea
 .trae/
+
+# WorkBuddy 本地工作数据（会话记忆/备份，不推送）
+.workbuddy/
+
+# 本地审查 / 核查记录：含安全问题明细与未修复项，只留本地，不对外推送
+docs/审查问题清单-2026-09-19.md
+docs/修复状态核查-2026-09-19.md
+docs/生产包修复生效验证-2026-09-19.md
 *.suo
 *.ntvs*
 *.njsproj
@@ -55,6 +63,8 @@ JSecProbeData
 
 # Tesseract traineddata (OCR 语言包由 tesseract.js 运行时自动下载)
 *.traineddata
+# 但随包发布的离线语言包必须入库，否则打包后 OCR 无语言数据可用
+!resources/tessdata/*.traineddata
 
 # 临时调试脚本（根目录下 _ 开头的一次性检查脚本）
 _*.js

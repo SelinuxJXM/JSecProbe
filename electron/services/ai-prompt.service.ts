@@ -558,9 +558,19 @@ export function validateTemplate(key: PromptKey, template: string): { ok: boolea
 
 // 渲染：按变量表替换；模板中出现但未提供的变量原样保留（便于用户发现拼写问题）
 export function renderTemplate(template: string, vars: Record<string, string>): string {
-  let result = template;
-  for (const [name, value] of Object.entries(vars)) {
-    result = result.split(`{{${name}}}`).join(value ?? '');
-  }
-  return result;
+  // 单遍替换（E11）。
+  //
+  // 原实现按变量表顺序反复 `split(...).join(...)`：若某个**变量的值**里含有
+  // `{{另一个变量}}`，它会在后续迭代中被二次展开。而变量值来自用户填写的证据文本、
+  // 资产名称等不可信输入 —— 用户只要在证据里写 `{{xxx}}` 就能注入模板指令，
+  // 视模板定义不同可改写 AI 的系统约束（二阶模板注入）。
+  //
+  // `String.replace` 只扫描原串一次，替换进去的内容不再参与匹配，从根本上消除该面；
+  // 同时也与 `extractVariables` 用同一套正则，支持 `{{ name }}` 这类带空格写法。
+  return template.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (match, rawName: string) => {
+    const name = rawName.trim();
+    if (!(name in vars)) return match; // 未提供：原样保留，便于发现拼写问题
+    const value = vars[name];
+    return value ?? '';
+  });
 }

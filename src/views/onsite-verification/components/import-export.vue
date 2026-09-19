@@ -9,7 +9,10 @@
       <template #dropdown>
         <el-dropdown-menu>
           <el-dropdown-item command="excel">导出Excel</el-dropdown-item>
-          <el-dropdown-item command="pdf">导出PDF</el-dropdown-item>
+          <!-- PDF 导出后端尚未实现：原实现点击后只弹 "功能开发中"，属于假入口，此处直接禁用避免误导 -->
+          <el-dropdown-item command="pdf" disabled title="暂未实现，请先用 Excel 导出后自行转换">
+            导出PDF（未实现）
+          </el-dropdown-item>
         </el-dropdown-menu>
       </template>
     </el-dropdown>
@@ -494,7 +497,9 @@ async function confirmImport() {
 
   importing.value = true;
   try {
-    const res = await window.api.assessment.importExcel(projectId, importFilePath.value, checkedSheetNames.value);
+    // 注意：checkedSheetNames.value 是 Vue 响应式 Proxy 数组，直接跨 contextBridge 传递会抛
+    // "An object could not be cloned"（v8 结构化克隆不支持 Proxy）。必须用展开/浅拷贝取出纯数组。
+    const res = await window.api.assessment.importExcel(projectId, importFilePath.value, [...checkedSheetNames.value]);
     if (res.success && res.data) {
       ElMessage.success(`成功导入 ${res.data.count} 条记录`);
       importDialogVisible.value = false;

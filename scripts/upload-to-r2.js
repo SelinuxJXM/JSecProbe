@@ -7,11 +7,14 @@ const ROOT = path.resolve(__dirname, '..');
 const DIST_DIR = path.join(ROOT, 'dist');
 
 const config = {
-  accountId: process.env.R2_ACCOUNT_ID || '5916e35f85cd5615d987c9b8a35398f8',
+  // 这些值过去被硬编码在此（真实账户信息随源码泄露），现全部强制从环境变量读取。
+  // bucket 的旧兜底还带拼写错误（'secporbe'），一旦环境变量没设就会静默传到错误的桶，
+  // 排查成本极高 —— 因此不保留任何兜底，缺哪个就报错退出。
+  accountId: process.env.R2_ACCOUNT_ID,
   accessKeyId: process.env.R2_ACCESS_KEY_ID,
   secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
-  bucket: process.env.R2_BUCKET || 'secporbe',
-  baseUrl: process.env.R2_BASE_URL || 'https://data.semove.ccwu.cc',
+  bucket: process.env.R2_BUCKET,
+  baseUrl: process.env.R2_BASE_URL,
 };
 
 function getPkgVersion() {
@@ -20,10 +23,21 @@ function getPkgVersion() {
 }
 
 async function main() {
-  if (!config.accessKeyId || !config.secretAccessKey) {
-    console.error('❌ 请设置环境变量:');
+  const missing = [
+    !config.accountId && 'R2_ACCOUNT_ID',
+    !config.accessKeyId && 'R2_ACCESS_KEY_ID',
+    !config.secretAccessKey && 'R2_SECRET_ACCESS_KEY',
+    !config.bucket && 'R2_BUCKET',
+    !config.baseUrl && 'R2_BASE_URL',
+  ].filter(Boolean);
+  if (missing.length > 0) {
+    console.error(`❌ 缺少环境变量: ${missing.join(', ')}`);
+    console.error('  参考 .env.example，例如：');
+    console.error('  set R2_ACCOUNT_ID=your_account_id');
     console.error('  set R2_ACCESS_KEY_ID=your_access_key_id');
     console.error('  set R2_SECRET_ACCESS_KEY=your_secret_access_key');
+    console.error('  set R2_BUCKET=secprobe');
+    console.error('  set R2_BASE_URL=https://your-r2-domain');
     process.exit(1);
   }
 

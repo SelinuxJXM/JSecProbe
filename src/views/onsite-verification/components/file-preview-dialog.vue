@@ -131,6 +131,9 @@ import { ref, computed, watch, nextTick } from 'vue';
 import { ElMessage } from 'element-plus';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
+// pdf.js 的 worker 随构建产物一起打包（?url 让 Vite 产出资源并返回其 URL），
+// 这样在内网/离线环境下预览 PDF 也能正常工作，无需访问外部 CDN。
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import {
   ArrowLeft,
   ArrowRight,
@@ -272,8 +275,9 @@ function renderContent() {
 async function loadPdf() {
   const pdfjsLib = await import('pdfjs-dist');
   
-  // 使用 CDN 加载 worker（避免 Vite 开发服务器问题）
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  // worker 使用本地打包产物：本工具常用于内网/离线现场，依赖 CDN 会导致 PDF 预览直接不可用，
+  // 同时避免从外部站点加载脚本。
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
   const data = await window.api.file.readAsArrayBuffer(filePath.value);
   if (!data.success) {
@@ -386,6 +390,16 @@ async function downloadFile() {
   const res = await window.api.knowledge.downloadAndSave(String(document.value.id));
   if (res.success && res.data && 'saved' in res.data && res.data.saved) {
     ElMessage.success('文件已保存');
+    return;
+  }
+  // 4.2「半假成功」：原实现只处理"确实保存成功"一种情况，其余一律零反馈。
+  // 失败（success=false）或用户取消保存对话框时，界面没有任何提示，
+  // 用户点了下载却不知道到底存没存下来。这里把失败与取消显式区分开。
+  if (!res.success) {
+    const msg = res.error?.message || '未知错误';
+    if (msg !== '用户取消') ElMessage.error('下载失败：' + msg);
+  } else {
+    ElMessage.warning('下载未完成：未返回保存结果');
   }
 }
 

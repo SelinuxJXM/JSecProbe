@@ -1,6 +1,22 @@
 import { sqliteTable, text, integer, real, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
+/**
+ * 外键策略说明（审查项 P1-14）
+ *
+ * 本 schema **故意不使用** `.references()`，尽管运行时开了 `PRAGMA foreign_keys = ON`。
+ * 原因：SQLite 无法给已存在的表追加 FOREIGN KEY 约束（只能重建表），
+ * 存量库不会获得这些约束 —— 若在 schema.ts 声明，会造成「新库有约束、老库没有」的行为分裂，
+ * 比统一不设约束更危险（开发以为有保护，生产实际裸奔）。
+ *
+ * 因此改用两条等价手段保证引用完整性：
+ * 1. **删除时显式级联**：`project:remove`（`ipc/project.ipc.ts`）与资产删除（`ipc/asset.ipc.ts`）
+ *    在事务内按子→父顺序手工清理，并对 `asset_id` 为空的 connection_profiles 做孤儿凭据清理。
+ * 2. **启动时检测**：`detectSchemaDrift()` / `detectOrphanData()`（`db/index.ts`）比对结构并报告孤儿行。
+ *
+ * 后续若确实需要外键，应在正式迁移里重建表（建新表→搬数据→改名），而不是只改本文件。
+ */
+
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
   username: text('username').notNull().unique(),
@@ -217,7 +233,9 @@ export const aiConfigs = sqliteTable('ai_configs', {
   apiKey: text('api_key'),
   apiBase: text('api_base'),
   model: text('model').default('gpt-4o-mini'),
-  temperature: real('temperature').notNull().default(0.3),
+  // 与迁移 0000_init.sql 及 initDefaultData() 的实际值保持一致（此前此处写 0.3，
+  // 而真实建表与初始化均为 0.7 —— 声明与实际漂移会让新库与老库行为不一致）
+  temperature: real('temperature').notNull().default(0.7),
   ocrProvider: text('ocr_provider').default('tesseract'),
   ocrApiKey: text('ocr_api_key'),
   enableAi: integer('enable_ai').notNull().default(0),
@@ -273,7 +291,9 @@ export const systemSettings = sqliteTable('system_settings', {
   autoBackupEnabled: integer('auto_backup_enabled').notNull().default(1),
   autoBackupDays: integer('auto_backup_days').notNull().default(7),
   dataPath: text('data_path'),
-  defaultStandard: text('default_standard').default('gb-t-22239-2019-l3'),
+  // 原默认 'gb-t-22239-2019-l3' 在种子标准库中并不存在，会造成"默认标准指向空标准"。
+  // 与 initDefaultData() 的实际写入保持一致：默认留空，由前端按"无标准"安全降级。
+  defaultStandard: text('default_standard').default(''),
   standardDataVersion: integer('standard_data_version').notNull().default(1),
   updatedAt: text('updated_at').notNull(),
 });

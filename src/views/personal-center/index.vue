@@ -173,6 +173,20 @@ async function handleSubmit() {
     form.oldPassword = '';
     form.newPassword = '';
     form.confirmPassword = '';
+
+    // P3-9：改密成功后服务端会作废该用户的全部会话（见 auth.service.changePassword），
+    // 若不重新登录，此后任何业务 IPC 都会报"会话无效或已过期"。
+    // change-password 页面会重新 login 并刷新 userStore，此处此前只清表单不刷新，
+    // 两处行为不一致 —— 在这里补齐同样的处理。
+    const username = userStore.user?.username || '';
+    if (username) {
+      const loginRes = await window.api.auth.login(username, form.newPassword);
+      if (loginRes.success && loginRes.data?.success && loginRes.data.user) {
+        userStore.setUser({ user: loginRes.data.user, token: loginRes.data.token });
+      } else {
+        ElMessage.warning('密码已修改，请重新登录');
+      }
+    }
   } finally {
     loading.value = false;
   }

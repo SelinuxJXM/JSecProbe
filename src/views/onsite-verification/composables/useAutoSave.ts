@@ -2,6 +2,7 @@ import { ref, type Ref } from 'vue';
 import type { RouteLocationNormalizedLoaded } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import type { AssessmentRecord } from '../../../../shared/types';
+import { formatSaveTime } from '@/utils/format-save-time';
 
 interface TableRow {
   id?: string;
@@ -173,14 +174,7 @@ export function useAutoSave(options: AutoSaveOptions) {
     return success;
   }
 
-  function formatSaveTime(date: Date): string {
-    const now = new Date();
-    const diff = Math.floor((now.getTime() - date.getTime()) / 1000);
-    if (diff < 5) return '刚刚';
-    if (diff < 60) return `${diff}秒前`;
-    if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  }
+  // formatSaveTime 已提升到 @/utils/format-save-time（三个自动保存 composable 共用同一份）
 
   function cleanup() {
     if (autoSaveTimer) {

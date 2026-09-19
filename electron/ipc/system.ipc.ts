@@ -7,7 +7,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { FileFilter } from '../../shared/types';
 import { getAppDataPath, setAppDataPath } from '../main/paths';
-import { createFullBackup, restoreFromZipBackup, restoreFromLegacyBackup, restoreFromZipBackupIncremental, previewZipBackup, listBackups } from '../services/backup.service';
+import {
+  validateReadablePath,
+  validateFsPath,
+  assertOpenablePath,
+  authorizeUserFiles,
+} from '../utils/path-resolver';
+import { createFullBackup, restoreFromZipBackup, restoreFromLegacyBackup, restoreFromZipBackupIncremental, previewZipBackup, listBackups, isBackupEncrypted } from '../services/backup.service';
 import { wrap } from '../utils/ipc-wrapper';
 
 function restartApp(): void {
@@ -23,20 +29,13 @@ function restartApp(): void {
   }
 }
 
-async function validatePath(inputPath: string): Promise<string> {
-  if (!inputPath) {
-    throw new Error('路径不能为空');
-  }
-  // 在解析前按路径段检查：拒绝显式包含的 '..'（路径穿越尝试）。
-  // 注意：path.resolve 会把 '../' 折叠为真实绝对路径，解析后字面 '..' 已不存在，
-  // 若仅在解析后做 includes('..') 判断会永远不命中，导致目录穿越穿透放行。
-  const segments = inputPath.split(/[\\/]/);
-  if (segments.includes('..')) {
-    throw new Error('路径访问被拒绝: 非法的路径格式');
-  }
-  return path.resolve(inputPath);
-}
-
+/**
+ * 可通过 shell 打开的可执行/脚本类扩展名黑名单。
+ *
+ * shell:openPath 会调用系统默认关联程序打开文件，若允许传入 .exe/.bat/.ps1 等，
+ * 渲染层一旦被挟持即可直接启动任意程序（等价于任意代码执行）。
+ * 业务上该通道只用于打开目录、报告(docx/xlsx/pdf)与知识库文档，因此直接拒绝这些扩展名。
+ */
 const SAFE_PATH_NAMES = ['userData', 'documents', 'downloads', 'desktop', 'temp'];
 
 function validatePathName(name: string): string {
@@ -137,21 +136,23 @@ export function registerSystemHandlers(): void {
   }, { moduleName: 'system', requireSession: true }));
 
   ipcMain.handle('shell:openPath', wrap(async (_event, filePath: string) => {
-    const safePath = await validatePath(filePath);
+    const safePath = await validateFsPath(filePath);
+    // 拒绝可执行/脚本类文件：防止渲染层借本通道启动任意程序
+    assertOpenablePath(safePath);
     const result = await shell.openPath(safePath);
     if (result) {
       throw new Error(result);
     }
-  }, 'system'));
+  }, { moduleName: 'system', requireSession: true }));
 
   ipcMain.handle('shell:openExternal', wrap(async (_event, url: string) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      await shell.openExternal(url);
-    } else {
-      const safePath = await validatePath(url);
-      await shell.openPath(safePath);
+    // 仅允许 http/https：此前 else 分支会把任意本地路径交给 shell.openPath，
+    // 等于对外暴露"打开任意文件"原语（可执行任意程序）。外部链接一律走浏览器。
+    if (!/^https?:\/\//i.test(url)) {
+      throw new Error('只允许打开 http/https 链接');
     }
-  }, 'system'));
+    await shell.openExternal(url);
+  }, { moduleName: 'system', requireSession: true }));
 
   ipcMain.handle('system:selectFile', wrap(async (_event, filters?: FileFilter[]) => {
     const result = await dialog.showOpenDialog({
@@ -161,6 +162,8 @@ export function registerSystemHandlers(): void {
     if (result.canceled || result.filePaths.length === 0) {
       return null;
     }
+    // 同 dialog:showOpenDialog：登记用户亲手挑选的文件，供后续免拷贝读取
+    authorizeUserFiles(result.filePaths);
     return result.filePaths[0];
   }, 'system'));
 
@@ -175,7 +178,7 @@ export function registerSystemHandlers(): void {
     return result.filePath;
   }, 'system'));
 
-  ipcMain.handle('system:backupData', wrap(async (_event, customPath?: string) => {
+  ipcMain.handle('system:backupData', wrap(async (_event, customPath?: string, password?: string) => {
     let backupPath: string;
 
     if (customPath) {
@@ -195,7 +198,7 @@ export function registerSystemHandlers(): void {
       backupPath = path.join(backupDir, `backup_${timestamp}.zip`);
     }
 
-    const result = await createFullBackup(backupPath);
+    const result = await createFullBackup(backupPath, password);
     if (!result.success) {
       throw new Error(result.error || '备份失败');
     }
@@ -203,7 +206,7 @@ export function registerSystemHandlers(): void {
     return result.path || backupPath;
   }, { moduleName: 'system', requireSession: true }));
 
-  ipcMain.handle('system:restoreData', wrap(async (_event, backupPath: string, options?: { incremental?: boolean; projectIds?: string[] }) => {
+  ipcMain.handle('system:restoreData', wrap(async (_event, backupPath: string, options?: { incremental?: boolean; projectIds?: string[]; password?: string }) => {
     if (!fs.existsSync(backupPath)) {
       throw new Error('备份文件不存在');
     }
@@ -224,9 +227,9 @@ export function registerSystemHandlers(): void {
 
     if (isZip) {
       if (options?.incremental) {
-        result = await restoreFromZipBackupIncremental(backupPath, options.projectIds);
+        result = await restoreFromZipBackupIncremental(backupPath, options.projectIds, options.password);
       } else {
-        result = await restoreFromZipBackup(backupPath);
+        result = await restoreFromZipBackup(backupPath, options?.password);
       }
     } else {
       result = await restoreFromLegacyBackup(backupPath);
@@ -241,13 +244,21 @@ export function registerSystemHandlers(): void {
     }, 500);
   }, { moduleName: 'system', requireSession: true }));
 
-  ipcMain.handle('system:previewBackup', wrap(async (_event, backupPath: string) => {
-    const preview = await previewZipBackup(backupPath);
+  ipcMain.handle('system:previewBackup', wrap(async (_event, backupPath: string, password?: string) => {
+    const preview = await previewZipBackup(backupPath, password);
     if (!preview) {
       return { success: false, error: '无法预览备份文件' };
     }
     return JSON.parse(JSON.stringify(preview));
   }, 'system'));
+
+  /** 备份是否已加密：UI 用它决定恢复前是否需要弹口令输入 */
+  ipcMain.handle('system:isBackupEncrypted', wrap(async (_event, backupPath: string) => {
+    if (!fs.existsSync(backupPath)) {
+      throw new Error('备份文件不存在');
+    }
+    return isBackupEncrypted(backupPath);
+  }, { moduleName: 'system', requireSession: true }));
 
   ipcMain.handle('system:listBackups', wrap(async () => {
     const backups = await listBackups();
@@ -284,6 +295,12 @@ export function registerSystemHandlers(): void {
   // Dialog handlers
   ipcMain.handle('dialog:showOpenDialog', wrap(async (_event, options) => {
     const result = await dialog.showOpenDialog(options);
+    // 登记「用户本次会话亲手挑选的文件」：后续读取这些文件（AI 分析附件等）
+    // 不必拷贝进数据目录，也就不会让数据目录随使用不断增长。登记表由主进程写入，
+    // 渲染层无法伪造，因此不构成「可读任意文件」的口子。
+    if (!result.canceled && result.filePaths.length > 0) {
+      authorizeUserFiles(result.filePaths);
+    }
     return result;
   }, 'system'));
 
@@ -304,14 +321,14 @@ export function registerSystemHandlers(): void {
   }, 'system'));
 
   ipcMain.handle('fs:ensureDir', wrap(async (_event, dirPath: string) => {
-    const safePath = await validatePath(dirPath);
+    const safePath = await validateFsPath(dirPath, { forWrite: true });
     if (!fs.existsSync(safePath)) {
       fs.mkdirSync(safePath, { recursive: true });
     }
   }, 'system'));
 
   ipcMain.handle('fs:writeFile', wrap(async (_event, filePath: string, data: string | Uint8Array | Buffer) => {
-    const safePath = await validatePath(filePath);
+    const safePath = await validateFsPath(filePath, { forWrite: true });
     const dir = path.dirname(safePath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -336,12 +353,13 @@ export function registerSystemHandlers(): void {
 
   // 读取文本文件（用于标准 JSON 导入等场景）
   ipcMain.handle('fs:readFile', wrap(async (_event, filePath: string) => {
-    const safePath = await validatePath(filePath);
+    // 「读文件内容」的语义明确：只接受受管数据目录内的文件，或用户亲手挑选过（已登记）的文件。
+    // 与 AI 附件、截图预览等通道保持同一套口径；调用方三条链路均为 dialog:showOpenDialog 返回值。
+    const safePath = await validateReadablePath(filePath);
     if (!fs.existsSync(safePath)) {
       throw new Error(`文件不存在: ${filePath}`);
     }
     const stat = fs.statSync(safePath);
-    // 方案 8.16：统一 50MB 字节校验（行标大 JSON 可达 30~50MB；此前 10MB 保守限制太小，会拦大标准导入）
     const IMPORT_MAX_FILE_BYTES = 50 * 1024 * 1024;
     if (stat.size > IMPORT_MAX_FILE_BYTES) {
       throw new Error(`文件过大（最大 ${(IMPORT_MAX_FILE_BYTES / 1024 / 1024).toFixed(0)}MB），请检查是否选错了文件`);
@@ -351,7 +369,7 @@ export function registerSystemHandlers(): void {
 
   // 读取二进制文件为 base64（用于 Excel 标准导入等场景）
   ipcMain.handle('fs:readFileBase64', wrap(async (_event, filePath: string) => {
-    const safePath = await validatePath(filePath);
+    const safePath = await validateReadablePath(filePath);
     if (!fs.existsSync(safePath)) {
       throw new Error(`文件不存在: ${filePath}`);
     }
@@ -365,7 +383,7 @@ export function registerSystemHandlers(): void {
 
   // 写文本文件（utf-8，用于标准 JSON 导出等场景）
   ipcMain.handle('fs:writeTextFile', wrap(async (_event, filePath: string, data: string) => {
-    const safePath = await validatePath(filePath);
+    const safePath = await validateFsPath(filePath, { forWrite: true });
     const dir = path.dirname(safePath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });

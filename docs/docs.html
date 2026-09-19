@@ -541,7 +541,7 @@ body {
   <aside class="sidebar" id="sidebar" aria-label="目录导航">
     <div class="sidebar-header">
       <div class="sidebar-title"><a href="index.html">📄 产品白皮书</a></div>
-      <div class="sidebar-subtitle">JSecProbe V2.4.1</div>
+      <div class="sidebar-subtitle">JSecProbe V2.4.2</div>
     </div>
     <nav aria-label="目录">
       <div class="toc">
@@ -678,7 +678,7 @@ body {
   <main class="content" id="main-content">
     <article class="article">
       <h1>JSecProbe 等级保护现场测评系统</h1>
-      <p class="subtitle">产品白皮书 · 当前版本 V2.4.1 · 技术标准 GB/T 22239-2019</p>
+      <p class="subtitle">产品白皮书 · 当前版本 V2.4.2 · 技术标准 GB/T 22239-2019</p>
 
       <h2 id="intro">一、产品概述</h2>
 
@@ -841,13 +841,14 @@ body {
       </ul>
       <h4 id="h4-332项目状态流转">3.3.2 项目状态流转</h4>
       <pre><code>草稿 → 进行中 → 已完成 → 已归档</code></pre>
-      <h4 id="h4-333项目导入导出">3.3.3 项目导入/导出</h4>
+      <h4 id="h4-333项目导入导出">3.3.3 项目导入/导出（整包归档）</h4>
+      <p>项目列表页的「导入 / 导出」是<strong>整包带走、整包还原</strong>，可用于跨机器迁移与备份恢复。</p>
       <table>
         <thead><tr><th>操作</th><th>格式</th><th>说明</th></tr></thead>
         <tbody>
-          <tr><td>导出单项目</td><td>Excel</td><td>含项目基本信息 + 资产列表</td></tr>
-          <tr><td>导出全部项目</td><td>Excel</td><td>所有项目的汇总清单</td></tr>
-          <tr><td>导入项目</td><td>Excel</td><td>从模板批量导入项目</td></tr>
+          <tr><td>导出项目</td><td>ZIP 归档</td><td>可勾选多个项目：项目本体与成员、资产台账与连接配置、测评记录、问题清单、采集任务/结果/文档、所引用的截图与证据文件，以及项目依赖的测评标准与测评项；可设口令加密（设备连接口令默认不带走）</td></tr>
+          <tr><td>导出项目</td><td>Excel</td><td>仅在导出对话框中切换为「表格清单」时使用，字段齐全但<strong>不能导回</strong>，仅供汇总查看</td></tr>
+          <tr><td>导入项目</td><td>ZIP 归档</td><td>先预览包内项目/资产/记录/问题/附件数量与告警，再选择冲突处理：另存为副本（推荐）、覆盖、或跳过</td></tr>
         </tbody>
       </table>
 
@@ -1402,6 +1403,22 @@ body {
             </td>
           </tr>
           <tr>
+            <td>白皮书 V1.4</td><td>V2.4.2</td>
+            <td>
+              <ul style="margin:0 0 0 18px;padding:0;">
+                <li>数据：项目「导入 / 导出」升级为整包归档（ZIP）—— 含项目本体、资产台账、测评记录、问题清单、采集数据与引用附件，并随包携带依赖的测评标准与测评项；支持口令加密、冲突策略（副本/覆盖/跳过）</li>
+                <li>数据：导入后按真实数据重算项目资产数与测评进度，不再沿用归档中的旧值</li>
+                <li>修复：AI 助手发消息长时间无响应（HTTP/2 长连接在服务端静默挂起，改为每次请求新建连接）</li>
+                <li>修复：现场核查导入测评结果报「无法克隆对象」（响应式对象跨 IPC 传递）；表格每次点击行高累加导致不断变宽</li>
+                <li>一致性：现场核查页、问题清单页、测评报告的「符合率」统一为同一口径（含格内校验）</li>
+                <li>修复：测评报告符合率恒为 0（改为读取实时计算结果，不再依赖未回写的冗余字段）</li>
+                <li>安全：文件读取路径校验收口 —— 仅放行受管数据目录内或用户亲手在对话框中挑选过的文件；截图上传、知识库上传、导出附件等通道统一接入</li>
+                <li>体验：页面切换过渡时长调优；移除系统构成页无用的「新增资产」按钮</li>
+                <li>3.3.3 项目导入/导出 章节按新的归档机制重写</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
             <td>白皮书 V1.3</td><td>V2.4.1</td>
             <td>
               <ul style="margin:0 0 0 18px;padding:0;">
@@ -1438,7 +1455,7 @@ body {
 
       <hr>
       <p style="text-align:center;color:var(--gray-500);font-size:14px;padding:20px 0;">
-        <em>本文档最后更新：2026 年 9 月（V1.3，对应 V2.4.1）</em><br>
+        <em>本文档最后更新：2026 年 9 月（V1.4，对应 V2.4.2）</em><br>
         <strong>JSecProbe - 让等保测评更高效、更规范、更智能</strong>
       </p>
     </article>

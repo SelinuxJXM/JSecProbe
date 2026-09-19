@@ -284,12 +284,6 @@
                     <el-tag v-if="(cmd as any).industry" size="small" type="warning">{{ (cmd as any).industry }}</el-tag>
                     <el-tag v-else size="small" effect="plain">通用</el-tag>
                   </span>
-                  <datalist id="cmd-industry-list">
-                    <option v-for="p in INDUSTRY_PRESETS" :key="p" :value="p">{{ p }}</option>
-                    <option v-for="s in commandIndustryStats" :key="'dl-' + s.industry" :value="s.industry">
-                      {{ s.industry || '通用' }}
-                    </option>
-                  </datalist>
                 </td>
                 <td class="cmd-fav" @click="toggleFavorite(cmd)">
                   <span v-if="cmd.isFavorite" class="fav-active">&#9733;</span>
@@ -315,6 +309,19 @@
             </tbody>
           </table>
           <el-empty v-else-if="!commandLoading" description="暂无命令" />
+          <!-- P3-6：该 datalist 原先写在命令行的 v-for 内，每行都会渲染出一个
+               id="cmd-industry-list" 的重复节点 —— 重复 id 会让浏览器的 list 关联
+               行为未定义（实际只认第一个），且 100+ 行时白白多出上百个无用 DOM。
+               datalist 的作用域是文档级的，放在表格外只声明一次即可被所有 input 引用。
+               注意：必须排在 <el-empty v-else-if> 之后 —— 它不带 v-if/v-else-if，
+               夹在 v-if 链中间会切断条件链，导致模板编译报
+               "v-else/v-else-if has no adjacent v-if"，生产构建直接失败。 -->
+          <datalist id="cmd-industry-list">
+            <option v-for="p in INDUSTRY_PRESETS" :key="p" :value="p">{{ p }}</option>
+            <option v-for="s in commandIndustryStats" :key="'dl-' + s.industry" :value="s.industry">
+              {{ s.industry || '通用' }}
+            </option>
+          </datalist>
         </div>
 
         <div class="kb-pagination-bar">
@@ -1122,7 +1129,11 @@ async function loadCommandIndustries() {
     if (res.success && Array.isArray(res.data)) {
       commandIndustryStats.value = res.data;
     }
-  } catch { /* ignore */ }
+  } catch (e) {
+    // 4.2：原实现是完全空的 catch。行业维度加载失败时下拉框会静默为空，
+    // 用户只会以为"本来就没有任何行业"，不会意识到是请求失败了
+    console.warn('[knowledge-base] 加载命令库行业维度失败:', e);
+  }
 }
 
 function addEmptyCommand() {
@@ -1529,7 +1540,9 @@ async function loadAssets() {
     } else {
       assetList.value = [];
     }
-  } catch {
+  } catch (e) {
+    // 4.2：静默置空会让用户以为"当前项目确实没有资产"，实际是请求失败
+    console.warn('[knowledge-base] 加载资产列表失败:', e);
     assetList.value = [];
   }
 }
@@ -1551,7 +1564,9 @@ async function loadAssessments() {
     } else {
       assessmentList.value = [];
     }
-  } catch {
+  } catch (e) {
+    // 4.2：静默置空会让用户以为"该标准没有核查项"，实际是请求失败
+    console.warn('[knowledge-base] 加载核查项列表失败:', e);
     assessmentList.value = [];
   }
 }

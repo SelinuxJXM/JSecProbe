@@ -535,125 +535,16 @@ export function registerAssetHandlers(): void {
         '安全人员': 'security_personnel',
       };
 
-      const COLUMNS_MAP: Record<string, { header: string; key: string; width: number }[]> = {
-        machine_room: [
-          { header: '机房名称', key: 'name', width: 25 },
-          { header: '机房位置', key: 'os', width: 30 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        network_boundary: [
-          { header: '边界名称', key: 'name', width: 25 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        network_device: [
-          { header: '设备名称', key: 'name', width: 25 },
-          { header: '虚拟设备', key: 'isVirtual', width: 10 },
-          { header: '系统及版本', key: 'os', width: 25 },
-          { header: '品牌及型号', key: 'version', width: 20 },
-          { header: '设备用途', key: 'deviceUsage', width: 20 },
-          { header: '数量', key: 'quantity', width: 8 },
-          { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        security_device: [
-          { header: '设备名称', key: 'name', width: 25 },
-          { header: '虚拟设备', key: 'isVirtual', width: 10 },
-          { header: '系统及版本', key: 'os', width: 25 },
-          { header: '品牌及型号', key: 'version', width: 20 },
-          { header: '设备用途', key: 'deviceUsage', width: 20 },
-          { header: '数量', key: 'quantity', width: 8 },
-          { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        server_storage: [
-          { header: '设备名称', key: 'name', width: 25 },
-          { header: '虚拟设备', key: 'isVirtual', width: 10 },
-          { header: '操作系统及版本', key: 'os', width: 25 },
-          { header: '数据库系统及版本', key: 'dbSystem', width: 22 },
-          { header: '中间件及版本', key: 'middleware', width: 22 },
-          { header: '数量', key: 'quantity', width: 8 },
-          { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        sys_doc: [
-          { header: '文档名称', key: 'name', width: 25 },
-          { header: '文档主要内容', key: 'os', width: 30 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        management_platform: [
-          { header: '平台名称', key: 'name', width: 25 },
-          { header: '所在设备名称', key: 'os', width: 25 },
-          { header: '版本', key: 'version', width: 20 },
-          { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '主要功能', key: 'deviceUsage', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        business_app: [
-          { header: '应用系统名称', key: 'name', width: 25 },
-          { header: '软件及版本', key: 'os', width: 25 },
-          { header: '主要功能', key: 'deviceUsage', width: 25 },
-          { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        terminal: [
-          { header: '设备名称', key: 'name', width: 25 },
-          { header: '虚拟设备', key: 'isVirtual', width: 10 },
-          { header: '操作系统及版本', key: 'os', width: 25 },
-          { header: '设备类别/用途', key: 'deviceUsage', width: 20 },
-          { header: '数量', key: 'quantity', width: 8 },
-          { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        data_resource: [
-          { header: '数据类别', key: 'name', width: 25 },
-          { header: '所属业务应用', key: 'os', width: 25 },
-          { header: '安全防护需求', key: 'deviceUsage', width: 25 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        other_asset: [
-          { header: '设备名称', key: 'name', width: 25 },
-          { header: '虚拟设备', key: 'isVirtual', width: 10 },
-          { header: '系统及版本', key: 'os', width: 25 },
-          { header: '设备类别/用途', key: 'deviceUsage', width: 20 },
-          { header: '备注', key: 'description', width: 40 },
-          { header: 'IP地址', key: 'ip', width: 18 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        crypto_product: [
-          { header: '产品/模块名称', key: 'name', width: 25 },
-          { header: '生产厂商', key: 'version', width: 20 },
-          { header: '证书编号', key: 'dbSystem', width: 22 },
-          { header: '密码算法', key: 'middleware', width: 20 },
-          { header: '用途', key: 'deviceUsage', width: 25 },
-          { header: '重要程度', key: 'importance', width: 12 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-        security_personnel: [
-          { header: '姓名', key: 'name', width: 20 },
-          { header: '岗位/角色', key: 'deviceUsage', width: 20 },
-          { header: '联系方式', key: 'ip', width: 18 },
-          { header: '所属单位', key: 'os', width: 25 },
-          { header: '测评对象', key: 'isAssessmentTarget', width: 10 },
-        ],
-      };
+      // 列定义统一复用 excel-config 的 ASSET_COLUMNS_MAP：导入模板生成与导入解析共用同一份真相，
+      // 避免两份列定义各自演进导致"改了模板没改解析"（或反之）时静默写错字段。
+      // 导入解析不需要导出模板里的「序号」列，故在此过滤掉。
+      const COLUMNS_MAP: Record<string, { header: string; key: string; width: number }[]> =
+        Object.fromEntries(
+          Object.entries(ASSET_COLUMNS_MAP).map(([cat, cols]) => [
+            cat,
+            cols.filter((c) => c.key !== 'index'),
+          ]),
+        );
 
       const importFromSheet = async (worksheet: ExcelJS.Worksheet, category: string) => {
         const columns = COLUMNS_MAP[category] || COLUMNS_MAP.network_device;

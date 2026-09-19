@@ -51,16 +51,21 @@ npm run dev
 
 ### 构建打包
 
+> 当前仅提供 Windows 构建目标（`build.win.target: nsis / portable`）。
+
 ```bash
-# 打包为 Windows 可执行程序
+# 打包为 Windows 安装程序（exe + blockmap + latest.yml）
 npm run build:win
 
-# 打包为 macOS 可执行程序
-npm run build:mac
+# 打包为 Windows 便携版（免安装，单文件 exe）
+npm run build:portable
 
-# 打包为 Linux 可执行程序
-npm run build:linux
+# 完整构建流程（含类型检查，输出到 dist/ 并准备发布产物）
+npm run build:win:full
 ```
+
+> macOS / Linux 产物需在对应平台上构建（electron-builder 的 dmg 目标依赖 macOS），
+> 本项目未提供 `build:mac` / `build:linux` 脚本。
 
 ## 📁 项目结构
 

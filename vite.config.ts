@@ -22,7 +22,6 @@ export default defineConfig({
                 'electron-updater',
                 'bcryptjs',
                 'exceljs',
-                'xlsx',
                 'docx',
                 'tesseract.js',
                 'compressing',
@@ -82,7 +81,9 @@ export default defineConfig({
           'vendor-vue': ['vue', 'vue-router', 'pinia'],
           'vendor-element': ['element-plus'],
           'vendor-charts': ['echarts', 'vue-echarts'],
-          'vendor-docs': ['docx', 'exceljs', 'xlsx', 'pdf-parse', 'pdfjs-dist', 'mammoth'],
+          // 注意：不要在此写入未声明的依赖（此前误列了已移除的 xlsx），
+          // 否则列了却装不上会让 manualChunks 静默失效。
+          'vendor-docs': ['docx', 'exceljs', 'pdf-parse', 'mammoth'],
           'vendor-utils': ['marked', 'dompurify'],
         },
       },

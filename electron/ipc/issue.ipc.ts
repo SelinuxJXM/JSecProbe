@@ -2,13 +2,14 @@ import { ipcMain, dialog } from 'electron';
 import log from 'electron-log';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, and, count, sql, or, desc, asc, inArray, lte } from 'drizzle-orm';
+import { eq, and, count, sql, or, desc, asc, inArray } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import ExcelJS from 'exceljs';
 import * as path from 'path';
 import * as fs from 'fs';
 import { getRowMaxHeight, styleCell } from '../utils/excel-helper';
 import { wrap } from '../utils/ipc-wrapper';
+import { computeAssessmentProgress } from '../services/assessment-progress';
 
 // 国标十域 fallback（兼容旧标准库、未配置 domainsMeta 的标准）
 // 改造：动态化后端，所有 issue 相关的域名/排序按项目 standardId 从 standards.domainsMeta 加载
@@ -470,103 +471,10 @@ export function registerIssueHandlers(): void {
       const domainCounts: Record<string, number> = {};
       domainStatsResult.forEach((row: any) => { domainCounts[row.securityDomain] = row.count; });
 
-      const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
-
-      // 解析项目扩展类型
-      const EXT_TYPE_MAP: Record<string, string> = {
-        '安全通用要求': 'general',
-        '云计算安全扩展要求': 'cloud',
-        '移动互联安全扩展要求': 'mobile',
-        '物联网安全扩展要求': 'iot',
-        '工业控制系统安全扩展要求': 'industrial',
-        '大数据安全扩展要求': 'bigdata',
-        '大数据安全扩展要求（国标附录）': 'bigdata',
-        '关键信息基础设施安全扩展要求': 'cii',
-      };
-      const projectExtCodes: string[] = [];
-      if (project?.extensionType) {
-        for (const t of project.extensionType.split(',').filter(Boolean)) {
-          const code = EXT_TYPE_MAP[t.trim()] || t.trim();
-          if (!projectExtCodes.includes(code)) projectExtCodes.push(code);
-        }
-      }
-
-      // 构建扩展类型过滤条件
-      const extOrConditions = [eq(schema.assessmentItems.extensionType, 'general')];
-      for (const ext of projectExtCodes) {
-        extOrConditions.push(eq(schema.assessmentItems.extensionType, ext));
-      }
-      const extOr = or(...extOrConditions);
-
-      // === 解析有效 standardId（移除硬编码 gb-t-22239-2019-l3，兼容老项目/被删标准）===
-      // 策略：项目绑定值（trim 后合法） → 同 grade=project.level → isDefault=1 → 列表首条；找不到则空串（适用项=0，进度=0）
-      const projectRawStandard = typeof project?.standardId === 'string' ? project.standardId.trim() : '';
-      const level = Number(project?.level) || 3;
-      const standardsAll = await db
-        .select({ id: schema.standards.id, grade: schema.standards.grade, isDefault: schema.standards.isDefault })
-        .from(schema.standards);
-      let standardId = '';
-      if (projectRawStandard && standardsAll.some(s => s.id === projectRawStandard)) {
-        standardId = projectRawStandard;
-      } else if (standardsAll.length > 0) {
-        const sameGrade = standardsAll.find(s => Number(s.grade) === level);
-        const def = standardsAll.find(s => Number(s.isDefault) === 1);
-        standardId = (sameGrade || def || standardsAll[0]).id;
-      }
-
-      // 适用范围条件：无 standardId 时不再生成硬编码条件，保证 DB 查 0 条不报错
-      const applicableConditions: any[] = [];
-      if (standardId) applicableConditions.push(eq(schema.assessmentItems.standardId, standardId));
-      if (standardId) applicableConditions.push(extOr);
-      if (project?.level) applicableConditions.push(lte(schema.assessmentItems.minLevel, project.level));
-
-      // 子查询：适用范围的项ID（空条件退回永远假，避免 inArray 传空数组导致 SQL 语法错误）
-      const hasApplicableFilters = applicableConditions.length > 0;
-      const itemIdsSubquery = hasApplicableFilters
-        ? db
-            .select({ id: schema.assessmentItems.id })
-            .from(schema.assessmentItems)
-            .where(and(...applicableConditions))
-        : db
-            .select({ id: schema.assessmentItems.id })
-            .from(schema.assessmentItems)
-            .where(sql`0 = 1`)
-            .limit(0);
-
-      const testedRecords = await db
-        .select({ value: count() })
-        .from(schema.assessmentRecords)
-        .where(and(
-          eq(schema.assessmentRecords.projectId, projectId),
-          inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-          sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'not_applicable')`
-        ));
-
-      const compliantRecords = await db
-        .select({ value: count() })
-        .from(schema.assessmentRecords)
-        .where(and(
-          eq(schema.assessmentRecords.projectId, projectId),
-          inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-          sql`result IN ('compliant', 'conform')`
-        ));
-
-      const naRecords = await db
-        .select({ value: count() })
-        .from(schema.assessmentRecords)
-        .where(and(
-          eq(schema.assessmentRecords.projectId, projectId),
-          inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-          sql`result = 'not_applicable'`
-        ));
-
-      const tested = testedRecords[0]?.value || 0;
-      const compliant = compliantRecords[0]?.value || 0;
-      const na = naRecords[0]?.value || 0;
-      const effectiveTested = Math.max(0, tested - na);
-      const complianceRate = effectiveTested > 0
-        ? Number(((compliant / effectiveTested) * 100).toFixed(2))
-        : 0;
+      // 符合率统一走 services/assessment-progress（格内口径），与「现场核查页」完全一致。
+      // 此前这里只按 itemId 过滤、不做格内校验，跨层面错配的记录会被计入，两页数字因此不一致。
+      const progress = await computeAssessmentProgress(projectId);
+      const complianceRate = progress.complianceRate;
 
       return {
         total,

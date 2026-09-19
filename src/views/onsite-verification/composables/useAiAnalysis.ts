@@ -1,4 +1,4 @@
-import { ref, computed, type Ref } from 'vue';
+import { ref, computed, nextTick, type Ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import type { AssessmentRecord } from '../../../../shared/types';
 
@@ -29,7 +29,7 @@ interface UseAiAnalysisOptions {
  */
 export function useAiAnalysis(options: UseAiAnalysisOptions) {
   const { tableRows, saveAllRows, projectId: _projectId, standardId, domainId, currentItemId } = options;
-  // projectId 保留给后续扩展（如：批量 AI 分析时需要按项目级日志统计等），解构显式命名以消除 TS6133
+  // projectId 保留给后续扩展，解构显式命名以消除 TS6133
 
   // AI配置（用于获取OCR预处理设置）
   const aiConfig = ref<any>(null);
@@ -211,7 +211,14 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
         throw ipcError;
       }
 
-      aiStep.value = 6;
+      // 步骤推进（P2-9）：原实现从 2 直接跳到 6，中间 3/4/5 从未赋值，
+      // 而界面渲染的是 6 步流程条 —— 用户看到进度条从第 2 步瞬间跳到第 6 步，
+      // 以为是"AI 已完成"，实际只是跳过了显示。这里按真实阶段逐步推进：
+      // 3 拿到返回 → 4 判定合规性 → 5 提取证据点 → 6 生成结论。
+      // nextTick 让每步都能被渲染出来，而不是在同一帧内被最后的 6 覆盖。
+      aiStep.value = 3;
+      aiLoadingText.value = 'AI已返回结果，正在解析...';
+      await nextTick();
 
       if (res.success && res.data) {
         try {
@@ -244,7 +251,17 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
             }
           }
 
+          // 步骤 4：判定合规性
+          aiStep.value = 4;
+          aiLoadingText.value = '正在判定合规性...';
+          await nextTick();
+
           if (analysis) {
+            // 步骤 5：提取关键证据点
+            aiStep.value = 5;
+            aiLoadingText.value = '正在提取关键证据点...';
+            await nextTick();
+
             aiAnalysisResult.value = {
               controlPoint: row.controlPoint || '',
               requirement: row.requirement || '',
@@ -254,8 +271,14 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
               compliance: analysis.compliance || '待判定',
               conclusion: analysis.conclusion || '',
             };
+            // 步骤 6：生成测评结论
+            aiStep.value = 6;
+            aiLoadingText.value = '已生成测评结论';
             aiLoading.value = false;
           } else {
+            aiStep.value = 5;
+            aiLoadingText.value = '正在提取关键证据点...';
+            await nextTick();
             aiAnalysisResult.value = {
               controlPoint: row.controlPoint || '',
               requirement: row.requirement || '',
@@ -265,6 +288,8 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
               compliance: '待判定',
               conclusion: content,
             };
+            aiStep.value = 6;
+            aiLoadingText.value = '已生成测评结论';
             aiLoading.value = false;
           }
         } catch {
@@ -403,6 +428,10 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
             dataUrl = `data:${imgRes.data.mimeType};base64,${imgRes.data.base64}`;
           }
         }
+        // 直接使用用户挑选的原始路径，**不拷贝**：
+        // dialog:showOpenDialog 返回时主进程已把该文件登记为「本次会话授权」，
+        // document:extractText 据此放行（见 utils/path-resolver 的 authorizeUserFiles）。
+        // 这样分析附件不会被复制进数据目录——批量分析是一次性输入，不该占用归档空间。
         batchFiles.value.push({ id, path: filePath, name: fileName, fileType, dataUrl });
       }
     } catch (error) {

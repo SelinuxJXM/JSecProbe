@@ -6,6 +6,16 @@ import { randomUUID } from 'crypto';
 import bcrypt from 'bcryptjs';
 import { wrap } from '../utils/ipc-wrapper';
 
+/** 合法角色白名单：防止客户端传入任意角色值（如超级管理员）造成越权 */
+const VALID_ROLES = ['admin', 'assessor'] as const;
+
+function assertValidRole(role: unknown): string {
+  if (typeof role !== 'string' || !VALID_ROLES.includes(role as typeof VALID_ROLES[number])) {
+    throw new Error(`非法角色值：${String(role)}（仅支持 ${VALID_ROLES.join(' / ')}）`);
+  }
+  return role as string;
+}
+
 export function registerUserHandlers(): void {
   ipcMain.handle('user:list', wrap(async () => {
       const db = getDb();
@@ -22,12 +32,15 @@ export function registerUserHandlers(): void {
         createdAt: u.createdAt,
         updatedAt: u.updatedAt,
       }));
-    }, { moduleName: 'user', requireSession: true }));
+      // 用户管理属管理类操作：强制管理员角色（角色校验隐含会话校验）
+    }, { moduleName: 'user', requireRole: ['admin'] }));
 
   ipcMain.handle('user:create', wrap(async (_event, data: { username: string; password: string; realName: string; email?: string; phone?: string; role?: string }) => {
       if (!data.username || data.username.length < 3) throw new Error('用户名至少3个字符');
       if (!data.realName) throw new Error('请输入姓名');
       if (!data.password) throw new Error('请输入密码');
+      if (data.password.length < 8) throw new Error('密码长度不能少于 8 位');
+      if (typeof data.role === 'string') assertValidRole(data.role);
       const db = getDb();
 
       const existing = await db.select().from(schema.users).where(eq(schema.users.username, data.username)).limit(1);
@@ -49,10 +62,16 @@ export function registerUserHandlers(): void {
         updatedAt: now,
       });
       return { id, username: data.username, realName: data.realName };
-    }, { moduleName: 'user', requireSession: true }));
+    }, { moduleName: 'user', requireRole: ['admin'] }));
 
   ipcMain.handle('user:update', wrap(async (_event, id: string, data: { realName?: string; email?: string; phone?: string; role?: string; isActive?: boolean; password?: string }) => {
       const db = getDb();
+      // 改角色/启用状态/重置密码均为管理类操作，此处已在 wrap 层强制 admin；
+      // 再对角色与密码取值做校验，杜绝写入任意角色或过短密码
+      if (data.role !== undefined) assertValidRole(data.role);
+      if (data.password !== undefined && data.password.length > 0 && data.password.length < 8) {
+        throw new Error('密码长度不能少于 8 位');
+      }
       const now = new Date().toISOString();
       const updateData: any = { updatedAt: now };
       if (data.realName !== undefined) updateData.realName = data.realName;
@@ -64,10 +83,10 @@ export function registerUserHandlers(): void {
         updateData.passwordHash = bcrypt.hashSync(data.password, 12);
       }
       await db.update(schema.users).set(updateData).where(eq(schema.users.id, id));
-    }, { moduleName: 'user', requireSession: true }));
+    }, { moduleName: 'user', requireRole: ['admin'] }));
 
   ipcMain.handle('user:delete', wrap(async (_event, id: string) => {
       const db = getDb();
       await db.delete(schema.users).where(eq(schema.users.id, id));
-    }, { moduleName: 'user', requireSession: true }));
+    }, { moduleName: 'user', requireRole: ['admin'] }));
 }

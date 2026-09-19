@@ -25,6 +25,16 @@ export function parseExtraConfig(extraConfig: string | null): DbExtraConfig {
   return {};
 }
 
+/**
+ * 判断连接失败是否由 TLS 握手引起。
+ * 用于"优先 TLS、服务端不支持时降级明文"的回退逻辑 —— 内网老库普遍不支持 TLS，
+ * 强制 TLS 会让核查功能直接不可用，因此降级是必要的工程折中，但必须告警留痕。
+ */
+export function isTlsHandshakeError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  return /tls|ssl|certificate|handshake|protocol version|unsupported.*encrypt/i.test(msg);
+}
+
 export function getCommandTimeout(profile: ConnectionProfile): number {
   const cfg = parseExtraConfig(profile.extraConfig);
   const custom = Number(cfg.commandTimeoutMs);

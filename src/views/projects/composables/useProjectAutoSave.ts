@@ -1,5 +1,6 @@
 import { ref, type Ref } from 'vue';
 import { ElMessage } from 'element-plus';
+import { formatSaveTime } from '@/utils/format-save-time';
 
 interface ProjectRow {
   id: number;
@@ -43,12 +44,20 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
 
   let autoSaveTimer: number | null = null;
   let periodicSaveTimer: number | null = null;
+  // 并发互斥：防抖触发 / 周期触发 / 手动保存三条路径可能同时进入 saveAllChanges。
+  // 不加锁时，await loadProjects() 返回前临时行仍在列表中且改动标记未清，
+  // 第二次进入会对同一临时行重复 create，产生重复项目。
+  let saveInProgress = false;
 
   async function saveAllChanges(): Promise<boolean> {
+    if (saveInProgress) {
+      return false;
+    }
     if (editedRows.value.length === 0 && deletedIds.value.length === 0) {
       return false;
     }
 
+    saveInProgress = true;
     saveStatus.value = 'saving';
     let created = 0,
       updated = 0,
@@ -112,6 +121,8 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
       console.error('保存失败:', error);
       saveStatus.value = 'error';
       return false;
+    } finally {
+      saveInProgress = false;
     }
   }
 
@@ -143,6 +154,10 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
   }
 
   async function triggerManualSave(): Promise<boolean> {
+    if (saveInProgress) {
+      ElMessage.info('正在保存中，请稍候');
+      return false;
+    }
     const success = await saveAllChanges();
     if (success) {
       ElMessage.success('保存成功');
@@ -152,14 +167,7 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
     return success;
   }
 
-  function formatSaveTime(date: Date): string {
-    const now = new Date();
-    const diff = Math.floor((now.getTime() - date.getTime()) / 1000);
-    if (diff < 5) return '刚刚';
-    if (diff < 60) return `${diff}秒前`;
-    if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  }
+  // formatSaveTime 已提升到 @/utils/format-save-time（三个自动保存 composable 共用同一份）
 
   function cleanup() {
     if (autoSaveTimer) {

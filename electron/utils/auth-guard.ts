@@ -59,3 +59,62 @@ export function requireSession(event: IpcMainInvokeEvent, token?: string): void 
     throw new Error("会话无效或已过期，请重新登录");
   }
 }
+
+/**
+ * 校验调用方角色（用于管理类操作：用户管理、系统设置等）
+ *
+ * 在会话校验之上再强制角色判定。角色每次实时从数据库读取，避免"已提权/已降权
+ * 但仍沿用内存旧角色"的问题；用户被禁用（isActive=0）时视为无角色，一律拒绝。
+ *
+ * @param allowedRoles 允许执行该操作的角色列表，如 ['admin']
+ * @throws 会话无效或角色不在允许列表中
+ */
+export async function requireRole(
+  event: IpcMainInvokeEvent,
+  allowedRoles: string[],
+  token?: string
+): Promise<void> {
+  requireSession(event, token);
+
+  const session = token ? AuthService.getSession(token) : AuthService.getActiveSession();
+  if (!session) {
+    throw new Error("会话无效或已过期，请重新登录");
+  }
+
+  const role = await AuthService.getUserRole(session.userId);
+  if (!role || !allowedRoles.includes(role)) {
+    logger.error("[auth-guard] 拒绝越权的 IPC 调用", {
+      role: role ?? "(无)",
+      allowedRoles,
+      userId: session.userId,
+    });
+    throw new Error("权限不足：当前用户无权执行该操作");
+  }
+}
+
+/** 便捷方法：强制当前会话用户为管理员 */
+export function requireAdmin(event: IpcMainInvokeEvent, token?: string): Promise<void> {
+  return requireRole(event, ["admin"], token);
+}
+
+/**
+ * 服务端强制改密（E2）。
+ *
+ * 默认管理员账号（admin/admin123）在库中带 `mustChangePassword=1`，
+ * 但此前只有前端在登录成功后跳转改密页，**服务端完全不拦截** ——
+ * 用户只要不跳转（或直接调 IPC）就能带着初始口令使用全部功能，
+ * 而本工具保存着被测系统的拓扑、漏洞与主机凭据，初始口令等同于公开凭据。
+ *
+ * 在会话校验之后调用。放行 `auth` 模块（改密流程只依赖 auth:changePassword / auth:login）
+ * 与 `window` 模块（窗口控制），否则会把改密页自身也拦死。
+ */
+// event 参数仅为与 requireSession / requireRole 保持签名一致（便于调用方统一传 event），
+// 实际判定只依赖进程级活动会话，因此这里不读取它
+export function requirePasswordChanged(_event: IpcMainInvokeEvent, token?: string): void {
+  const session = token ? AuthService.getSession(token) : AuthService.getActiveSession();
+  if (!session) return; // 会话有效性由 requireSession 负责，这里拿不到会话就不重复判定
+  if (AuthService.mustChangePassword(session.userId)) {
+    logger.warn("[auth-guard] 拒绝未修改初始密码的用户调用业务通道", { userId: session.userId });
+    throw new Error("请先修改初始密码后再使用其他功能");
+  }
+}

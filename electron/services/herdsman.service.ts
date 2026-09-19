@@ -23,6 +23,17 @@ import {
 
 export const HERDSMAN_DEFAULT_URL = 'http://localhost:8080';
 
+/**
+ * Herdsman(牧马人) 的官方下载地址（E9）。
+ *
+ * 这是**第三方厂商站点**，不属于本项目。此前该域名在文件里以字面量散落 4 处
+ * （下载链接、文档链接、Windows/macOS 引导文案），厂商一旦换域名就得改代码发版。
+ * 这里收敛为单一常量，并允许用 JSECPROBE_HERDSMAN_SITE 覆盖（内网镜像/自建分发场景）。
+ * 注意：本服务只会在用户明确请求时下载/引导安装，**不会**自动从该地址拉取任何可执行文件。
+ */
+export const HERDSMAN_OFFICIAL_SITE =
+  (process.env.JSECPROBE_HERDSMAN_SITE || 'https://flowyaipc.cn/ai-engine').replace(/\/+$/, '');
+
 let herdsmanProcess: ReturnType<typeof spawn> | null = null;
 let startInProgress = false;
 
@@ -153,6 +164,12 @@ export async function startHerdsman(url: string = HERDSMAN_DEFAULT_URL): Promise
       log.error('[Herdsman] 进程错误:', err.message);
       herdsmanProcess = null;
     });
+    // 必须监听 exit：否则进程退出后引用一直挂着，
+    // 后续 isHerdsmanProcessRunning() 之类的判断会基于失效句柄给出错误结论
+    herdsmanProcess.on('exit', (code, signal) => {
+      log.info(`[Herdsman] 进程已退出 (code=${code}, signal=${signal})`);
+      herdsmanProcess = null;
+    });
     // Herdsman 为 GUI 应用，启动后等待网关就绪（最长 15 秒）
     for (let i = 0; i < 15; i++) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -166,6 +183,33 @@ export async function startHerdsman(url: string = HERDSMAN_DEFAULT_URL): Promise
     return { success: false, message: err.message };
   } finally {
     startInProgress = false;
+  }
+}
+
+/**
+ * 停止由本应用启动的 Herdsman 进程。
+ *
+ * 只杀 **本应用 spawn 出来** 的进程（herdsmanProcess 句柄），
+ * 用户自行启动的 Herdsman 不在管辖范围，不会被误杀。
+ * 应在应用退出前调用，否则 Herdsman 是 GUI 程序，会留下孤儿窗口常驻后台。
+ */
+export function stopHerdsman(): void {
+  const proc = herdsmanProcess;
+  if (!proc) return;
+  herdsmanProcess = null;
+  try {
+    if (process.platform === 'win32' && proc.pid) {
+      // GUI 应用常派生子进程，/T 连带结束进程树，避免残留窗口
+      spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      }).on('error', () => { /* taskkill 不可用时忽略 */ });
+    } else {
+      proc.kill();
+    }
+    log.info('[Herdsman] 已请求停止本地引擎进程');
+  } catch (err: any) {
+    log.warn('[Herdsman] 停止进程失败:', err?.message || err);
   }
 }
 
@@ -187,18 +231,18 @@ export async function testHerdsmanConnection(url: string = HERDSMAN_DEFAULT_URL)
 
 export function getInstallGuide(): OllamaInstallGuide {
   return {
-    downloadUrl: 'https://flowyaipc.cn/ai-engine',
+    downloadUrl: HERDSMAN_OFFICIAL_SITE,
     installPath: path.dirname(getHerdsmanExePath()),
-    docsUrl: 'https://flowyaipc.cn/ai-engine',
+    docsUrl: HERDSMAN_OFFICIAL_SITE,
     windows: [
-      '访问 https://flowyaipc.cn/ai-engine 下载 Herdsman(牧马人) 安装包',
+      `访问 ${HERDSMAN_OFFICIAL_SITE} 下载 Herdsman(牧马人) 安装包`,
       '运行安装包完成安装，首次启动按引导完成账号登录',
       '确认「网关」已开启，监听端口默认 8080（设置中可查看端口提示）',
       '在 Herdsman 模型库中下载所需的文本生成模型（如 Qwen、DeepSeek、GLM 系列）',
       '回到本软件 AI 设置，将服务地址指向 Herdsman 网关地址即可',
     ],
     mac: [
-      '访问 https://flowyaipc.cn/ai-engine 下载 macOS 版本',
+      `访问 ${HERDSMAN_OFFICIAL_SITE} 下载 macOS 版本`,
       '安装后启动 Herdsman，完成登录并下载模型',
       '确认网关监听已开启（默认 8080 端口）',
     ],

@@ -1,6 +1,7 @@
 import Redis from 'ioredis';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
+import { logger as log } from '../../utils/logger';
 import type { IConnector, ExecResult } from './connector';
 import {
   parseExtraConfig,
@@ -9,6 +10,7 @@ import {
   splitRedisCommands,
   assertReadonlyRedis,
   formatRedisReply,
+  isTlsHandshakeError,
 } from './db.util';
 
 export class RedisConnector implements IConnector {
@@ -20,9 +22,15 @@ export class RedisConnector implements IConnector {
     const cfg = parseExtraConfig(profile.extraConfig);
     const password = decryptSecret(profile.passwordEncrypted);
     this.commandTimeoutMs = getCommandTimeout(profile);
-    const client = new Redis({
+    // 传输安全：对齐 MySQL / PostgreSQL 的「优先 TLS、服务端不支持时降级明文」策略。
+    // 原实现默认走明文（仅 6380 端口才启用 TLS），AUTH 口令与查询结果明文过网。
+    // 内网老实例普遍不支持 TLS，强制 TLS 会让核查功能直接不可用，因此保留降级，
+    // 但必须告警留痕。可用 extraConfig 显式控制：{"tls": true|false}。
+    const port = profile.port || 6379;
+    const useTls = cfg.tls === undefined ? true : !!cfg.tls;
+    const baseOptions = {
       host: profile.host,
-      port: profile.port || 6379,
+      port,
       password: password || undefined,
       db: cfg.database !== undefined ? Number(cfg.database) || 0 : 0,
       connectTimeout: profile.timeoutMs || 10000,
@@ -30,8 +38,34 @@ export class RedisConnector implements IConnector {
       lazyConnect: true,
       maxRetriesPerRequest: 1,
       enableReadyCheck: true,
-    });
-    await client.connect();
+    };
+    const tlsOptions = useTls
+      ? { tls: { rejectUnauthorized: cfg.rejectUnauthorized === true } as any }
+      : {};
+
+    const client = new Redis({ ...baseOptions, ...tlsOptions });
+    try {
+      await client.connect();
+    } catch (err) {
+      if (useTls && isTlsHandshakeError(err)) {
+        log.warn(
+          `[Redis] ${profile.host}:${port} 不支持 TLS，已降级为明文连接（AUTH 口令与查询结果将以明文传输）`
+        );
+        client.disconnect();
+        const plainClient = new Redis(baseOptions);
+        try {
+          await plainClient.connect();
+        } catch (plainErr) {
+          plainClient.disconnect();
+          // 降级后仍失败：抛明文连接的错误，它更贴近真实原因（口令错误/端口不通等）
+          throw plainErr;
+        }
+        this.client = plainClient;
+        return;
+      }
+      client.disconnect();
+      throw err;
+    }
     this.client = client;
   }
 

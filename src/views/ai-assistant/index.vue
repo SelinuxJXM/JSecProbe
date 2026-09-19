@@ -42,7 +42,7 @@
           'step-active': index === workflowStep,
           'step-completed': index < workflowStep,
         }"
-        @click="workflowStep = index"
+        :title="step.label + (index <= workflowStep ? '（已完成/进行中）' : '（待进行）')"
       >
         <span class="step-number">{{ index + 1 }}</span>
         <span class="step-label">{{ step.label }}</span>
@@ -82,7 +82,7 @@
             <input
               ref="fileInput"
               type="file"
-              accept=".jpg,.jpeg,.png,.gif,.bmp,.webp,.pdf,.doc,.docx,.xls,.xlsx,.md,.txt,.csv,.log,.json,.xml,.html,.css,.js,.ts"
+              accept=".jpg,.jpeg,.png,.gif,.bmp,.webp,.pdf,.doc,.docx,.xls,.xlsx,.md,.txt,.csv,.log,.json,.xml,.html"
               multiple
               hidden
               @change="handleFileSelect"
@@ -845,7 +845,7 @@ interface PendingAttachment {
 }
 
 const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'];
-const TEXT_EXTENSIONS = ['.md', '.txt', '.csv', '.log', '.json', '.xml', '.html', '.css', '.js', '.ts'];
+const TEXT_EXTENSIONS = ['.md', '.txt', '.csv', '.log', '.json', '.xml', '.html'];
 const DOC_EXTENSIONS = ['.pdf', '.doc', '.docx', '.xls', '.xlsx'];
 const IMAGE_MAX_SIZE = 10 * 1024 * 1024;
 const TEXT_MAX_SIZE = 1024 * 1024;
@@ -1382,7 +1382,20 @@ async function getProjectContext(): Promise<string> {
   }
 }
 const workflowMode = ref(true);
-const workflowStep = ref(0);
+
+// 进度条改为由真实状态推导。
+// 原实现是 ref(0) 且仅在点击时赋值，不驱动任何业务逻辑 —— 点击只是改高亮，属于假交互。
+// 现在按实际执行阶段推导，并移除点击跳转（本页没有可跳转的阶段状态机）。
+const workflowStep = computed(() => {
+  if (loading.value) return 2; // AI分析进行中
+  const lastAssistant = [...messages.value].reverse().find(m => m.role === 'assistant');
+  if (lastAssistant) {
+    return lastAssistant.suggestions && lastAssistant.suggestions.length > 0 ? 4 : 3;
+  }
+  if (pendingAttachments.value.length > 0) return 1; // 已上传，待 OCR/识别
+  return 0; // 待上传
+});
+
 const workflowSteps = [
   { key: 'upload', label: '上传' },
   { key: 'ocr', label: 'OCR识别' },

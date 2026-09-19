@@ -1,13 +1,13 @@
 import Database from 'better-sqlite3';
 import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { join, dirname } from 'path';
 import * as fs from 'fs';
 import log from 'electron-log';
 import bcrypt from 'bcryptjs';
 import * as schema from './schema';
+import { runMigrations } from './migrator';
 import { getDbPath, getAppDataPath } from '../main/paths';
-import { eq, count } from 'drizzle-orm';
+import { eq, count, is, Table, getTableName, getTableColumns } from 'drizzle-orm';
 
 let db: BetterSQLite3Database<typeof schema> | null = null;
 let sqliteInstance: Database.Database | null = null;
@@ -35,11 +35,45 @@ export function closeDb(): void {
   }
 }
 
-export function walCheckpoint(): void {
-  if (sqliteInstance) {
-    sqliteInstance.pragma('wal_checkpoint(TRUNCATE)');
-    log.info('WAL checkpoint 完成');
+export interface WalCheckpointResult {
+  busy: number;
+  log: number;
+  checkpointed: number;
+}
+
+/**
+ * 将 WAL 内容写回主库文件并截断。
+ * 返回 checkpoint 结果供调用方判断：`busy !== 0` 表示有并发连接占用，
+ * checkpoint 未完全完成，此时直接 copyFileSync 主库文件会漏掉仍在 WAL 里的事务。
+ */
+export function walCheckpoint(): WalCheckpointResult | null {
+  if (!sqliteInstance) return null;
+  try {
+    const rows = sqliteInstance.pragma('wal_checkpoint(TRUNCATE)') as Array<{
+      busy: number;
+      log: number;
+      checkpointed: number;
+    }>;
+    const result = rows && rows[0] ? rows[0] : { busy: 0, log: 0, checkpointed: 0 };
+    if (result.busy !== 0) {
+      log.warn(`WAL checkpoint 未完全完成(busy=${result.busy}, log=${result.log})，可能存在并发写入`);
+    } else {
+      log.info('WAL checkpoint 完成');
+    }
+    return result;
+  } catch (e) {
+    log.error('WAL checkpoint 失败:', e);
+    return null;
   }
+}
+
+/**
+ * 暴露底层 better-sqlite3 实例。
+ * 备份需要用它自带的 `backup()` API —— 该 API 走 SQLite 在线备份协议，
+ * 即使 WAL 中仍有未 checkpoint 的事务也能产出一致快照，比 copyFileSync 主库文件可靠。
+ */
+export function getSqlite(): Database.Database | null {
+  return sqliteInstance;
 }
 
 const MIGRATION_RECOVERY_THRESHOLD = 3;
@@ -74,20 +108,27 @@ export async function initDatabase(): Promise<void> {
     if (fs.existsSync(metaJournalPath)) {
       try {
         log.info('执行数据库迁移:', migrationsPath);
-        migrate(db, { migrationsFolder: migrationsPath });
+        // 使用自建的幂等迁移器（见 ./migrator.ts）：存量库上 JS 兜底已建过的列会被跳过，
+        // 不会因 duplicate column name 导致整个迁移回滚
+        runMigrations(sqlite, migrationsPath);
         log.info('数据库迁移完成');
       } catch (migrateError) {
         log.error('数据库迁移失败，尝试恢复:', migrateError);
-        await recoverFromMigrationError(sqlite, migrationsPath, db);
+        await recoverFromMigrationError(sqlite, migrationsPath, migrateError);
       }
     } else {
       log.info('未找到迁移文件，使用自动建表');
       await autoCreateTables(sqlite);
     }
 
+    // 兼容旧库补列：必须无条件执行（详见 ensureCompatColumns 注释）
+    ensureCompatColumns(sqlite);
     migrateAiConfigsTable(sqlite);
     ensureCollectionTables(sqlite);
     createIndexes(sqlite);
+    detectSchemaDrift(sqlite);
+    // 孤儿检测放在迁移/补列之后，避免把"表刚建好还没灌数据"误判为孤儿
+    detectOrphanData(sqlite);
     await initDefaultData();
     await initStandardLibrary();
     await initKnowledgeBase();
@@ -100,26 +141,40 @@ export async function initDatabase(): Promise<void> {
   }
 }
 
+/**
+ * 迁移失败后的恢复：重试若干次（应对并发锁等瞬时错误），仍失败则降级为兼容建表。
+ *
+ * 关键修正（P1-11）：降级前必须把**原始异常**落到日志。
+ * 原实现只留一行"自动恢复失败"，真正的根因（哪条 SQL、哪个列冲突）被完全吞掉，
+ * 应用却照常启动 —— 数据库卡在半迁移状态，排障时无从下手。
+ * 现在原始错误与最后一次恢复错误都以 error 级输出，并由 detectSchemaDrift 二次校验兜底。
+ */
 async function recoverFromMigrationError(
   sqlite: Database.Database,
   migrationsPath: string,
-  drizzleDb: BetterSQLite3Database<typeof schema>
+  originalError?: unknown
 ): Promise<void> {
+  let lastError: unknown = originalError;
   for (let attempt = 1; attempt <= MIGRATION_RECOVERY_THRESHOLD; attempt++) {
     try {
       log.info(`迁移恢复尝试 ${attempt}/${MIGRATION_RECOVERY_THRESHOLD}`);
-      migrate(drizzleDb, { migrationsFolder: migrationsPath });
+      runMigrations(sqlite, migrationsPath);
       log.info('迁移恢复成功');
       return;
     } catch (err) {
+      lastError = err;
       log.warn(`恢复尝试 ${attempt} 失败:`, err);
-      if (attempt === MIGRATION_RECOVERY_THRESHOLD) {
-        log.warn('自动恢复失败，使用兼容模式建表...');
-        await autoCreateTables(sqlite);
-        return;
-      }
     }
   }
+  log.error(
+    '数据库迁移未能完成，已降级为兼容模式建表：结构可能不完整，请检查后续的结构漂移告警。' +
+      '原始迁移错误:',
+    originalError
+  );
+  if (lastError && lastError !== originalError) {
+    log.error('最后一次恢复尝试的错误:', lastError);
+  }
+  await autoCreateTables(sqlite);
 }
 
 async function autoCreateTables(sqlite: Database.Database): Promise<void> {
@@ -137,7 +192,10 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
       is_active INTEGER NOT NULL DEFAULT 1,
       must_change_password INTEGER NOT NULL DEFAULT 1,
       last_login_at TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      -- 统一使用 ISO-8601（UTC）格式，与业务代码写入的 new Date().toISOString() 一致。
+      -- 此前混用 datetime('now','localtime')（输出 "YYYY-MM-DD HH:MM:SS"），
+      -- 而空格(0x20) < 'T'(0x54)，TEXT 比较会导致 ORDER BY created_at 结果错误。
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       updated_at TEXT NOT NULL
     );
 
@@ -215,7 +273,8 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
       domains_meta TEXT,
       preset_method TEXT DEFAULT 'check',
       column_map TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      -- 同上：统一 ISO-8601，避免与业务代码写入的时间戳格式不一致导致排序错误
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     );
 
     CREATE TABLE IF NOT EXISTS assessment_items (
@@ -337,7 +396,10 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
       api_key TEXT,
       api_base TEXT,
       model TEXT DEFAULT 'gpt-4o-mini',
-      temperature REAL NOT NULL DEFAULT 0.3,
+      -- P2-15：默认值曾为 0.3，与 schema.ts 声明的 0.7 不一致。
+      -- 本 CREATE TABLE 走「迁移缺失/降级」路径，与迁移 SQL 建出的库默认值不同会导致
+      -- 同一份代码在两种路径下 AI 生成温度不同，且排查时极难察觉。统一为 0.7。
+      temperature REAL NOT NULL DEFAULT 0.7,
       ocr_provider TEXT DEFAULT 'tesseract',
       ocr_api_key TEXT,
       enable_ai INTEGER NOT NULL DEFAULT 0,
@@ -362,7 +424,9 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
       auto_backup_enabled INTEGER NOT NULL DEFAULT 1,
       auto_backup_days INTEGER NOT NULL DEFAULT 7,
       data_path TEXT,
-      default_standard TEXT DEFAULT 'gb-t-22239-2019-l3',
+      -- P2-15：原默认 'gb-t-22239-2019-l3' 在种子标准库中并不存在，
+      -- 新建库会得到一个指向空标准的默认值。与 schema.ts 对齐为空串，由业务侧动态解析。
+      default_standard TEXT DEFAULT '',
       standard_data_version INTEGER NOT NULL DEFAULT 1,
       updated_at TEXT NOT NULL
     );
@@ -404,43 +468,53 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
     log.warn('standards 表字段迁移失败:', err);
   }
 
-  // 兼容旧库：operation_logs 追加 detail_json（Phase 4 标准导入/导出审计）
-  try {
-    const logCols = sqlite.prepare("PRAGMA table_info(operation_logs)").all() as Array<{ name: string }>;
-    const logColNames = logCols.map(c => c.name);
-    if (!logColNames.includes('detail_json')) {
-      sqlite.exec('ALTER TABLE operation_logs ADD COLUMN detail_json TEXT');
-      log.info('已添加 detail_json 列到 operation_logs 表');
-    }
-  } catch (err) {
-    log.warn('operation_logs 表字段迁移失败:', err);
-  }
-
-  // 兼容旧库：knowledge_commands 追加 industry（Phase 4 命令库行业维度）
-  try {
-    const cols = sqlite.prepare("PRAGMA table_info(knowledge_commands)").all() as Array<{ name: string }>;
-    const names = cols.map(c => c.name);
-    if (!names.includes('industry')) {
-      sqlite.exec("ALTER TABLE knowledge_commands ADD COLUMN industry TEXT NOT NULL DEFAULT ''");
-      log.info('已添加 industry 列到 knowledge_commands 表');
-    }
-  } catch (err) {
-    log.warn('knowledge_commands 表 industry 迁移失败:', err);
-  }
-
-  // 兼容旧库：system_settings 追加 created_at（0002 原逻辑，JS 兜底确保列存在）
-  try {
-    const sysCols = sqlite.prepare('PRAGMA table_info(system_settings)').all() as Array<{ name: string }>;
-    const sysColNames = sysCols.map(c => c.name);
-    if (!sysColNames.includes('created_at')) {
-      sqlite.exec("ALTER TABLE system_settings ADD COLUMN created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
-      log.info('已添加 created_at 列到 system_settings 表');
-    }
-  } catch (err) {
-    log.warn('system_settings 表 created_at 迁移失败:', err);
-  }
-
   log.info('自动建表完成');
+}
+
+/**
+ * 兼容旧库的"补列"迁移。
+ *
+ * 这些 ALTER 原先写在 autoCreateTables() 内，而该函数仅在 _journal.json 不存在时才执行；
+ * 打包后迁移目录必然存在，导致这些列在升级用户的库上永远不会创建 —— 而 schema.ts 已声明
+ * 它们、业务代码也会真实写入（如 operation_logs.detail_json），结果是运行时
+ * "no such column"。因此这里必须无条件执行，且与 drizzle 迁移解耦。
+ *
+ * 全部为幂等操作：先 PRAGMA table_info 判断列是否存在。
+ */
+function ensureCompatColumns(sqlite: Database.Database): void {
+  const addColumnIfMissing = (
+    table: string,
+    column: string,
+    ddl: string,
+    label: string
+  ): void => {
+    try {
+      const cols = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      if (cols.some(c => c.name === column)) return;
+      sqlite.exec(ddl);
+      log.info(`已添加 ${column} 列到 ${table} 表（${label}）`);
+    } catch (err) {
+      log.warn(`${table} 表 ${column} 迁移失败:`, err);
+    }
+  };
+
+  // 操作日志审计详情（Phase 4 标准导入/导出审计）
+  addColumnIfMissing('operation_logs', 'detail_json',
+    'ALTER TABLE operation_logs ADD COLUMN detail_json TEXT', '兼容旧库');
+
+  // 命令库行业维度
+  addColumnIfMissing('knowledge_commands', 'industry',
+    "ALTER TABLE knowledge_commands ADD COLUMN industry TEXT NOT NULL DEFAULT ''", '兼容旧库');
+
+  // 系统设置创建时间
+  // 注意：SQLite 的 `ALTER TABLE ADD COLUMN` **只接受常量默认值**，
+  // `DEFAULT (strftime(...))` 会被判为 non-constant default 直接抛
+  // "Cannot add a column with non-constant default"（该表达式只在 CREATE TABLE 里合法）。
+  // 因此这里用 JS 现算的当前时间作常量默认：存量行拿到此刻的时间戳，语义可接受，
+  // 后续新行由 drizzle 走 0002 建表时的表达式默认。
+  addColumnIfMissing('system_settings', 'created_at',
+    `ALTER TABLE system_settings ADD COLUMN created_at TEXT NOT NULL DEFAULT '${new Date().toISOString()}'`,
+    '兼容旧库');
 }
 
 function migrateAiConfigsTable(sqlite: Database.Database): void {
@@ -524,6 +598,140 @@ function migrateAiConfigsTable(sqlite: Database.Database): void {
     }
   } catch (err) {
     log.warn('迁移 ai_configs 表失败:', err);
+  }
+}
+
+/**
+ * 结构漂移检测（只读诊断，不自动修改）。
+ *
+ * 背景：drizzle 正式迁移停在 0001，其后新增的列靠 `ensureCompatColumns()` 等 JS 补列兜底。
+ * 这套机制能跑，但一旦有人改了 `schema.ts` 却忘了同步补列，故障不会在启动时暴露，
+ * 而是等到业务代码真正写入时才抛 "no such column" —— 现场排查成本极高。
+ * 这里在启动时把 schema.ts 声明的列与实际表结构做一次比对，缺失直接告警，
+ * 把"运行时崩溃"提前成"启动日志里的一行明确提示"。
+ */
+function detectSchemaDrift(sqlite: Database.Database): void {
+  try {
+    const tableRows = sqlite
+      .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+      .all() as Array<{ name: string }>;
+    const existingTables = new Set(tableRows.map(r => r.name));
+
+    const drift: string[] = [];
+    for (const value of Object.values(schema) as unknown[]) {
+      if (!is(value, Table)) continue;
+      const table = value as unknown as Record<string, unknown>;
+      let tableName: string;
+      let columns: Record<string, { name: string }>;
+      try {
+        tableName = getTableName(table as never);
+        columns = getTableColumns(table as never) as Record<string, { name: string }>;
+      } catch {
+        continue;
+      }
+      if (!existingTables.has(tableName)) {
+        drift.push(`表缺失：${tableName}`);
+        continue;
+      }
+      const actualRows = sqlite.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+      const actual = new Set(actualRows.map(c => c.name));
+      for (const col of Object.values(columns)) {
+        if (!actual.has(col.name)) {
+          drift.push(`列缺失：${tableName}.${col.name}`);
+        }
+      }
+    }
+
+    if (drift.length > 0) {
+      log.warn(
+        `[结构漂移] 检测到 ${drift.length} 处 schema.ts 与实际表结构不一致，` +
+          `请补充 drizzle 迁移或在 ensureCompatColumns() 中补列：\n  - ${drift.slice(0, 30).join('\n  - ')}` +
+          (drift.length > 30 ? `\n  - ...（另有 ${drift.length - 30} 处）` : '')
+      );
+    } else {
+      log.info('[结构漂移] schema.ts 与数据库表结构一致');
+    }
+  } catch (err) {
+    log.warn('[结构漂移] 检测失败（不影响启动）:', err);
+  }
+}
+
+/**
+ * 孤儿数据检测与清理（P1-14）。
+ *
+ * schema.ts 开启了 `PRAGMA foreign_keys = ON`，但**没有任何 `.references()` 声明**，
+ * 级联删除全靠 IPC 里的手工枚举。一旦新增关联表忘了同步枚举，就会产生孤儿行。
+ * 其中 `connection_profiles` 存有 `password_encrypted`，残留即凭据泄露面，
+ * 因此对指向已删除资产的孤儿连接配置做**主动清理**，其余表仅告警（数据宝贵，不自动删）。
+ */
+function detectOrphanData(sqlite: Database.Database): void {
+  try {
+    const tables = new Set(
+      (sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>)
+        .map(r => r.name)
+    );
+    const has = (t: string) => tables.has(t);
+    const count = (sql: string): number => {
+      const row = sqlite.prepare(sql).get() as { c: number } | undefined;
+      return row?.c ?? 0;
+    };
+
+    // ① 含凭据的孤儿连接配置：直接清理
+    if (has('connection_profiles') && has('assets')) {
+      const orphanProfiles = count(
+        'SELECT COUNT(*) AS c FROM connection_profiles WHERE asset_id IS NOT NULL AND asset_id NOT IN (SELECT id FROM assets)'
+      );
+      if (orphanProfiles > 0) {
+        const res = sqlite
+          .prepare('DELETE FROM connection_profiles WHERE asset_id IS NOT NULL AND asset_id NOT IN (SELECT id FROM assets)')
+          .run();
+        log.warn(`[孤儿数据] 已清理 ${res.changes} 条指向已删除资产的连接配置（含凭据，避免残留泄露）`);
+      }
+    }
+
+    // ② 其余孤儿行仅告警
+    const checks: Array<{ name: string; sql: string }> = [];
+    if (has('assessment_records') && has('projects')) {
+      checks.push({
+        name: 'assessment_records 指向不存在的项目',
+        sql: 'SELECT COUNT(*) AS c FROM assessment_records WHERE project_id NOT IN (SELECT id FROM projects)',
+      });
+    }
+    if (has('issues') && has('projects')) {
+      checks.push({
+        name: 'issues 指向不存在的项目',
+        sql: 'SELECT COUNT(*) AS c FROM issues WHERE project_id NOT IN (SELECT id FROM projects)',
+      });
+    }
+    if (has('assets') && has('projects')) {
+      checks.push({
+        name: 'assets 指向不存在的项目',
+        sql: 'SELECT COUNT(*) AS c FROM assets WHERE project_id NOT IN (SELECT id FROM projects)',
+      });
+    }
+    if (has('collection_tasks') && has('projects')) {
+      checks.push({
+        name: 'collection_tasks 指向不存在的项目',
+        sql: 'SELECT COUNT(*) AS c FROM collection_tasks WHERE project_id NOT IN (SELECT id FROM projects)',
+      });
+    }
+    if (has('asset_connections') && has('assets')) {
+      checks.push({
+        name: 'asset_connections 指向不存在的资产',
+        sql: 'SELECT COUNT(*) AS c FROM asset_connections WHERE asset_id NOT IN (SELECT id FROM assets)',
+      });
+    }
+
+    const found: string[] = [];
+    for (const c of checks) {
+      const n = count(c.sql);
+      if (n > 0) found.push(`${c.name}：${n} 条`);
+    }
+    if (found.length > 0) {
+      log.warn(`[孤儿数据] 检测到以下孤儿记录（不自动删除，请核查是否为级联遗漏）：\n  - ${found.join('\n  - ')}`);
+    }
+  } catch (err) {
+    log.warn('[孤儿数据] 检测失败（不影响启动）:', err);
   }
 }
 
@@ -636,6 +844,20 @@ function createIndexes(sqlite: Database.Database): void {
       CREATE INDEX IF NOT EXISTS idx_collection_documents_project ON collection_documents(project_id);
       CREATE INDEX IF NOT EXISTS idx_connection_profiles_asset ON connection_profiles(asset_id);
       CREATE UNIQUE INDEX IF NOT EXISTS project_user_idx ON project_members(project_id, user_id);
+      -- 以下为 schema.ts 声明的索引（P2-13）：0002 正式迁移已补齐，这里兜底保证
+      -- **已执行过 0002 的存量库**同样能拿到（迁移器按 created_at 跳过已应用的迁移）。
+      CREATE INDEX IF NOT EXISTS asset_project_idx ON assets(project_id);
+      CREATE INDEX IF NOT EXISTS asset_project_category_idx ON assets(project_id, category);
+      CREATE INDEX IF NOT EXISTS item_standard_idx ON assessment_items(standard_id);
+      CREATE INDEX IF NOT EXISTS item_standard_domain_idx ON assessment_items(standard_id, domain);
+      CREATE INDEX IF NOT EXISTS record_project_idx ON assessment_records(project_id);
+      CREATE INDEX IF NOT EXISTS record_project_item_idx ON assessment_records(project_id, item_id);
+      CREATE INDEX IF NOT EXISTS record_project_asset_idx ON assessment_records(project_id, asset_id);
+      -- assessment_records 按 asset_id 过滤此前无任何索引，最大表走全表扫描
+      CREATE INDEX IF NOT EXISTS record_asset_idx ON assessment_records(asset_id);
+      CREATE INDEX IF NOT EXISTS issue_project_idx ON issues(project_id);
+      CREATE INDEX IF NOT EXISTS issue_project_status_idx ON issues(project_id, status);
+      CREATE INDEX IF NOT EXISTS issue_project_risk_idx ON issues(project_id, risk_level);
     `);
   } catch (err) {
     log.warn('创建索引失败:', err);
@@ -697,37 +919,80 @@ async function initDefaultData(): Promise<void> {
   }
 }
 
-async function initStandardLibrary(): Promise<void> {
-  const dbInstance = getDb();
-  if (!sqliteInstance) throw new Error('数据库未初始化');
+/** 启动备份最小间隔（毫秒）：默认 24 小时内只做一次 */
+const STARTUP_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** 启动备份体积上限：超过则跳过（VACUUM INTO 需要整库读写，大库代价过高） */
+const STARTUP_BACKUP_MAX_BYTES = 256 * 1024 * 1024;
+/** 延后执行的等待时间：让主窗口先渲染出来，避免备份拖慢启动 */
+const STARTUP_BACKUP_DELAY_MS = 5000;
 
-  const dbPath = sqliteInstance.name;
-  const backupDir = dirname(dbPath);
-  const backupBase = `${dbPath}.bak-`;
+/**
+ * 按需创建启动备份（不阻塞启动流程）。
+ *
+ * 原实现在每次启动时同步 `VACUUM INTO` 整库复制：better-sqlite3 为同步 API，
+ * 数据库越大启动越慢，主线程被完全阻塞表现为白屏。
+ * 这里做三层收敛：① 24 小时节流；② 超过 256MB 跳过；③ 延后 5 秒后台执行。
+ */
+async function scheduleStartupBackup(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, STARTUP_BACKUP_DELAY_MS));
+  const sqlite = sqliteInstance;
+  if (!sqlite) return;
 
-  const backupPath = `${backupBase}${Date.now()}`;
   try {
+    const dbPath = sqlite.name;
+    const backupDir = dirname(dbPath);
+    const backupBase = `${dbPath}.bak-`;
+    const prefix = backupBase.slice(backupDir.length + 1);
+
+    // ① 节流：最近已备份过则跳过
+    let latestMtime = 0;
+    let baks: Array<{ f: string; mtime: number }> = [];
+    try {
+      baks = fs.readdirSync(backupDir)
+        .filter((f) => f.startsWith(prefix))
+        .map((f) => ({ f, mtime: fs.statSync(join(backupDir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+      latestMtime = baks[0]?.mtime ?? 0;
+    } catch (e) {
+      log.warn('读取启动备份列表失败，继续执行:', e);
+    }
+    if (latestMtime && Date.now() - latestMtime < STARTUP_BACKUP_INTERVAL_MS) {
+      log.info('启动备份：距上次备份不足 24 小时，本次跳过');
+      return;
+    }
+
+    // ② 体积阈值
+    const dbSize = fs.statSync(dbPath).size;
+    if (dbSize > STARTUP_BACKUP_MAX_BYTES) {
+      log.warn(
+        `启动备份：数据库 ${(dbSize / 1024 / 1024).toFixed(0)}MB 超过 ${STARTUP_BACKUP_MAX_BYTES / 1024 / 1024}MB 上限，本次跳过（请使用设置页的手动备份）`
+      );
+      return;
+    }
+
+    const backupPath = `${backupBase}${Date.now()}`;
     // 单引号转义，避免路径含引号时破坏 SQL（VACUUM INTO 不支持参数绑定）
     const escapedBackupPath = backupPath.replace(/'/g, "''");
-    sqliteInstance.exec(`VACUUM INTO '${escapedBackupPath}'`);
+    sqlite.exec(`VACUUM INTO '${escapedBackupPath}'`);
     log.info(`数据库已备份到: ${backupPath}`);
-  } catch (e) {
-    log.warn('数据库备份失败，继续执行:', e);
-  }
 
-  // 轮转清理：仅保留最近 3 份启动备份（含本次新建），删除更早的 .bak-* 文件，避免磁盘无限累积
-  try {
-    const prefix = backupBase.slice(backupDir.length + 1);
-    const baks = fs.readdirSync(backupDir)
-      .filter((f) => f.startsWith(prefix))
-      .map((f) => ({ f, mtime: fs.statSync(join(backupDir, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
+    // 轮转清理：仅保留最近 3 份启动备份
+    baks.unshift({ f: backupPath.slice(backupDir.length + 1), mtime: Date.now() });
     for (const item of baks.slice(3)) {
       try { fs.unlinkSync(join(backupDir, item.f)); } catch { /* 忽略单文件删除失败 */ }
     }
   } catch (e) {
-    log.warn('清理旧启动备份失败，继续执行:', e);
+    log.warn('启动备份失败:', e);
   }
+}
+
+async function initStandardLibrary(): Promise<void> {
+  const dbInstance = getDb();
+  if (!sqliteInstance) throw new Error('数据库未初始化');
+
+  // 启动备份：原实现在此处**同步**执行 VACUUM INTO 全库复制，better-sqlite3 是同步 API，
+  // 库越大启动越慢、主线程完全阻塞导致白屏。改为按需（节流 + 体积阈值）+ 后台延后执行。
+  void scheduleStartupBackup();
 
   // 防御性迁移：为 assessment_items 补充新增的预置字段列（避免旧库 no such column）
   try {
@@ -767,6 +1032,13 @@ async function initStandardLibrary(): Promise<void> {
     // 内置标准代号勘误迁移：历史 seed 中两条内置标准的 code 误写（与 name/levelCombo 不一致），
     // 存量库按 id + 旧代号 锚定改名；若新代号已被其他标准占用（如用户手动导入过）则跳过，
     // 后续按 code 的幂等判重会自然命中新代号而不再重复入驻，不会产生脏数据。
+    // 注意：seed 里这两条标准的 **id** 仍沿用历史命名（...-s3a3g2-l3 / ...-s2a3a3-l3），
+    // 与它们自身的 code / name / levelCombo（S3A3G3 / S2A3G3）不一致 —— 这是历史遗留，
+    // id 是 assessment_items.standard_id 的外键（393 条引用），改名需要同步迁移整批测评项，
+    // 风险远大于收益；**以 code 与 levelCombo 为权威值**，id 仅作内部键。
+    //
+    // 判定条件用「后缀匹配」而非精确相等：新库的 code 早已是正确值（...-S3A3G3），
+    // 精确比对必然不成立（形成死码）；只有历史残留库才会带 -S3A3G2/-S2A3A3 后缀。
     const STANDARD_CODE_FIXUPS: Array<{ id: string; from: string; to: string }> = [
       { id: 'gb-t-22239-2019-s3a3g2-l3', from: 'GB/T 22239-2019-S3A3G2', to: 'GB/T 22239-2019-S3A3G3' },
       { id: 'dl-t-2614-2023-s2a3a3-l3', from: 'DL/T 2614-2023-S2A3A3', to: 'DL/T 2614-2023-S2A3G3' },
@@ -774,7 +1046,9 @@ async function initStandardLibrary(): Promise<void> {
     try {
       for (const fix of STANDARD_CODE_FIXUPS) {
         const current = sqliteInstance.prepare('SELECT code FROM standards WHERE id = ?').get(fix.id) as { code: string } | undefined;
-        if (!current || current.code !== fix.from) continue;
+        if (!current) continue;
+        // 已勘误（或本就是新代号）则跳过；否则按旧代号后缀匹配
+        if (current.code === fix.to || !current.code.endsWith(fix.from)) continue;
         const occupied = sqliteInstance.prepare('SELECT id FROM standards WHERE code = ?').get(fix.to);
         if (occupied) {
           log.warn(`内置标准代号勘误跳过(id=${fix.id})：新代号 ${fix.to} 已被其他标准占用`);
@@ -839,46 +1113,56 @@ async function initStandardLibrary(): Promise<void> {
         continue;
       }
 
-      await dbInstance.insert(schema.standards).values({
-        id: std.id,
-        name: std.name,
-        code: std.code,
-        version: std.version,
-        description: std.description,
-        grade: std.grade,
-        domainCount: std.domainCount,
-        itemCount: std.itemCount,
-        isDefault: std.isDefault,
-        standardType: std.standardType,
-        industry: std.industry,
-        source: std.source,
-        presetTemplate: std.presetTemplate,
-        domainsMeta: std.domainsMeta,
-        presetMethod: std.presetMethod,
-        columnMap: std.columnMap,
-        levelCombo: std.levelCombo,
-        createdAt: new Date().toISOString(),
-      });
-
       const items = seed.items.filter(i => i.standardId === std.id);
-      if (items.length > 0) {
-        await dbInstance.insert(schema.assessmentItems).values(items.map(i => ({
-          id: i.id,
-          standardId: i.standardId,
-          domain: i.domain,
-          controlPoint: i.controlPoint,
-          controlName: i.controlName,
-          requirement: i.requirement,
-          minLevel: i.minLevel,
-          maxLevel: i.maxLevel,
-          extensionType: i.extensionType,
-          isHighRisk: i.isHighRisk,
-          sortOrder: i.sortOrder,
-          parentId: i.parentId,
-          presetResult: i.presetResult,
-          presetRecord: i.presetRecord,
-          presetByType: i.presetByType,
-        })));
+      // 标准行与其测评项必须原子写入。
+      // 原实现先插 standards 再插 items，中途失败会留下"有标准、items 为 0"的僵尸标准；
+      // 下次启动按 code 判重直接跳过，该标准永远无法自愈。这里用事务保证要么全成要么回滚。
+      try {
+        dbInstance.transaction((tx: any) => {
+          tx.insert(schema.standards).values({
+            id: std.id,
+            name: std.name,
+            code: std.code,
+            version: std.version,
+            description: std.description,
+            grade: std.grade,
+            domainCount: std.domainCount,
+            itemCount: std.itemCount,
+            isDefault: std.isDefault,
+            standardType: std.standardType,
+            industry: std.industry,
+            source: std.source,
+            presetTemplate: std.presetTemplate,
+            domainsMeta: std.domainsMeta,
+            presetMethod: std.presetMethod,
+            columnMap: std.columnMap,
+            levelCombo: std.levelCombo,
+            createdAt: new Date().toISOString(),
+          }).run();
+
+          if (items.length > 0) {
+            tx.insert(schema.assessmentItems).values(items.map(i => ({
+              id: i.id,
+              standardId: i.standardId,
+              domain: i.domain,
+              controlPoint: i.controlPoint,
+              controlName: i.controlName,
+              requirement: i.requirement,
+              minLevel: i.minLevel,
+              maxLevel: i.maxLevel,
+              extensionType: i.extensionType,
+              isHighRisk: i.isHighRisk,
+              sortOrder: i.sortOrder,
+              parentId: i.parentId,
+              presetResult: i.presetResult,
+              presetRecord: i.presetRecord,
+              presetByType: i.presetByType,
+            }))).run();
+          }
+        });
+      } catch (e) {
+        log.error(`内置标准入驻失败(code=${std.code})，该标准已整体回滚:`, e);
+        continue;
       }
       added++;
       log.info(`内置标准入驻成功: ${std.name}(code=${std.code})，测评项 ${items.length} 条`);
@@ -887,6 +1171,15 @@ async function initStandardLibrary(): Promise<void> {
     log.info(`内置标准入驻完成：本次新增 ${added} 个（seed 共 ${seed.standards.length} 个）`);
   } catch (e) {
     log.error('内置标准入驻失败:', e);
+  } finally {
+    // seed 数据（约 548KB 源码 / 数千条测评项）只在入驻时用一次，
+    // 用后释放引用，让大数组可被 GC 回收，避免常驻堆内存（P2-18）。
+    try {
+      const mod = await import('./seeds/standards');
+      mod.releaseStandardSeeds?.();
+    } catch {
+      // 释放失败不影响功能，仅需保证不抛到启动流程
+    }
   }
 
   // 版本号更新（同步 system_settings.standardDataVersion，便于后续升级识别）
@@ -965,26 +1258,34 @@ async function initCommandLibrary(): Promise<void> {
 
     log.info(`初始化核查命令库: 本次新增 ${missingSeeds.length} 条（种子共 ${seeds.length} 条）`);
 
-    for (const cmd of missingSeeds) {
-      await dbInstance.insert(schema.knowledgeCommands)
-        .values({
-          id: cmd.id,
-          name: cmd.name,
-          target: cmd.target,
-          command: cmd.command,
-          description: cmd.description,
-          os: cmd.os,
-          brand: cmd.brand,
-          deviceType: cmd.deviceType,
-          category: cmd.category,
-          subCategory: cmd.subCategory,
-          isFavorite: 0,
-          referenceCount: 0,
-          createdAt: cmd.createdAt || new Date().toISOString(),
-          updatedAt: cmd.updatedAt || new Date().toISOString(),
-        })
-        .onConflictDoNothing({ target: schema.knowledgeCommands.id });
-    }
+    // 批量插入：原实现逐条 await insert（319 条 = 319 次往返），首次启动显著耗时。
+    // 改为「一次事务 + 分批多行 values」，对齐 initKnowledgeBase 的做法。
+    const rows = missingSeeds.map((cmd) => ({
+      id: cmd.id,
+      name: cmd.name,
+      target: cmd.target,
+      command: cmd.command,
+      description: cmd.description,
+      os: cmd.os,
+      brand: cmd.brand,
+      deviceType: cmd.deviceType,
+      category: cmd.category,
+      subCategory: cmd.subCategory,
+      isFavorite: 0,
+      referenceCount: 0,
+      createdAt: cmd.createdAt || new Date().toISOString(),
+      updatedAt: cmd.updatedAt || new Date().toISOString(),
+    }));
+
+    const BATCH_SIZE = 50;
+    dbInstance.transaction((tx) => {
+      for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+        tx.insert(schema.knowledgeCommands)
+          .values(rows.slice(i, i + BATCH_SIZE))
+          .onConflictDoNothing({ target: schema.knowledgeCommands.id })
+          .run();
+      }
+    });
 
     log.info('核查命令库初始化完成');
   } catch (error) {

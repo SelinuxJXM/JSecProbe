@@ -1,6 +1,7 @@
 import sql from 'mssql';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
+import { logger as log } from '../../utils/logger';
 import type { IConnector, ExecResult } from './connector';
 import {
   parseExtraConfig,
@@ -19,6 +20,16 @@ export class SqlServerConnector implements IConnector {
     const cfg = parseExtraConfig(profile.extraConfig);
     const password = decryptSecret(profile.passwordEncrypted);
     this.commandTimeoutMs = getCommandTimeout(profile);
+    // 传输安全：默认开启 TDS 加密（encrypt:true + trustServerCertificate:true
+    // = 加密传输但接受自签证书）。原实现硬编码 encrypt:false，
+    // 凭据与核查结果在链路上完全明文，对测评工具属致命缺陷。
+    // 内网老版本 SQL Server 不支持加密时，可在连接配置的 extraConfig 中显式
+    // 设置 {"encrypt": false} 回退，此时会打印告警留痕。
+    const encrypt = cfg.encrypt === undefined ? true : !!cfg.encrypt;
+    const trustCert = cfg.trustServerCertificate === undefined ? true : !!cfg.trustServerCertificate;
+    if (!encrypt) {
+      log.warn(`[SQLServer] ${profile.host} 已显式关闭传输加密，凭据与查询结果将明文传输`);
+    }
     const config: sql.config = {
       server: profile.host,
       port: profile.port || 1433,
@@ -26,8 +37,8 @@ export class SqlServerConnector implements IConnector {
       password: password || undefined,
       database: cfg.database || 'master',
       options: {
-        encrypt: false,
-        trustServerCertificate: true,
+        encrypt,
+        trustServerCertificate: trustCert,
         instanceName: cfg.instance || undefined,
         requestTimeout: this.commandTimeoutMs,
         connectTimeout: profile.timeoutMs || 10000,

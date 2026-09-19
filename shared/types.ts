@@ -437,6 +437,74 @@ export interface ChatMessageWithAttachments {
   attachments?: ChatAttachment[];
 }
 
+// ============ 项目归档（整包导出 / 整包还原） ============
+
+export interface ProjectArchiveCounts {
+  assets: number;
+  records: number;
+  issues: number;
+  tasks: number;
+  results: number;
+  documents: number;
+  members: number;
+  connections: number;
+  standards: number;
+  items: number;
+  files: number;
+}
+
+export interface ProjectArchiveSummary {
+  id: string;
+  name: string;
+  systemName: string;
+  level: number;
+  status: string;
+  createdAt: string;
+  assetCount: number;
+  recordCount: number;
+  issueCount: number;
+  taskCount: number;
+  /** 仅预览（导入前）时给出：该 id 的项目在本机是否已存在 */
+  existsLocally?: boolean;
+  localName?: string;
+}
+
+export interface ProjectArchiveManifest {
+  version: string;
+  appVersion: string;
+  createdAt: string;
+  projects: ProjectArchiveSummary[];
+  counts: ProjectArchiveCounts;
+  includeStandards: boolean;
+  credentialsIncluded: boolean;
+  encrypted: boolean;
+}
+
+export interface ProjectArchiveExportResult {
+  success?: boolean;
+  path?: string;
+  size?: number;
+  fileCount?: number;
+  missingFiles?: string[];
+}
+
+export interface ProjectArchivePreview {
+  manifest: ProjectArchiveManifest;
+  projects: ProjectArchiveSummary[];
+  encrypted?: boolean;
+  warnings?: string[];
+}
+
+export type ProjectArchiveConflictStrategy = 'skip' | 'overwrite' | 'copy';
+
+export interface ProjectArchiveImportResult {
+  imported: Array<{ id: string; name: string; mode: 'new' | 'overwrite' | 'copy' }>;
+  skipped: string[];
+  restoredFiles: number;
+  missingFiles: number;
+  warnings: string[];
+}
+
 export interface ApiBridge {
   auth: {
     login: (username: string, password: string) => Promise<IpcResponse<LoginResult>>;
@@ -467,10 +535,27 @@ export interface ApiBridge {
     create: (data: Partial<Project>) => Promise<IpcResponse<Project>>;
     update: (id: string, data: Partial<Project>) => Promise<IpcResponse<Project>>;
     remove: (id: string) => Promise<IpcResponse<void>>;
-    import: () => Promise<IpcResponse<{ imported: number }>>;
     export: (projectId: string) => Promise<IpcResponse<{ path: string }>>;
-    exportAll: () => Promise<IpcResponse<{ path: string }>>;
+    /** 导出项目字段清单（Excel，不可回导）；不传 projectIds 则导出全部 */
+    exportAll: (projectIds?: string[]) => Promise<IpcResponse<{ path: string }>>;
     resolveStandardId: (projectId: string) => Promise<IpcResponse<string>>;
+    // —— 项目归档：把项目的全部数据（含附件与依赖标准）整体导出 / 还原 ——
+    exportArchive: (payload: {
+      projectIds: string[];
+      password?: string;
+      includeStandards?: boolean;
+      includeCredentials?: boolean;
+    }) => Promise<IpcResponse<ProjectArchiveExportResult>>;
+    selectArchive: () => Promise<IpcResponse<{ path: string; encrypted: boolean }>>;
+    previewArchive: (payload: {
+      archivePath: string;
+      password?: string;
+    }) => Promise<IpcResponse<ProjectArchivePreview>>;
+    importArchive: (payload: {
+      archivePath: string;
+      password?: string;
+      strategy: ProjectArchiveConflictStrategy;
+    }) => Promise<IpcResponse<ProjectArchiveImportResult>>;
   };
   asset: {
     list: (params: AssetListParams) => Promise<IpcResponse<AssetListResult>>;
@@ -635,9 +720,10 @@ export interface ApiBridge {
     openDataFolder: () => Promise<IpcResponse<void>>;
     selectFile: (filters?: FileFilter[]) => Promise<IpcResponse<string | null>>;
     saveFile: (defaultPath?: string, filters?: FileFilter[]) => Promise<IpcResponse<string | null>>;
-    backupData: (customPath?: string) => Promise<IpcResponse<string>>;
-    restoreData: (backupPath: string, options?: { incremental?: boolean; projectIds?: string[] }) => Promise<IpcResponse<void>>;
-    previewBackup: (backupPath: string) => Promise<IpcResponse<any>>;
+    backupData: (customPath?: string, password?: string) => Promise<IpcResponse<string>>;
+    restoreData: (backupPath: string, options?: { incremental?: boolean; projectIds?: string[]; password?: string }) => Promise<IpcResponse<void>>;
+    previewBackup: (backupPath: string, password?: string) => Promise<IpcResponse<any>>;
+    isBackupEncrypted: (backupPath: string) => Promise<IpcResponse<boolean>>;
     listBackups: () => Promise<IpcResponse<any[]>>;
     changeDataPath: (newPath: string) => Promise<IpcResponse<string>>;
   };

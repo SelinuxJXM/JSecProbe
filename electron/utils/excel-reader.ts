@@ -5,6 +5,49 @@ export interface ExcelSheetData {
   rows: any[][];
 }
 
+/**
+ * 将 ExcelJS 的单元格值归一化为「可直接入库的标量」。
+ *
+ * ExcelJS 不会对单元格做自动求值/展开，直接把 cell.value 交给下游会得到：
+ * - 公式单元格 → { formula, result } 对象
+ * - 富文本单元格 → { richText: [{ text, font }] } 数组
+ * - 超链接单元格 → { text, hyperlink } 对象
+ * - 错误单元格 → { error: '#N/A' }
+ * 这些都会让字段变成 "[object Object]" 或空值，属于静默写坏数据。
+ */
+function normalizeCellValue(value: any): any {
+  if (value == null) return null;
+
+  // 公式 / 共享公式：优先取已缓存的计算结果，否则退回公式文本本身
+  if (typeof value === 'object' && ('formula' in value || 'sharedFormula' in value)) {
+    const result = (value as any).result;
+    if (result != null && typeof result === 'object' && 'error' in result) {
+      return null; // 公式计算出错误值，按空处理
+    }
+    return result != null ? normalizeCellValue(result) : null;
+  }
+
+  // 富文本：拼接各片段文本
+  if (typeof value === 'object' && Array.isArray((value as any).richText)) {
+    return (value as any).richText.map((r: any) => String(r?.text ?? '')).join('') || null;
+  }
+
+  // 超链接单元格：取显示文本
+  if (typeof value === 'object' && 'text' in value && 'hyperlink' in value) {
+    return (value as any).text ?? null;
+  }
+
+  // 错误单元格
+  if (typeof value === 'object' && 'error' in value) {
+    return null;
+  }
+
+  // 日期：保持 Date 实例，由调用方按需格式化
+  if (value instanceof Date) return value;
+
+  return value;
+}
+
 function assertXlsx(filePath: string): void {
   const lower = filePath.toLowerCase();
   if (lower.endsWith('.xls')) {
@@ -25,9 +68,7 @@ export async function readExcelSheets(filePath: string): Promise<ExcelSheetData[
   for (const ws of workbook.worksheets) {
     const rows: any[][] = [];
     ws.eachRow({ includeEmpty: true }, (row) => {
-      const values = row.values as any[];
-      // row.values 为 1-based，移除首位的行号占位
-      values.shift();
+      const values = (row.values as any[]).slice(1).map(normalizeCellValue);
       rows.push(values);
     });
     sheets.push({ name: ws.name, rows });
@@ -49,7 +90,7 @@ export async function readExcelAsObjects(filePath: string, sheetName?: string): 
   const rows: any[] = [];
   let headers: string[] = [];
   ws.eachRow({ includeEmpty: true }, (row, rowNumber) => {
-    const values = (row.values as any[]).slice(1);
+    const values = (row.values as any[]).slice(1).map(normalizeCellValue);
     if (rowNumber === 1) {
       headers = values.map((v) => (v == null ? '' : String(v).trim()));
       return;

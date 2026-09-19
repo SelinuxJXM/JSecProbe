@@ -6,6 +6,21 @@ import { eq, sql, and, or, lte, inArray, count, asc } from 'drizzle-orm';
 import log from 'electron-log';
 import { decryptSecret } from './credential.util';
 
+/**
+ * HTML 转义：报告 HTML 由模板字符串手工拼接，项目名/单位名/问题描述等
+ * 用户可控字段直接插值会在含 `<`、`&` 时破坏封面与表格渲染（并构成注入面）。
+ * 仅用于 HTML 版报告；Word 版走 docx 库的对象模型，天然安全，不应使用本函数。
+ */
+function escapeHtml(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function decryptApiKey(stored: string): string {
   const result = decryptSecret(stored);
   if (!result && stored && (stored.startsWith('enc:v1:') || stored.startsWith('enc:'))) {
@@ -36,6 +51,7 @@ import {
 import { getMainWindow } from '../main';
 import { ASSET_CATEGORY_NAMES } from '../utils/excel-config';
 import { getPromptTemplate, renderTemplate } from './ai-prompt.service';
+import { computeAssessmentProgress } from './assessment-progress';
 
 // 字体配置常量
 const FONT_CN = 'STFangsong';
@@ -387,6 +403,10 @@ export class ReportService {
 
     const assessmentStats = await this.getAssessmentStats(projectId, standardId);
 
+    // 符合率统一走 services/assessment-progress（格内口径），与问题清单页、现场核查页一致。
+    // 此前读的是 projects.compliance_rate 字段，而该字段全仓无写入点（恒为 0），报告里的符合率一直是 0。
+    const progress = await computeAssessmentProgress(projectId, standardId);
+
     return {
       project,
       issues,
@@ -399,7 +419,7 @@ export class ReportService {
         rectifying,
         resolved,
         closed,
-        complianceRate: project?.complianceRate || 0,
+        complianceRate: progress.complianceRate,
         domainStats,
       },
       assets,
@@ -2205,10 +2225,28 @@ export class ReportService {
       },
     });
 
-    try {
-      await hiddenWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
+    // 通过临时文件加载，而非 data: URL。
+    // 报告 HTML 动辄数百 KB（含内联样式与全部问题清单），data: URL 会逼近 Chromium 的
+    // URL 长度上限，大报告会加载失败；写临时文件 + file:// 没有长度限制。
+    const os = require('os');
+    const tmpHtmlPath = path.join(
+      os.tmpdir(),
+      `jsecprobe-report-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.html`
+    );
 
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      fs.writeFileSync(tmpHtmlPath, htmlContent, 'utf8');
+      await hiddenWindow.loadFile(tmpHtmlPath);
+
+      // 固定 setTimeout(1000) 在慢机器上不够（分页与图片缺失）、在快机器上又白等。
+      // 改为等页面真正就绪：loadFile 已解析 did-finish-load，这里再等字体就绪 + 一帧渲染。
+      await hiddenWindow.webContents.executeJavaScript(
+        `(async () => {
+          if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch (e) {} }
+          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+          return document.readyState;
+        })()`
+      ).catch(() => { /* 执行失败不阻断，直接出 PDF */ });
 
       const pdfBuffer = await hiddenWindow.webContents.printToPDF({
         marginsType: 1,
@@ -2224,6 +2262,12 @@ export class ReportService {
       // 任何异常路径都必须销毁隐藏窗口，否则渲染进程会泄漏（用户反复触发报告生成会累积泄漏）
       if (hiddenWindow && !hiddenWindow.isDestroyed()) {
         hiddenWindow.destroy();
+      }
+      // 清理临时 HTML，避免残留报告正文（含被测单位与问题细节）在临时目录
+      try {
+        if (fs.existsSync(tmpHtmlPath)) fs.unlinkSync(tmpHtmlPath);
+      } catch {
+        // 临时文件删除失败不影响报告已生成的结果
       }
     }
   }
@@ -2290,10 +2334,10 @@ export class ReportService {
         <span class="standard-badge" style="background:#${standard.badgeColor}">${standard.badgeLabel}</span>
         <span class="standard-code">${standard.code} · ${standard.name}</span>
       </div>
-      <p>项目名称：${project?.name || '-'}</p>
-      <p>被测单位：${project?.assessedUnit || '-'}</p>
-      <p>系统名称：${project?.systemName || '-'}</p>
-      <p>安全等级：第 ${project?.level || '-'} 级</p>
+      <p>项目名称：${escapeHtml(project?.name) || '-'}</p>
+      <p>被测单位：${escapeHtml(project?.assessedUnit) || '-'}</p>
+      <p>系统名称：${escapeHtml(project?.systemName) || '-'}</p>
+      <p>安全等级：第 ${escapeHtml(project?.level) || '-'} 级</p>
       <p>报告日期：${timestamp}</p>
     </div>
     <div class="page-break"></div>`;
@@ -2320,7 +2364,7 @@ export class ReportService {
     const _htmlStandardPrefix = standard.standardType === 'industry' && standard.industry
       ? `${standard.industry}行业标准`
       : '国家标准';
-    const _htmlOverviewClause = `本报告依据${standard.code}《${standard.name}》（${_htmlStandardPrefix}）对${project?.systemName || '该系统'}进行等级保护测评。测评工作涵盖了${standard.domainNamesIncluded}等${standard.domainCount}个安全域。`;
+    const _htmlOverviewClause = `本报告依据${escapeHtml(standard.code)}《${escapeHtml(standard.name)}》（${escapeHtml(_htmlStandardPrefix)}）对${escapeHtml(project?.systemName) || '该系统'}进行等级保护测评。测评工作涵盖了${escapeHtml(standard.domainNamesIncluded)}等${standard.domainCount}个安全域。`;
 
     // 概述
     if (options.includeSections.includes('overview')) {
@@ -2375,7 +2419,7 @@ export class ReportService {
       if (summary.domainStats && summary.domainStats.length > 0) {
         for (const d of summary.domainStats) {
           const level = d.count > 5 ? '高' : d.count > 2 ? '中' : '低';
-          html += `<tr><td>${d.name}</td><td>${d.count} 个</td><td>${level}</td></tr>`;
+          html += `<tr><td>${escapeHtml(d.name)}</td><td>${d.count} 个</td><td>${level}</td></tr>`;
         }
       }
       html += `</table><div class="page-break"></div>`;
@@ -2407,7 +2451,7 @@ export class ReportService {
           const issue = issues[i];
           const riskClass = issue.riskLevel === 'high' ? 'risk-high' : issue.riskLevel === 'medium' ? 'risk-medium' : 'risk-low';
           const domain = data.domainNameMap[issue.securityDomain] || issue.securityDomain;
-          html += `<tr><td class="text-center">${i + 1}</td><td class="${riskClass}">${riskLabel(issue.riskLevel)}</td><td>${domain}</td><td>${issue.controlPoint || '-'}</td><td>${issue.issueTitle || '-'}</td></tr>`;
+          html += `<tr><td class="text-center">${i + 1}</td><td class="${riskClass}">${riskLabel(issue.riskLevel)}</td><td>${escapeHtml(domain)}</td><td>${escapeHtml(issue.controlPoint) || '-'}</td><td>${escapeHtml(issue.issueTitle) || '-'}</td></tr>`;
         }
         html += `</table>`;
 
@@ -2418,9 +2462,9 @@ export class ReportService {
             for (const issue of highRiskIssues) {
               html += `
       <div class="issue-item">
-        <div class="issue-title">【${issue.controlPoint || '-'}-${issue.controlName || '-'}】${issue.issueTitle || '-'}</div>
-        <div class="issue-desc">问题描述：${issue.issueDescription || '-'}</div>
-        <div class="issue-desc">整改建议：${issue.rectificationSuggestion || '-'}</div>
+        <div class="issue-title">【${escapeHtml(issue.controlPoint) || '-'}-${escapeHtml(issue.controlName) || '-'}】${escapeHtml(issue.issueTitle) || '-'}</div>
+        <div class="issue-desc">问题描述：${escapeHtml(issue.issueDescription) || '-'}</div>
+        <div class="issue-desc">整改建议：${escapeHtml(issue.rectificationSuggestion) || '-'}</div>
       </div>`;
             }
           }
@@ -2432,9 +2476,9 @@ export class ReportService {
               for (const issue of mediumRiskIssues) {
                 html += `
       <div class="issue-item">
-        <div class="issue-title">【${issue.controlPoint || '-'}-${issue.controlName || '-'}】${issue.issueTitle || '-'}</div>
-        <div class="issue-desc">问题描述：${issue.issueDescription || '-'}</div>
-        <div class="issue-desc">整改建议：${issue.rectificationSuggestion || '-'}</div>
+        <div class="issue-title">【${escapeHtml(issue.controlPoint) || '-'}-${escapeHtml(issue.controlName) || '-'}】${escapeHtml(issue.issueTitle) || '-'}</div>
+        <div class="issue-desc">问题描述：${escapeHtml(issue.issueDescription) || '-'}</div>
+        <div class="issue-desc">整改建议：${escapeHtml(issue.rectificationSuggestion) || '-'}</div>
       </div>`;
               }
             }
@@ -2445,9 +2489,9 @@ export class ReportService {
               for (const issue of lowRiskIssues) {
                 html += `
       <div class="issue-item">
-        <div class="issue-title">【${issue.controlPoint || '-'}-${issue.controlName || '-'}】${issue.issueTitle || '-'}</div>
-        <div class="issue-desc">问题描述：${issue.issueDescription || '-'}</div>
-        <div class="issue-desc">整改建议：${issue.rectificationSuggestion || '-'}</div>
+        <div class="issue-title">【${escapeHtml(issue.controlPoint) || '-'}-${escapeHtml(issue.controlName) || '-'}】${escapeHtml(issue.issueTitle) || '-'}</div>
+        <div class="issue-desc">问题描述：${escapeHtml(issue.issueDescription) || '-'}</div>
+        <div class="issue-desc">整改建议：${escapeHtml(issue.rectificationSuggestion) || '-'}</div>
       </div>`;
               }
             }

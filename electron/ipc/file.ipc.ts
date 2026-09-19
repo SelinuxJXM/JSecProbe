@@ -113,6 +113,35 @@ async function cleanupScreenshots(dryRun: boolean, projectId?: string): Promise<
     }
   }
 
+  // 2.1 关键补充：问题清单的证据材料（issues.evidence_files）同样引用 evidence/ 下的文件。
+  // 此前只统计 assessment_records.screenshot_paths，导致"仅被问题证据引用"的取证材料
+  // 被误判为孤儿并永久删除（不可逆）。这里一并入引用集。
+  const issueRecs: Array<{ evidenceFiles: string | null }> = projectId
+    ? await db
+        .select({ evidenceFiles: schema.issues.evidenceFiles })
+        .from(schema.issues)
+        .where(eq(schema.issues.projectId, projectId))
+    : await db
+        .select({ evidenceFiles: schema.issues.evidenceFiles })
+        .from(schema.issues);
+
+  for (const r of issueRecs) {
+    if (!r?.evidenceFiles) continue;
+    let arr: any[] = [];
+    try {
+      const p = JSON.parse(r.evidenceFiles);
+      if (Array.isArray(p)) arr = p;
+    } catch {
+      arr = [r.evidenceFiles];
+    }
+    for (const raw of arr) {
+      if (typeof raw !== 'string' || !raw.trim()) continue;
+      try {
+        referenced.add(path.resolve(resolvePathSync(raw)));
+      } catch { /* 单个路径解析失败不影响整体 */ }
+    }
+  }
+
   // 3. 计算孤儿 = scanned - referenced（temp 下的按 24h 过期算）
   const now = Date.now();
   const TEMP_EXPIRE_MS = 24 * 3600 * 1000;

@@ -1,8 +1,10 @@
 import { Client, type ClientChannel, type ConnectConfig } from 'ssh2';
 import * as fs from 'fs';
+import log from 'electron-log';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
-import { getCommandTimeout } from './db.util';
+import { getCommandTimeout, parseExtraConfig } from './db.util';
+import { normalizePolicy, verifyHostKey } from './known-hosts';
 import { CommandTimeoutError, type IConnector, type ExecResult } from './connector';
 
 export class SshConnector implements IConnector {
@@ -11,17 +13,34 @@ export class SshConnector implements IConnector {
 
   async connect(profile: ConnectionProfile): Promise<void> {
     if (this.client) return;
-    const cfg: ConnectConfig = {
+    const cfg = parseExtraConfig(profile.extraConfig);
+    const port = profile.port || 22;
+    const connectCfg: ConnectConfig = {
       host: profile.host,
-      port: profile.port || 22,
+      port,
       username: profile.username || undefined,
       readyTimeout: profile.timeoutMs || 10000,
     };
     if (profile.authMethod === 'privateKey' && profile.privateKeyPath) {
-      cfg.privateKey = await fs.promises.readFile(profile.privateKeyPath, 'utf8');
+      connectCfg.privateKey = await fs.promises.readFile(profile.privateKeyPath, 'utf8');
     } else {
-      cfg.password = decryptSecret(profile.passwordEncrypted);
+      connectCfg.password = decryptSecret(profile.passwordEncrypted);
     }
+    // 主机指纹校验：未提供 hostVerifier 时 ssh2 默认接受任意主机密钥，
+    // 在密码认证下等同于把管理员口令交给链路上的任何人。此处强制校验。
+    const policy = normalizePolicy(cfg.hostKeyPolicy);
+    connectCfg.hostVerifier = ((key: Buffer, verify: (ok: boolean) => void) => {
+      try {
+        const res = verifyHostKey(profile.host, port, key, policy);
+        if (!res.ok) {
+          log.error(`[SSH] 主机校验失败: ${res.reason}`);
+        }
+        verify(res.ok);
+      } catch (e) {
+        log.error('[SSH] 主机校验异常，按拒绝处理:', e);
+        verify(false);
+      }
+    }) as ConnectConfig['hostVerifier'];
     this.commandTimeoutMs = getCommandTimeout(profile);
     await new Promise<void>((resolve, reject) => {
       const client = new Client();
@@ -44,7 +63,7 @@ export class SshConnector implements IConnector {
         }
         reject(e);
       });
-      client.connect(cfg);
+      client.connect(connectCfg);
     });
   }
 

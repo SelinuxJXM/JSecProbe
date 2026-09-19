@@ -7,7 +7,7 @@ import { eq, and, like, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { getAppDataPath } from '../main/paths';
 import { wrap } from '../utils/ipc-wrapper';
-import { toRelativePath, validateDataPath } from '../utils/path-resolver';
+import { toRelativePath, validateDataPath, validateReadablePath } from '../utils/path-resolver';
 import { readExcelSheets, readExcelAsObjects } from '../utils/excel-reader';
 
 const MAX_EXCEL_SIZE = 50 * 1024 * 1024;
@@ -493,9 +493,14 @@ export function registerKnowledgeHandlers(): void {
     tags?: string;
     filePath: string;
   }) => {
-      const { categoryId, title, type, description, version, tags, filePath: srcPath } = data;
+      const { categoryId, title, type, description, version, tags, filePath: rawSrcPath } = data;
 
-      if (!fs.existsSync(srcPath)) {
+      // 读来源统一收口：必须是受管数据目录内的文件，或用户亲手挑选（已登记）的文件。
+      // 此前直接 copyFileSync(渲染层传来的任意路径)，等同于"把任意文件搬进可读目录"。
+      const srcPath = rawSrcPath
+        ? await validateReadablePath(rawSrcPath).catch(() => { throw new Error('源文件不在允许的读取范围内'); })
+        : '';
+      if (!srcPath || !fs.existsSync(srcPath)) {
         throw new Error('源文件不存在');
       }
 

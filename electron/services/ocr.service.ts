@@ -1,10 +1,76 @@
 import { createWorker, Worker } from 'tesseract.js';
+import { app } from 'electron';
 import log from 'electron-log';
 import sharp from 'sharp';
-import { readFile, stat } from 'fs/promises';
+import { readFile, writeFile, stat, mkdir } from 'fs/promises';
+import * as path from 'path';
 
 const MAX_IMAGE_SIZE_MB = 20;
 const MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024;
+
+/**
+ * 离线语言包目录。
+ * 未显式指定 langPath 时，tesseract.js 会从 jsdelivr CDN 下载 traineddata ——
+ * 现场测评多为内网/隔离环境，且根目录的 *.traineddata 既未被引用也未被打包，
+ * 结果就是 OCR 在离线环境必然失败。这里显式指向随包发布的 resources/tessdata。
+ */
+function resolveTessDataDir(): string {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'tessdata');
+  }
+  return path.join(app.getAppPath(), 'resources', 'tessdata');
+}
+
+/**
+ * 语言包缓存目录。默认值为 '.'（进程工作目录），打包后落在安装目录（通常不可写），
+ * 会导致每次识别都回填缓存失败并反复落盘报错。改到 userData 下的可写目录。
+ */
+function resolveTessCacheDir(): string {
+  return path.join(app.getPath('userData'), 'tesseract-cache');
+}
+
+async function ensureDir(dir: string): Promise<void> {
+  try {
+    await mkdir(dir, { recursive: true });
+  } catch {
+    // 目录已存在或不可创建：tesseract.js 会自行降级，不阻断识别
+  }
+}
+
+/**
+ * 把随包语言包预置进 tesseract 的缓存目录（离线可用的关键一步）。
+ *
+ * 背景：tesseract.js 在加载语言包时先查缓存（`adapter.readCache`），缓存未命中才去
+ * `langPath` 取。而在 Electron **主进程**里 `is-electron()` 为真，
+ * `getEnvironment('type')` 返回 `'electron'` 而不是 `'node'`，
+ * 于是 `worker-script/index.js:134` 的 `env !== 'node'` 分支成立 —— 它把本地路径当成 URL
+ * 交给 node-fetch 去拉，node-fetch 只接受绝对 URL，直接抛
+ * `TypeError: Only absolute URLs are supported`，OCR 彻底不可用（且该错误是 throw 出来的，
+ * 不装 errorHandler 会顶穿主进程）。
+ *
+ * 缓存命中路径走的是 fs 读取，不经过 fetch，所以只要先把 `<lang>.traineddata`
+ * 放进 cachePath，就能完全绕开这个判定 bug。
+ */
+async function primeTessCache(langPath: string, cachePath: string, language: string): Promise<void> {
+  const langs = language.split('+').map(s => s.trim()).filter(Boolean);
+  for (const lang of langs) {
+    const dest = path.join(cachePath, `${lang}.traineddata`);
+    try {
+      await stat(dest);
+      continue; // 缓存已有，直接用
+    } catch {
+      // 不存在，继续拷贝
+    }
+    try {
+      const src = path.join(langPath, `${lang}.traineddata`);
+      await stat(src);
+      await writeFile(dest, await readFile(src));
+      log.info(`[OCR] 已预置语言包到缓存: ${lang}`);
+    } catch (err) {
+      log.warn(`[OCR] 语言包 ${lang} 预置失败，将尝试在线获取:`, err);
+    }
+  }
+}
 
 let sharedWorker: Worker | null = null;
 let sharedWorkerLanguage: string | null = null;
@@ -59,10 +125,36 @@ export async function getSharedWorker(language: string = 'chi_sim+eng'): Promise
     sharedWorkerLanguage = language;
     const initPromise = (async () => {
       try {
-        const worker = await createWorker(language);
+        const langPath = resolveTessDataDir();
+        const cachePath = resolveTessCacheDir();
+        await ensureDir(cachePath);
+        // 必须放在 createWorker 之前：缓存命中可绕开 Electron 主进程下
+        // tesseract 误用 node-fetch 拉本地语言包的判定错误（见 primeTessCache 说明）
+        await primeTessCache(langPath, cachePath, language);
+        // gzip:false —— 随包发布的是未压缩的 *.traineddata；
+        // 若保持默认 gzip:true，tesseract.js 会去找 *.traineddata.gz 而必然找不到。
+        const worker = await createWorker(language, undefined, {
+          langPath,
+          cachePath,
+          gzip: false,
+          logger: (m: any) => {
+            if (m && typeof m.progress === 'number') {
+              log.debug(`[OCR] ${m.status} ${(m.progress * 100).toFixed(0)}%`);
+            }
+          },
+          // 必须提供 errorHandler：tesseract.js 在 worker 消息回调里遇到 reject 时，
+          // 若未设置则直接 `throw Error(data)`（createWorker.js:247）。该 throw 发生在
+          // worker 的 message 事件回调中，**不在 createWorker 的 promise 链上**，
+          // try/catch 与 .catch() 都拦不到 —— 结果是主进程未捕获异常，Electron 弹出
+          // 「A JavaScript error occurred in the main process」并阻断启动。
+          // 装上 errorHandler 后，OCR 失败降级为一条日志，应用照常启动。
+          errorHandler: (err: any) => {
+            log.error('[OCR] Worker 运行时错误:', err);
+          },
+        } as any);
         sharedWorker = worker;
         sharedWorkerLanguage = language;
-        log.info(`[OCR] Worker 初始化成功 (language=${language})`);
+        log.info(`[OCR] Worker 初始化成功 (language=${language}, langPath=${langPath})`);
         return worker;
       } catch (error) {
         log.error('[OCR] 初始化 worker 失败:', error);

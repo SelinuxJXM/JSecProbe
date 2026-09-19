@@ -14,6 +14,7 @@ import { createTray, destroyTray } from './tray';
 import { initAutoUpdater } from '../services/update.service';
 import { migrateAllPaths } from '../utils/path-migration';
 import { stopOllama } from '../services/ollama.service';
+import { stopHerdsman } from '../services/herdsman.service';
 
 logger.setProductionMode(app.isPackaged);
 
@@ -260,6 +261,8 @@ async function gracefulCleanup(): Promise<void> {
   AuthService.stopSessionCleanupTimer();
   cleanupLockFile();
   try { await stopOllama(); } catch (e) { log.error('退出时停止 Ollama 失败:', e); }
+  // Herdsman 是 GUI 程序，由本应用拉起后若不回收会留下孤儿窗口常驻后台
+  try { stopHerdsman(); } catch (e) { log.error('退出时停止 Herdsman 失败:', e); }
   try { await terminateOCRWorker(); } catch (e) { log.error('退出时终止 OCR Worker 失败:', e); }
   try { closeDb(); } catch (e) { log.error('退出时关闭数据库失败:', e); }
 }
@@ -306,8 +309,8 @@ process.on('unhandledRejection', (reason, promise) => {
     return;
   }
   setTimeout(() => {
-    try { closeDb(); } catch (e) {}
-    try { showErrorAndQuit('应用异常', '未处理的 Promise 拒绝', String(reason)); } catch (e) {}
+    try { closeDb(); } catch (e) { log.error('崩溃退出前关闭数据库失败:', e); }
+    try { showErrorAndQuit('应用异常', '未处理的 Promise 拒绝', String(reason)); } catch (e) { log.error('显示错误对话框失败:', e); }
     app.quit();
   }, 200);
 });

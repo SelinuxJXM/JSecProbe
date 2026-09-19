@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const http = require('http');
+const { execSync } = require('child_process');
 const { ensureBlockmapInLatestYml } = require('./latest-yml-helper');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -43,42 +44,80 @@ function httpsRequest(url, options, body) {
       });
     });
     req.on('error', reject);
+    // P3-11：此处原为 if/else 两个分支，内容完全相同（死代码）。
+    // 非字符串（Buffer）本应直接写，字符串才需要考虑编码 —— 统一显式按 utf8 处理。
     if (body) {
-      if (typeof body === 'string') {
-        req.write(body);
-      } else {
-        req.write(body);
-      }
+      req.write(typeof body === 'string' ? Buffer.from(body, 'utf8') : body);
     }
     req.end();
   });
+}
+
+/**
+ * 生成 Release 说明。
+ *
+ * 原先这里的 body 是写死的一段 2.4.1 更新日志，只有 TAG 动态 —— 发 2.4.2 时会
+ * 把 2.4.1 的说明原样再贴一遍。改为按优先级取真实来源：
+ *   1. docs/releases/v<version>.md（推荐，人工撰写）
+ *   2. RELEASE_NOTES.md（仓库根目录）
+ *   3. git log 自上一个 tag 以来的提交标题（自动兜底）
+ *   4. 占位文本 + 明确告警，避免静默发布错误说明
+ */
+function buildReleaseNotes() {
+  const version = getPkgVersion();
+
+  const candidates = [
+    path.join(ROOT, 'docs', 'releases', `v${version}.md`),
+    path.join(ROOT, 'docs', 'releases', `${version}.md`),
+    path.join(ROOT, 'RELEASE_NOTES.md'),
+  ];
+  for (const file of candidates) {
+    if (fs.existsSync(file)) {
+      const text = fs.readFileSync(file, 'utf-8').trim();
+      if (text) {
+        console.log(`Release notes 来源: ${path.relative(ROOT, file)}`);
+        return text;
+      }
+    }
+  }
+
+  const commits = gitLogSinceLastTag(version);
+  if (commits) {
+    console.log('Release notes 来源: git log（自动汇总）');
+    return `## ${TAG} 更新内容\n\n${commits}\n\n> 本说明由 git log 自动生成。若需人工撰写，请添加 \`docs/releases/v${version}.md\` 后重新发布。`;
+  }
+
+  console.warn(
+    `⚠️  未找到 docs/releases/v${version}.md，且无法从 git log 生成提交记录。\n` +
+      '   Release 说明将是占位文本，建议补写后编辑该 Release。',
+  );
+  return `## ${TAG} 更新内容\n\n（本次发布的更新说明待补充）`;
+}
+
+function gitLogSinceLastTag(version) {
+  try {
+    // 最近一个 tag（不含当前待发布的版本）
+    const tags = execSync('git tag --sort=-creatordate', { cwd: ROOT, encoding: 'utf8' })
+      .split('\n')
+      .map((t) => t.trim())
+      .filter((t) => t && t !== TAG && t !== `v${version}`);
+    const range = tags.length > 0 ? `${tags[0]}..HEAD` : '';
+    const log = execSync(`git log ${range} --no-merges --pretty=format:"- %s"`, {
+      cwd: ROOT,
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
+    }).trim();
+    return log || '';
+  } catch {
+    return '';
+  }
 }
 
 async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: `## ${TAG} 更新内容
-
-### 问题修复
-- 修复现场核查「AI 智能推荐核查方法」弹窗手动关闭后按钮卡在「AI 分析中」的问题
-- 修复数据库迁移 SQL 建表顺序，清理未登记孤儿迁移，迁移体系与运行时兜底保持一致
-- 修复命令库种子重灌逻辑：按 id 判重，仅补充缺失命令，不再覆盖用户编辑
-
-### 数据健壮性
-- 删除项目/资产时级联清理采集任务、采集结果、连接配置等孤儿数据
-- 统一 createdAt 为 UTC ISO 格式；补充采集/连接/命令库索引
-- VACUUM INTO 备份路径单引号转义；迁移目录改为绝对路径
-- system_settings 补齐 created_at 列兜底
-
-### 安全加固
-- Excel 解析库由 xlsx 替换为 exceljs（修复 CVE-2023-30533 / CVE-2024-22363），.xls 需另存为 .xlsx 后导入
-- .env.example 敏感信息脱敏，移除真实 R2 账户信息
-
-### 构建与发布
-- latest.yml 自动补充 blockmap 字段，支持增量更新
-- GitHub Releases 上传幂等，同名资产自动跳过
-- 新增 npm run typecheck 脚本`,
+    body: buildReleaseNotes(),
     draft: false,
     prerelease: false,
   });
@@ -205,6 +244,11 @@ async function main() {
     {
       path: path.join(DIST_DIR, 'latest.yml'),
       name: 'latest.yml',
+    },
+    // 便携版：package.json 的 win.target 含 portable，此前构建出来却从未上传
+    {
+      path: path.join(DIST_DIR, `JSecProbe ${version}.exe`),
+      name: `JSecProbe-Portable-${version}.exe`,
     },
   ];
 

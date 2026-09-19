@@ -180,7 +180,10 @@ class AppLogger {
     if (context && Object.keys(context).filter(k => !['module', 'duration'].includes(k)).length > 0) {
       const { module: _m, duration: _d, ...extra } = context;
       if (Object.keys(extra).length > 0) {
-        log[level](logMessage, extra);
+        // 关键：落盘前同样走 serializeContext 脱敏。
+        // 此前只有 forwardToDevTools 会脱敏，真正写入 electron-log 文件的是未处理的
+        // 原始 context，导致 SENSITIVE_KEY_REGEX 对文件日志完全失效（明文密码/API Key 落盘）。
+        log[level](logMessage, this.serializeContext(extra as LogContext));
         return;
       }
     }
