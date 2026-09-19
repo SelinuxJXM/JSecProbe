@@ -56,8 +56,8 @@ function httpsRequest(url, options, body) {
 /**
  * 生成 Release 说明。
  *
- * 原先这里的 body 是写死的一段 2.4.1 更新日志，只有 TAG 动态 —— 发 2.4.2 时会
- * 把 2.4.1 的说明原样再贴一遍。改为按优先级取真实来源：
+ * 原先这里的 body 是写死的一段更新日志，只有 TAG 动态 —— 发新版本时会
+ * 把旧版本的说明原样再贴一遍。改为按优先级取真实来源：
  *   1. docs/releases/v<version>.md（推荐，人工撰写）
  *   2. RELEASE_NOTES.md（仓库根目录）
  *   3. git log 自上一个 tag 以来的提交标题（自动兜底）
