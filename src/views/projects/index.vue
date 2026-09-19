@@ -1299,16 +1299,20 @@ onUnmounted(() => {
         background: var(--color-bg-card);
         backdrop-filter: blur(8px);
         z-index: 2;
-        display: flex;
-        align-items: center;
-        gap: 6px;
+        // 注意：td 不能用 display:flex —— 一旦变成 flex 容器就脱离表格行布局，
+        // vertical-align 失效，按钮组不再随行高垂直居中（表现为按钮整体偏上/偏下）。
+        // 恢复 table-cell，用 text-align + inline-flex 按钮实现水平排列。
         padding: 0 8px;
         box-sizing: border-box;
+        text-align: center;
+        white-space: nowrap;
 
         .action-btn {
-          display: flex;
+          display: inline-flex;
           align-items: center;
           justify-content: center;
+          vertical-align: middle;
+          margin: 0 3px;
           width: 28px;
           height: 28px;
           border: 1px solid var(--color-border-default, #E5E7EB);
