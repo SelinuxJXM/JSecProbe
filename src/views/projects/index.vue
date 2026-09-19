@@ -1129,7 +1129,7 @@ onUnmounted(() => {
         &.col-ext { width: 140px; }
         &.col-progress { width: 120px; }
         &.col-time { width: 140px; }
-        &.col-status { width: 100px; position: sticky; right: 0; background: var(--color-bg-card, rgba(255, 255, 255, 0.85)); backdrop-filter: blur(8px); z-index: 2; border-left: 1px solid var(--color-border-light, #E5E7EB); border-right: none; }
+        &.col-status { width: 100px; position: sticky; right: 190px; background: var(--color-bg-card, rgba(255, 255, 255, 0.85)); backdrop-filter: blur(8px); z-index: 2; border-left: 1px solid var(--color-border-light, #E5E7EB); border-right: none; }
         &.col-actions { width: 190px; position: sticky; right: 0; background: var(--color-bg-card, rgba(255, 255, 255, 0.85)); backdrop-filter: blur(8px); z-index: 2; }
       }
     }
@@ -1247,7 +1247,9 @@ onUnmounted(() => {
       .col-status {
         width: 100px;
         position: sticky;
-        right: 0;
+        // 两列均为 sticky 时必须错开停靠位：状态列停在操作列(190px)左侧，
+        // 否则两列都贴 right:0，横向滚动时状态标签被操作按钮整列盖住
+        right: 190px;
         background: var(--color-bg-card);
         backdrop-filter: blur(8px);
         z-index: 2;
@@ -1685,39 +1687,40 @@ onUnmounted(() => {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
-/* 深色主题覆盖 */
-:deep(:root.dark) {
-  .project-table tbody tr {
-    background: var(--color-bg-card);
+/* 深色主题覆盖。
+   注意：表格类名是 .data-table（此前写成 .project-table，整段样式从未命中）；
+   且不能用 :deep() 包裹 :root —— :root(html) 永远不可能是组件内元素的后代。
+   直接写祖先选择器，scoped 会把 [data-v] 附加到末尾元素上，可以正常匹配。 */
+:root.dark .data-table tbody tr {
+  background: var(--color-bg-card);
 
-    &:hover {
-      background: var(--color-bg-surface-hover);
+  &:hover {
+    background: var(--color-bg-surface-hover);
+  }
+
+  &.active {
+    background: rgba(59, 130, 246, 0.12);
+  }
+
+  .status-tag {
+    &.status-draft {
+      background: rgba(107, 114, 128, 0.2);
+      color: #9CA3AF;
     }
 
-    &.active {
-      background: rgba(59, 130, 246, 0.12);
+    &.status-in_progress {
+      background: rgba(59, 130, 246, 0.2);
+      color: #60A5FA;
     }
 
-    .status-tag {
-      &.status-draft {
-        background: rgba(107, 114, 128, 0.2);
-        color: #9CA3AF;
-      }
+    &.status-completed {
+      background: rgba(22, 163, 74, 0.2);
+      color: #34D399;
+    }
 
-      &.status-in_progress {
-        background: rgba(59, 130, 246, 0.2);
-        color: #60A5FA;
-      }
-
-      &.status-completed {
-        background: rgba(22, 163, 74, 0.2);
-        color: #34D399;
-      }
-
-      &.status-archived {
-        background: rgba(217, 119, 6, 0.2);
-        color: #FBBF24;
-      }
+    &.status-archived {
+      background: rgba(217, 119, 6, 0.2);
+      color: #FBBF24;
     }
   }
 }

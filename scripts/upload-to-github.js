@@ -263,7 +263,9 @@ async function main() {
       continue;
     }
 
-    const fileSize = (fs.statSync(file.path).length / 1024 / 1024).toFixed(2);
+    // 注意用 .size 而非 .length —— statSync 返回的是 fs.Stats，没有 length 属性，
+    // 取 length 会得到 undefined 进而算出 NaN，日志里显示成 "(NaN MB)"
+    const fileSize = (fs.statSync(file.path).size / 1024 / 1024).toFixed(2);
     process.stdout.write(`Uploading ${file.name} (${fileSize} MB)... `);
 
     try {
