@@ -541,7 +541,7 @@ body {
   <aside class="sidebar" id="sidebar" aria-label="目录导航">
     <div class="sidebar-header">
       <div class="sidebar-title"><a href="index.html">📄 产品白皮书</a></div>
-      <div class="sidebar-subtitle">JSecProbe V2.4.3</div>
+      <div class="sidebar-subtitle">JSecProbe V2.4.4</div>
     </div>
     <nav aria-label="目录">
       <div class="toc">
@@ -678,7 +678,7 @@ body {
   <main class="content" id="main-content">
     <article class="article">
       <h1>JSecProbe 等级保护现场测评系统</h1>
-      <p class="subtitle">产品白皮书 · 当前版本 V2.4.3 · 技术标准 GB/T 22239-2019</p>
+      <p class="subtitle">产品白皮书 · 当前版本 V2.4.4 · 技术标准 GB/T 22239-2019</p>
 
       <h2 id="intro">一、产品概述</h2>
 
@@ -1405,6 +1405,20 @@ body {
             </td>
           </tr>
           <tr>
+            <td>白皮书 V1.6</td><td>V2.4.4</td>
+            <td>
+              <ul style="margin:0 0 0 18px;padding:0;">
+                <li>修复：深色模式下现场核查表格「扩展项」分组之间的分隔线几乎不可见（深色主题覆盖块里的 border-color 简写把分隔线主色一并覆盖，现显式取回）</li>
+                <li>更新：恢复 GitCode 国内优先源，三个更新源按可达性自动降级 GitCode → GitHub → Cloudflare R2</li>
+                <li>修复：GitCode 未同步最新安装包时误用旧版本安装包，改为严格精确版本匹配，匹配不上即降级下一源</li>
+                <li>健壮性：手动更新下载失败自动改用 R2 重试同一版本</li>
+                <li>发布：新增 GitCode Release 脚本化上传（npm run upload:gitcode），三个更新源发布方式对齐</li>
+                <li>体验：侧边栏图标统一换用 Lucide 线性风格</li>
+                <li>2.7 章节补充三源降级说明与运维提示</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
             <td>白皮书 V1.5</td><td>V2.4.3</td>
             <td>
               <ul style="margin:0 0 0 18px;padding:0;">
@@ -1469,7 +1483,7 @@ body {
 
       <hr>
       <p style="text-align:center;color:var(--gray-500);font-size:14px;padding:20px 0;">
-        <em>本文档最后更新：2026 年 9 月（V1.5，对应 V2.4.3）</em><br>
+        <em>本文档最后更新：2026 年 9 月（V1.6，对应 V2.4.4）</em><br>
         <strong>JSecProbe - 让等保测评更高效、更规范、更智能</strong>
       </p>
     </article>
