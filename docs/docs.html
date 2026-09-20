@@ -786,12 +786,13 @@ body {
       </ul>
 
       <h3 id="h3-27自动更新">2.7 自动更新</h3>
-      <p>采用<strong>双源更新策略</strong>，确保更新可靠性：</p>
+      <p>采用<strong>三源更新策略</strong>，按可达性依次降级，不依赖地理判定：</p>
       <ol>
-        <li><strong>主源</strong>：GitHub Releases（electron-updater）</li>
-        <li><strong>备源</strong>：Cloudflare R2 对象存储</li>
+        <li><strong>GitCode</strong>（国内首选）：可达性优先，10 秒内未命中即让位给下一源</li>
+        <li><strong>GitHub Releases</strong>：electron-updater 原生通道，负责海外更新</li>
+        <li><strong>Cloudflare R2</strong>：对象存储兜底源</li>
       </ol>
-      <p>支持版本检测、下载进度显示、SHA512 校验、静默安装。</p>
+      <p>支持版本检测、下载进度显示、SHA512 校验、安装包数字签名校验、静默安装。</p>
 
       <hr>
 
@@ -1183,7 +1184,7 @@ body {
 
       <h3 id="h3-42安装步骤">4.2 安装步骤</h3>
       <ol>
-        <li>从 <a href="https://github.com/SelinuxJXM/JSecProbe/releases" target="_blank" rel="noopener">GitHub Releases</a> 下载最新安装包</li>
+        <li>下载最新安装包：国内用户建议走 <a href="https://gitcode.com/giver/JSecProbe/releases" target="_blank" rel="noopener">GitCode Releases</a>，海外用户走 <a href="https://github.com/SelinuxJXM/JSecProbe/releases" target="_blank" rel="noopener">GitHub Releases</a></li>
         <li>运行 <code>JSecProbe_Setup_x.x.x.exe</code></li>
         <li>选择安装目录（默认 <code>C:\Program Files\JSecProbe</code>）</li>
         <li>完成安装，启动应用</li>

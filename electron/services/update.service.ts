@@ -36,12 +36,43 @@ const R2_CONFIG = {
   baseUrl: 'https://data.semove.ccwu.cc',
 };
 
-let updateSource: 'github' | 'r2' | null = null;
-let r2UpdateInfo: { version: string; sha512: string; size: number; releaseDate?: string; releaseNotes?: string } | null = null;
-let r2InstallerPath: string | null = null;
+/**
+ * GitCode 更新源（国内优先）。
+ * 公开仓库，只读 Release 无需鉴权 —— 不要在这里塞令牌。
+ */
+const GITCODE_CONFIG = {
+  baseUrl: 'https://gitcode.com',
+  apiBaseUrl: 'https://gitcode.com/api/v5',
+  owner: 'giver',
+  repo: 'JSecProbe',
+};
+
+/**
+ * 自管理下载源（GitCode / R2）解析出的更新信息。
+ * 与 electron-updater 托管的 GitHub 通道区分：这条路要我们自己下载、校验、启动安装包。
+ */
+export interface ManualUpdateInfo {
+  version: string;
+  sha512: string;
+  size: number;
+  releaseDate?: string;
+  releaseNotes?: string;
+  installerUrl: string;
+}
+
+/**
+ * 三源优先级：GitCode（国内）→ GitHub（electron-updater 原生）→ Cloudflare R2（兜底）。
+ * 判定"是否适用某个源"不依赖 GeoIP，直接用可达性表达：
+ * 先问 GitCode，8 秒内不通或没数据就降级，这与"能连上就用"的实际体验一致。
+ */
+let updateSource: 'gitcode' | 'github' | 'r2' | null = null;
+let manualUpdateInfo: ManualUpdateInfo | null = null;
+let manualInstallerPath: string | null = null;
 let pendingCheckFallback = false;
 let activeDownload = false;
 
+/** 整个 GitCode 阶段的耗时上限：超过就认定"国内源不适用"，立即降级 GitHub */
+const GITCODE_PHASE_TIMEOUT = 10000;
 const INSTALLER_PATHS_FILE = 'installer-paths.json';
 
 function getInstallerPathsFile(): string {
@@ -52,10 +83,10 @@ function saveInstallerPaths(): void {
   try {
     const data = {
       updateSource: updateSource,
-      r2: r2InstallerPath,
-      r2Version: r2UpdateInfo?.version || null,
-      r2Sha512: r2UpdateInfo?.sha512 || null,
-      r2UpdateInfo: r2UpdateInfo,
+      manual: manualInstallerPath,
+      manualVersion: manualUpdateInfo?.version || null,
+      manualSha512: manualUpdateInfo?.sha512 || null,
+      manualUpdateInfo: manualUpdateInfo,
     };
     const p = getInstallerPathsFile();
     fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf-8');
@@ -70,12 +101,17 @@ function loadInstallerPaths(): void {
     const p = getInstallerPathsFile();
     if (!fs.existsSync(p)) return;
     const data = JSON.parse(fs.readFileSync(p, 'utf-8')) as any;
-    if (data.r2) {
-      r2InstallerPath = data.r2;
-      updateSource = 'r2';
+    // 兼容 v2.4.3 及更早版本写入的 r2* 键名
+    const savedPath: string | null = data.manual || data.r2 || null;
+    const savedInfo = data.manualUpdateInfo || data.r2UpdateInfo || null;
+    if (savedPath && fs.existsSync(savedPath)) {
+      manualInstallerPath = savedPath;
+      updateSource = data.updateSource === 'gitcode' ? 'gitcode' : 'r2';
+      log.info(`[更新] 已恢复 ${updateSource} 源的安装包路径`);
+    } else if (savedPath) {
+      log.warn('[更新] 持久化的安装包已被系统清理，忽略');
     }
-    if (data.r2UpdateInfo) r2UpdateInfo = data.r2UpdateInfo;
-    log.info('[更新] 已加载持久化的安装包路径');
+    if (savedInfo) manualUpdateInfo = savedInfo;
   } catch (err: any) {
     log.warn('[更新] 加载持久化安装包路径失败:', err.message);
   }
@@ -237,6 +273,110 @@ async function checkR2ForUpdates(): Promise<{ version: string; sha512: string; s
   }
 }
 
+/**
+ * 带超时的网络请求。
+ * Electron 的 net.fetch 不保证响应 AbortSignal，所以用外部计时器兜底：
+ * 超时后立即 reject，底层请求仍在跑也无妨 —— 结果被丢弃即可。
+ */
+function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestInit): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('FETCH_TIMEOUT')), timeoutMs);
+    net.fetch(url, init ?? { method: 'GET' })
+      .then((res) => { clearTimeout(timer); resolve(res); })
+      .catch((err: Error) => { clearTimeout(timer); reject(err); });
+  });
+}
+
+interface GitCodeRelease {
+  tag_name?: string;
+  assets?: Array<{ name: string; browser_download_url: string }>;
+}
+
+/**
+ * 解析 GitCode 上某个 Release 的安装包下载地址。
+ *
+ * 历史包袱：GitCode 侧的 Release 由仓库外的机制自动同步，产出的是空格命名
+ * （JSecProbe Setup 2.4.3.exe），而 GitHub / R2 用连字符（JSecProbe-Setup-2.4.3.exe）。
+ *
+ * 踩过的坑：这里**不能**用 HEAD 探测来判断文件是否存在 —— GitCode 的下载域名对 HEAD
+ * 请求一律返回 401，GET 却正常（实测 200，且文件字节数与 GitHub/R2 完全一致）。
+ * 因此以 Release 接口返回的资产清单为权威来源，缺失时才退回按历史命名拼地址，
+ * 拼错的后果也只是下载阶段拿到 404，那时的提示语已经足够明确。
+ */
+function resolveGitCodeInstallerUrl(release: GitCodeRelease, version: string): string | null {
+  const assets = release.assets || [];
+  const isInstaller = (name: string) => /^JSecProbe[ -]Setup[ -].*\.exe$/.test(name) && !name.endsWith('.blockmap');
+  // 精确版本优先：镜像同步中途可能出现"latest.yml 已到新版、安装包还是旧的"，
+  // 此时宁可不匹配，也不要挑到别的版本的安装包
+  const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const exact = assets.find((a) => new RegExp(`^JSecProbe[ -]Setup[ -]${escaped}\\.exe$`).test(a.name));
+  if (exact) return exact.browser_download_url;
+  const fallbackAsset = assets.find((a) => isInstaller(a.name));
+  if (fallbackAsset) {
+    log.warn(`[更新-GitCode] 清单中没有 ${version} 的安装包，退而使用 ${fallbackAsset.name}（后续由 SHA512 兜底校验）`);
+    return fallbackAsset.browser_download_url;
+  }
+  log.warn('[更新-GitCode] Release 清单中未列出安装包，按历史命名拼下载地址');
+  const base = `${GITCODE_CONFIG.baseUrl}/${GITCODE_CONFIG.owner}/${GITCODE_CONFIG.repo}/releases/download/${encodeURIComponent(release.tag_name || version)}`;
+  return `${base}/${encodeURIComponent(`JSecProbe Setup ${version}.exe`)}`;
+}
+
+/**
+ * 检查 GitCode（国内源）是否有新版本。
+ * 返回 null 表示"不可达"或"没有比当前更高的版本"，由调用方决定是否降级。
+ *
+ * deadline 约束整个 GitCode 阶段的总耗时：一次检查会串行访问 Release 接口与 latest.yml
+ * 两个地址，若各自用满单次超时，"国内快速命中"就可能变成"比其他源更慢"。
+ * 这里是"快速试、快速退"——超过预算即认定国内源不适用，让位给 GitHub。
+ */
+async function checkGitCodeForUpdates(deadline: number = Date.now() + GITCODE_PHASE_TIMEOUT): Promise<ManualUpdateInfo | null> {
+  const remaining = () => Math.max(1500, deadline - Date.now());
+  try {
+    log.info('[更新-GitCode] 正在检查 GitCode 更新源...');
+    const apiUrl = `${GITCODE_CONFIG.apiBaseUrl}/repos/${GITCODE_CONFIG.owner}/${GITCODE_CONFIG.repo}/releases/latest`;
+    const response = await fetchWithTimeout(apiUrl, remaining());
+    if (!response.ok) {
+      log.warn(`[更新-GitCode] 获取 Release 信息失败: HTTP ${response.status}`);
+      return null;
+    }
+    const release = (await response.json()) as GitCodeRelease;
+    if (!release.tag_name) {
+      log.warn('[更新-GitCode] Release 缺少 tag_name');
+      return null;
+    }
+
+    const ymlUrl = release.assets?.find((a) => a.name === 'latest.yml')?.browser_download_url
+      || `${GITCODE_CONFIG.baseUrl}/${GITCODE_CONFIG.owner}/${GITCODE_CONFIG.repo}/releases/download/${encodeURIComponent(release.tag_name)}/latest.yml`;
+    const ymlResponse = await fetchWithTimeout(ymlUrl, remaining());
+    if (!ymlResponse.ok) {
+      log.warn(`[更新-GitCode] 获取 latest.yml 失败: HTTP ${ymlResponse.status}`);
+      return null;
+    }
+    const info = parseLatestYml(await ymlResponse.text());
+    if (!info) {
+      log.warn('[更新-GitCode] 解析 latest.yml 失败');
+      return null;
+    }
+
+    const currentVersion = app.getVersion();
+    log.info(`[更新-GitCode] 当前版本: ${currentVersion}, GitCode 版本: ${info.version}`);
+    if (compareVersions(info.version, currentVersion) <= 0) {
+      log.info('[更新-GitCode] GitCode 上无新版本');
+      return null;
+    }
+
+    const installerUrl = resolveGitCodeInstallerUrl(release, info.version);
+    if (!installerUrl) {
+      log.warn('[更新-GitCode] 未找到可用的安装包资产');
+      return null;
+    }
+    return { ...info, installerUrl };
+  } catch (error: any) {
+    log.warn('[更新-GitCode] 检查失败:', error.message);
+    return null;
+  }
+}
+
 function waitForDrain(stream: fs.WriteStream): Promise<void> {
   return new Promise((resolve, reject) => {
     const onDrain = () => { cleanup(); resolve(); };
@@ -250,21 +390,34 @@ function waitForDrain(stream: fs.WriteStream): Promise<void> {
   });
 }
 
-async function downloadFromR2(version: string, expectedSha512: string): Promise<string> {
-  // 必须与 scripts/upload-to-r2.js / upload-to-github.js 上传的对象名完全一致（连字符）。
-  // 此前此处用 "JSecProbe Setup ${version}.exe"（空格），与上传的 "JSecProbe-Setup-${version}.exe"
-  // 不匹配，导致 R2 备用源必然 404 —— GitHub 不可达时用户看到"有更新"却永远下载失败。
+interface InstallerDownloadOptions {
+  url: string;
+  version: string;
+  expectedSha512: string;
+  /** 日志前缀，用于区分下载来源 */
+  label: string;
+  /** 404 时的补充说明，帮助定位"该源没同步此版本"还是"文件名写错" */
+  notFoundHint?: string;
+}
+
+/**
+ * 自管理更新源的通用下载流程：流式落盘 → 进度上报 → SHA512 校验。
+ * GitCode 与 R2 共用，差别只在 URL、日志标签和 404 提示语。
+ */
+async function downloadInstallerFile(opts: InstallerDownloadOptions): Promise<string> {
+  const { url, version, expectedSha512, label, notFoundHint } = opts;
+  // 落盘名称恒定用连字符格式：GitCode 历史 Release 的资产名带空格，
+  // 若沿用原文件名会让临时目录里出现两种命名，排障与清理都很别扭
   const installerName = `JSecProbe-Setup-${version}.exe`;
-  const downloadUrl = `${R2_CONFIG.baseUrl}/${encodeURIComponent(installerName)}`;
   const tempDir = getSafeTempDir();
   const destPath = path.join(tempDir, installerName);
 
-  log.info(`[更新-R2] 开始下载: ${downloadUrl}`);
-  const response = await net.fetch(downloadUrl, { method: 'GET' });
+  log.info(`${label} 开始下载: ${url}`);
+  const response = await net.fetch(url, { method: 'GET' });
   if (!response.ok) {
-    // 404 绝大多数是"版本尚未同步到 R2"或对象名不一致，给出可诊断的提示而非裸抛错
+    // 404 绝大多数是"该版本尚未同步到此源"或对象名不一致，给出可诊断的提示而非裸抛错
     const detail = response.status === 404
-      ? `R2 上不存在 ${installerName}（可能该版本尚未同步到备用源），请改用 GitHub 源更新`
+      ? notFoundHint || `该源上不存在对应版本的安装包（HTTP 404）`
       : `HTTP ${response.status}`;
     throw new Error(`下载失败: ${detail}`);
   }
@@ -318,16 +471,37 @@ async function downloadFromR2(version: string, expectedSha512: string): Promise<
     writeStream.on('error', reject);
   });
 
-  log.info('[更新-R2] 校验文件完整性...');
+  log.info(`${label} 校验文件完整性...`);
   const fileBuffer = fs.readFileSync(destPath);
   const actualSha512 = crypto.createHash('sha512').update(fileBuffer).digest('base64');
   if (actualSha512 !== expectedSha512) {
     fs.unlinkSync(destPath);
     throw new Error('SHA512 校验失败，下载文件可能已损坏');
   }
-  log.info('[更新-R2] SHA512 校验通过');
+  log.info(`${label} SHA512 校验通过`);
 
   return destPath;
+}
+
+/**
+ * 按当前选中的自管理源下载安装包并持久化路径。
+ * GitCode 与 R2 的差异已收敛到 manualUpdateInfo.installerUrl 与 URL 本身。
+ */
+async function downloadManualUpdate(): Promise<void> {
+  if (!manualUpdateInfo) throw new Error('无法获取更新信息，请重新检查更新');
+  const isGitCode = updateSource === 'gitcode';
+  const destPath = await downloadInstallerFile({
+    url: manualUpdateInfo.installerUrl,
+    version: manualUpdateInfo.version,
+    expectedSha512: manualUpdateInfo.sha512,
+    label: isGitCode ? '[更新-GitCode]' : '[更新-R2]',
+    notFoundHint: isGitCode
+      ? `GitCode 上找不到 ${manualUpdateInfo.version} 的安装包（该源由外部同步，可能尚未完成）`
+      : undefined,
+  });
+  manualInstallerPath = destPath;
+  saveInstallerPaths();
+  sendStatusToWindow({ status: 'downloaded', version: manualUpdateInfo.version });
 }
 
 export function initAutoUpdater(window: BrowserWindow) {
@@ -349,7 +523,7 @@ export function initAutoUpdater(window: BrowserWindow) {
   autoUpdater.on('update-available', (info) => {
     log.info('[更新] 发现新版本:', info.version);
     updateSource = 'github';
-    r2UpdateInfo = null;
+    manualUpdateInfo = null;
     sendStatusToWindow({
       status: 'available',
       version: info.version,
@@ -416,7 +590,35 @@ export function initAutoUpdater(window: BrowserWindow) {
 }
 
 /**
- * 统一的更新检查流程（GitHub 主源 → Cloudflare R2 备用源）。
+ * 回落到 Cloudflare R2 兜底源。返回 true 表示已命中可用更新。
+ */
+async function tryR2Fallback(): Promise<boolean> {
+  const r2Info = await checkR2ForUpdates();
+  if (!r2Info) return false;
+  updateSource = 'r2';
+  // 必须与 scripts/upload-to-r2.js 上传的对象名一致（连字符）。
+  // 此前此处用 "JSecProbe Setup ${version}.exe"（空格），与实际上传对象不匹配，
+  // 导致 R2 兜底源必然 404 —— 主源不可达时用户看到"有更新"却永远下载失败。
+  manualUpdateInfo = {
+    ...r2Info,
+    installerUrl: `${R2_CONFIG.baseUrl}/${encodeURIComponent(`JSecProbe-Setup-${r2Info.version}.exe`)}`,
+  };
+  sendStatusToWindow({
+    status: 'available',
+    version: r2Info.version,
+    releaseDate: r2Info.releaseDate,
+    releaseNotes: r2Info.releaseNotes,
+  });
+  return true;
+}
+
+/**
+ * 统一的更新检查流程（GitCode 国内源 → GitHub 原生通道 → Cloudflare R2 兜底）。
+ *
+ * 为什么 GitCode 在最前：国内直连 GitHub Release 经常超时或极慢，而 GitCode 上的
+ * Release 一直有自动同步。用"可达性"代替地理判定 —— 8 秒内拿不到结果就降级，
+ * 既省掉一次 GeoIP 请求，也天然覆盖"人在国外但能连 GitCode"这类情况。
+ *
  * 供启动自动检查、托盘手动检查、IPC 手动检查三处复用。
  * 检查结果通过 autoUpdater 事件或 sendStatusToWindow 推送到渲染进程。
  */
@@ -425,45 +627,50 @@ async function performUpdateCheck(context: string): Promise<void> {
 
   pendingCheckFallback = true;
   try {
-    await checkWithTimeout();
-  } catch (error: any) {
-    if (error.message === 'GITHUB_TIMEOUT') {
-      log.warn(`[更新] ${context}检查超时，尝试 Cloudflare R2 备用更新源...`);
-      const r2Info = await checkR2ForUpdates();
-      if (r2Info) {
-        updateSource = 'r2';
-        r2UpdateInfo = r2Info;
-        sendStatusToWindow({
-          status: 'available',
-          version: r2Info.version,
-          releaseDate: r2Info.releaseDate,
-          releaseNotes: r2Info.releaseNotes,
-        });
-        return;
-      }
-      sendStatusToWindow({ status: 'error', error: 'GitHub 连接超时，请检查网络后重试' });
+    // 1) 国内优先：GitCode
+    const gitcodeInfo = await checkGitCodeForUpdates();
+    if (gitcodeInfo) {
+      updateSource = 'gitcode';
+      manualUpdateInfo = gitcodeInfo;
+      log.info(`[更新-GitCode] ${context}检查发现新版本: ${gitcodeInfo.version}`);
+      sendStatusToWindow({
+        status: 'available',
+        version: gitcodeInfo.version,
+        releaseDate: gitcodeInfo.releaseDate,
+        releaseNotes: gitcodeInfo.releaseNotes,
+      });
       return;
     }
 
-    log.error(`[更新] ${context}检查更新失败:`, error.message);
-    if (isNetworkError(error)) {
-      log.info('[更新] 网络错误，尝试 Cloudflare R2 备用更新源...');
-      const r2Info = await checkR2ForUpdates();
-      if (r2Info) {
-        updateSource = 'r2';
-        r2UpdateInfo = r2Info;
-        sendStatusToWindow({
-          status: 'available',
-          version: r2Info.version,
-          releaseDate: r2Info.releaseDate,
-          releaseNotes: r2Info.releaseNotes,
-        });
-        return;
+    // 2) electron-updater 托管的 GitHub 通道（事件回调负责推送状态）
+    try {
+      await checkWithTimeout();
+      return;
+    } catch (error: any) {
+      const reason = error.message === 'GITHUB_TIMEOUT'
+        ? 'GitHub 连接超时'
+        : `GitHub 检查失败（${error.message}）`;
+
+      if (error.message === 'GITHUB_TIMEOUT') {
+        log.warn(`[更新] ${context}检查超时，尝试 Cloudflare R2 备用更新源...`);
+      } else {
+        log.error(`[更新] ${context}检查更新失败:`, error.message);
       }
-      log.info('[更新-R2] 备用源也无更新可用');
+
+      const shouldFallback = error.message === 'GITHUB_TIMEOUT' || isNetworkError(error);
+      if (shouldFallback) {
+        if (await tryR2Fallback()) return;
+        log.info('[更新-R2] 备用源也无更新可用');
+        if (error.message === 'GITHUB_TIMEOUT') {
+          sendStatusToWindow({ status: 'error', error: 'GitHub 连接超时，请检查网络后重试' });
+          return;
+        }
+      }
+      log.warn(`[更新] ${reason}`);
+      sendStatusToWindow({ status: 'error', error: error.message || '检查更新失败' });
+      // 保持原有契约：非超时类的失败继续向上抛，渲染进程据此弹一次错误提示
+      throw error;
     }
-    sendStatusToWindow({ status: 'error', error: error.message || '检查更新失败' });
-    throw error;
   } finally {
     pendingCheckFallback = false;
   }
@@ -532,12 +739,12 @@ async function verifyInstallerSignature(installerPath: string): Promise<{ ok: bo
 }
 
 /**
- * 启动已下载的 R2 安装包执行静默安装。
+ * 启动已下载的自管理源（GitCode / R2）安装包执行静默安装。
  * 返回 true 表示安装进程已成功启动；false 表示启动失败（原因已记录日志）。
  * 注意：shell.openPath 失败时 resolve 错误描述字符串（空串代表成功）而非 reject，
  * 必须通过返回值判断成败；spawn 的 error 事件必须监听，否则会变成未捕获异常。
  */
-async function launchR2Installer(installerPath: string): Promise<boolean> {
+async function launchManualInstaller(installerPath: string): Promise<boolean> {
   // 执行前必须校验签名：否则服务端/传输通道被劫持即可向所有测评终端推送并执行任意安装包
   const sig = await verifyInstallerSignature(installerPath);
   if (!sig.ok) {
@@ -599,25 +806,17 @@ export function registerUpdateHandlers() {
 
     log.info('[更新] 手动检查更新');
     updateSource = null;
-    r2UpdateInfo = null;
-    r2InstallerPath = null;
+    manualUpdateInfo = null;
+    manualInstallerPath = null;
     clearInstallerPaths();
 
     await performUpdateCheck('手动');
   }, 'update'));
 
   ipcMain.handle('update:download', wrap(async () => {
-    if (updateSource === 'r2') {
-      log.info('[更新-R2] 开始从 Cloudflare R2 下载更新');
-      if (!r2UpdateInfo) {
-        const info = await checkR2ForUpdates();
-        if (!info) throw new Error('无法获取更新信息，请重新检查更新');
-        r2UpdateInfo = info;
-      }
-      const destPath = await downloadFromR2(r2UpdateInfo.version, r2UpdateInfo.sha512);
-      r2InstallerPath = destPath;
-      saveInstallerPaths();
-      sendStatusToWindow({ status: 'downloaded', version: r2UpdateInfo.version });
+    if (updateSource === 'gitcode' || updateSource === 'r2') {
+      log.info(`[更新] 开始从 ${updateSource === 'gitcode' ? 'GitCode' : 'Cloudflare R2'} 下载更新`);
+      await downloadManualUpdate();
       return;
     }
 
@@ -633,7 +832,7 @@ export function registerUpdateHandlers() {
   }, 'update'));
 
   ipcMain.handle('update:install', wrap(async () => {
-    const installerPath = r2InstallerPath;
+    const installerPath = manualInstallerPath;
     if (installerPath) {
       // 前置校验：持久化路径（installer-paths.json）在重启恢复后可能指向已被清理的临时文件，
       // 此时必须清理失效状态并报错，绝不能退出应用（否则用户将永远卡在旧版本）
@@ -644,7 +843,7 @@ export function registerUpdateHandlers() {
       }
       // 启动成功之前不得清理持久化路径、不得退出应用；
       // 启动失败时保留安装包路径，供用户点击重试
-      const launched = await launchR2Installer(installerPath);
+      const launched = await launchManualInstaller(installerPath);
       if (!launched) {
         throw new Error('启动安装包失败，请稍后重试，或到系统设置中重新下载更新后手动安装');
       }
