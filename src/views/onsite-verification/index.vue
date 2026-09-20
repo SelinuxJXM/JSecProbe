@@ -2356,6 +2356,13 @@ onUpdated(() => {
       border-color: var(--color-border-base);
     }
 
+    // 上面 td 的 border-color 简写特异性更高（:root.dark 前缀多出一个类），
+    // 会把扩展项分隔线的 border-top-color 一并覆盖成普通网格线色，
+    // 导致深色下分隔线只剩宽度没有颜色 —— 这里显式恢复主题色。
+    tbody tr.extension-divider td {
+      border-top-color: var(--color-primary);
+    }
+
     tbody tr:hover {
       background: var(--color-bg-hover);
     }
