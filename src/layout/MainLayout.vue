@@ -14,51 +14,51 @@
           @select="handleMenuSelect"
         >
           <el-menu-item index="/dashboard">
-            <el-icon><DataLine /></el-icon>
+            <el-icon><SidebarIcon name="dashboard" /></el-icon>
             <template #title>工作台</template>
           </el-menu-item>
           
           <el-menu-item index="/projects/list">
-            <el-icon><Folder /></el-icon>
+            <el-icon><SidebarIcon name="folder" /></el-icon>
             <template #title>项目列表</template>
           </el-menu-item>
           
           <el-sub-menu index="/project-detail">
             <template #title>
-              <el-icon><FolderAdd /></el-icon>
+              <el-icon><SidebarIcon name="folder-plus" /></el-icon>
               <span>项目详情</span>
             </template>
             <el-menu-item index="/projects/assets">
-              <el-icon><Monitor /></el-icon>
+              <el-icon><SidebarIcon name="monitor" /></el-icon>
               <template #title>系统构成</template>
             </el-menu-item>
             <el-menu-item index="/projects/assessment">
-              <el-icon><List /></el-icon>
+              <el-icon><SidebarIcon name="clipboard" /></el-icon>
               <template #title>现场核查</template>
             </el-menu-item>
             <el-menu-item index="/projects/issues">
-              <el-icon><Warning /></el-icon>
+              <el-icon><SidebarIcon name="shield" /></el-icon>
               <template #title>问题清单</template>
             </el-menu-item>
           </el-sub-menu>
           
           <el-menu-item index="/ai-assistant">
-            <el-icon><MagicStick /></el-icon>
+            <el-icon><SidebarIcon name="sparkles" /></el-icon>
             <template #title>AI智能辅助</template>
           </el-menu-item>
           
           <el-menu-item index="/knowledge">
-            <el-icon><Reading /></el-icon>
+            <el-icon><SidebarIcon name="book" /></el-icon>
             <template #title>知识库</template>
           </el-menu-item>
 
           <el-menu-item index="/collection">
-            <el-icon><Cpu /></el-icon>
+            <el-icon><SidebarIcon name="cpu" /></el-icon>
             <template #title>自动采集</template>
           </el-menu-item>
 
           <el-menu-item index="/settings">
-            <el-icon><Setting /></el-icon>
+            <el-icon><SidebarIcon name="settings" /></el-icon>
             <template #title>系统设置</template>
           </el-menu-item>
         </el-menu>
@@ -291,22 +291,13 @@ import { useAppStore } from '@/stores/app';
 import { useUserStore } from '@/stores/user';
 import { ElMessage } from 'element-plus';
 import {
-  DataLine,
-  Folder,
-  FolderAdd,
-  Monitor,
-  List,
-  Warning,
-  MagicStick,
-  Reading,
-  Setting,
-  Cpu,
   Bell,
   QuestionFilled,
   CaretBottom,
   Fold,
   Expand,
 } from '@element-plus/icons-vue';
+import SidebarIcon from '@/components/SidebarIcon.vue';
 import OnboardingGuide from '@/components/OnboardingGuide/index.vue';
 import DOMPurify from 'dompurify';
 
@@ -608,6 +599,14 @@ function handleLogout() {
         width: 24px;
         text-align: center;
         margin-right: var(--spacing-sm);
+
+        .sidebar-icon {
+          transition: transform 0.18s ease;
+        }
+      }
+
+      &:hover .sidebar-icon {
+        transform: scale(1.1);
       }
     }
 
