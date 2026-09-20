@@ -2,10 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const http = require('http');
-const { execSync } = require('child_process');
 const { ensureBlockmapInLatestYml } = require('./latest-yml-helper');
+const { ROOT, getPkgVersion, buildReleaseNotes } = require('./release-notes');
 
-const ROOT = path.resolve(__dirname, '..');
 const DIST_DIR = path.join(ROOT, 'dist');
 
 const TOKEN = process.env.GITHUB_TOKEN;
@@ -19,11 +18,8 @@ if (!TOKEN) {
   process.exit(1);
 }
 
-function getPkgVersion() {
-  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
-  return pkg.version;
-}
-
+// Release 说明的生成逻辑已抽到 scripts/release-notes.js，与 upload-to-gitcode.js 共用，
+// 避免两个源的 Release 正文出现不同步。
 function httpsRequest(url, options, body) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
@@ -53,71 +49,11 @@ function httpsRequest(url, options, body) {
   });
 }
 
-/**
- * 生成 Release 说明。
- *
- * 原先这里的 body 是写死的一段更新日志，只有 TAG 动态 —— 发新版本时会
- * 把旧版本的说明原样再贴一遍。改为按优先级取真实来源：
- *   1. docs/releases/v<version>.md（推荐，人工撰写）
- *   2. RELEASE_NOTES.md（仓库根目录）
- *   3. git log 自上一个 tag 以来的提交标题（自动兜底）
- *   4. 占位文本 + 明确告警，避免静默发布错误说明
- */
-function buildReleaseNotes() {
-  const version = getPkgVersion();
-
-  const candidates = [
-    path.join(ROOT, 'docs', 'releases', `v${version}.md`),
-    path.join(ROOT, 'docs', 'releases', `${version}.md`),
-    path.join(ROOT, 'RELEASE_NOTES.md'),
-  ];
-  for (const file of candidates) {
-    if (fs.existsSync(file)) {
-      const text = fs.readFileSync(file, 'utf-8').trim();
-      if (text) {
-        console.log(`Release notes 来源: ${path.relative(ROOT, file)}`);
-        return text;
-      }
-    }
-  }
-
-  const commits = gitLogSinceLastTag(version);
-  if (commits) {
-    console.log('Release notes 来源: git log（自动汇总）');
-    return `## ${TAG} 更新内容\n\n${commits}\n\n> 本说明由 git log 自动生成。若需人工撰写，请添加 \`docs/releases/v${version}.md\` 后重新发布。`;
-  }
-
-  console.warn(
-    `⚠️  未找到 docs/releases/v${version}.md，且无法从 git log 生成提交记录。\n` +
-      '   Release 说明将是占位文本，建议补写后编辑该 Release。',
-  );
-  return `## ${TAG} 更新内容\n\n（本次发布的更新说明待补充）`;
-}
-
-function gitLogSinceLastTag(version) {
-  try {
-    // 最近一个 tag（不含当前待发布的版本）
-    const tags = execSync('git tag --sort=-creatordate', { cwd: ROOT, encoding: 'utf8' })
-      .split('\n')
-      .map((t) => t.trim())
-      .filter((t) => t && t !== TAG && t !== `v${version}`);
-    const range = tags.length > 0 ? `${tags[0]}..HEAD` : '';
-    const log = execSync(`git log ${range} --no-merges --pretty=format:"- %s"`, {
-      cwd: ROOT,
-      encoding: 'utf8',
-      maxBuffer: 1024 * 1024,
-    }).trim();
-    return log || '';
-  } catch {
-    return '';
-  }
-}
-
 async function createRelease() {
   const body = JSON.stringify({
     tag_name: TAG,
     name: TAG,
-    body: buildReleaseNotes(),
+    body: buildReleaseNotes(TAG),
     draft: false,
     prerelease: false,
   });
