@@ -63,7 +63,8 @@ export interface ManualUpdateInfo {
 /**
  * 三源优先级：GitCode（国内）→ GitHub（electron-updater 原生）→ Cloudflare R2（兜底）。
  * 判定"是否适用某个源"不依赖 GeoIP，直接用可达性表达：
- * 先问 GitCode，8 秒内不通或没数据就降级，这与"能连上就用"的实际体验一致。
+ * 先问 GitCode，一个 GITCODE_PHASE_TIMEOUT 周期内不通或没结论就降级，
+ * 这与"能连上就用"的实际体验一致。
  */
 let updateSource: 'gitcode' | 'github' | 'r2' | null = null;
 let manualUpdateInfo: ManualUpdateInfo | null = null;
@@ -300,30 +301,28 @@ interface GitCodeRelease {
  *
  * 踩过的坑：这里**不能**用 HEAD 探测来判断文件是否存在 —— GitCode 的下载域名对 HEAD
  * 请求一律返回 401，GET 却正常（实测 200，且文件字节数与 GitHub/R2 完全一致）。
- * 因此以 Release 接口返回的资产清单为权威来源，缺失时才退回按历史命名拼地址，
- * 拼错的后果也只是下载阶段拿到 404，那时的提示语已经足够明确。
+ * 因此以 Release 接口返回的资产清单为唯一权威来源。
+ *
+ * 另一个坑：多文件 Release 的同步不是原子的，latest.yml（几 KB）通常先到，
+ * 129MB 的安装包后到。中间这段窗口里**必须返回 null 让上层降级**，
+ * 绝不能退化去捡清单里其它版本的 exe 顶上 —— 那会让 UI 报告新版本号、
+ * 实际下载的是旧包，最终卡在 SHA512 校验失败，且没有任何自动补救。
  */
 function resolveGitCodeInstallerUrl(release: GitCodeRelease, version: string): string | null {
   const assets = release.assets || [];
-  const isInstaller = (name: string) => /^JSecProbe[ -]Setup[ -].*\.exe$/.test(name) && !name.endsWith('.blockmap');
-  // 精确版本优先：镜像同步中途可能出现"latest.yml 已到新版、安装包还是旧的"，
-  // 此时宁可不匹配，也不要挑到别的版本的安装包
+  // 精确版本匹配（容忍 v 前缀与两种分隔符），匹配不上就说明本源还没同步到位
   const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const exact = assets.find((a) => new RegExp(`^JSecProbe[ -]Setup[ -]${escaped}\\.exe$`).test(a.name));
+  const exact = assets.find((a) => new RegExp(`^JSecProbe[ -]Setup[ -]v?${escaped}\\.exe$`).test(a.name));
   if (exact) return exact.browser_download_url;
-  const fallbackAsset = assets.find((a) => isInstaller(a.name));
-  if (fallbackAsset) {
-    log.warn(`[更新-GitCode] 清单中没有 ${version} 的安装包，退而使用 ${fallbackAsset.name}（后续由 SHA512 兜底校验）`);
-    return fallbackAsset.browser_download_url;
-  }
-  log.warn('[更新-GitCode] Release 清单中未列出安装包，按历史命名拼下载地址');
-  const base = `${GITCODE_CONFIG.baseUrl}/${GITCODE_CONFIG.owner}/${GITCODE_CONFIG.repo}/releases/download/${encodeURIComponent(release.tag_name || version)}`;
-  return `${base}/${encodeURIComponent(`JSecProbe Setup ${version}.exe`)}`;
+
+  log.warn(`[更新-GitCode] 清单中没有 ${version} 的安装包，本源记为"尚未同步完成"，交由 GitHub / R2 处理`);
+  return null;
 }
 
 /**
  * 检查 GitCode（国内源）是否有新版本。
- * 返回 null 表示"不可达"或"没有比当前更高的版本"，由调用方决定是否降级。
+ * 返回 null 表示"不可达 / 没有比当前更高的版本 / 有新版本但安装包尚未同步到位"，
+ * 三种情况对上层是同一个结论：让位给下一个源。
  *
  * deadline 约束整个 GitCode 阶段的总耗时：一次检查会串行访问 Release 接口与 latest.yml
  * 两个地址，若各自用满单次超时，"国内快速命中"就可能变成"比其他源更慢"。
@@ -485,23 +484,61 @@ async function downloadInstallerFile(opts: InstallerDownloadOptions): Promise<st
 
 /**
  * 按当前选中的自管理源下载安装包并持久化路径。
- * GitCode 与 R2 的差异已收敛到 manualUpdateInfo.installerUrl 与 URL 本身。
+ *
+ * GitCode 与 R2 的差异已收敛到 manualUpdateInfo.installerUrl、日志标签与 404 提示语。
+ *
+ * 额外兜底：GitCode 上的 Release 由仓库外机制同步，"资产清单已列出、实际文件还没
+ * 传完 / CDN 尚未刷新"是常态。此时与其让用户看到一次下载失败，不如用 R2 拉同一个
+ * 版本 —— 三源的 sha512 出自同一次构建（实测一致），换源不改变校验结果。
  */
 async function downloadManualUpdate(): Promise<void> {
   if (!manualUpdateInfo) throw new Error('无法获取更新信息，请重新检查更新');
   const isGitCode = updateSource === 'gitcode';
-  const destPath = await downloadInstallerFile({
-    url: manualUpdateInfo.installerUrl,
-    version: manualUpdateInfo.version,
-    expectedSha512: manualUpdateInfo.sha512,
-    label: isGitCode ? '[更新-GitCode]' : '[更新-R2]',
-    notFoundHint: isGitCode
-      ? `GitCode 上找不到 ${manualUpdateInfo.version} 的安装包（该源由外部同步，可能尚未完成）`
-      : undefined,
-  });
-  manualInstallerPath = destPath;
-  saveInstallerPaths();
-  sendStatusToWindow({ status: 'downloaded', version: manualUpdateInfo.version });
+  const version = manualUpdateInfo.version;
+
+  try {
+    const destPath = await downloadInstallerFile({
+      url: manualUpdateInfo.installerUrl,
+      version,
+      expectedSha512: manualUpdateInfo.sha512,
+      label: isGitCode ? '[更新-GitCode]' : '[更新-R2]',
+      notFoundHint: isGitCode
+        ? `GitCode 上找不到 ${version} 的安装包（该源由外部同步，可能尚未完成）`
+        : undefined,
+    });
+    manualInstallerPath = destPath;
+    saveInstallerPaths();
+    sendStatusToWindow({ status: 'downloaded', version });
+    return;
+  } catch (err: any) {
+    if (!isGitCode) throw err;
+    log.warn(`[更新-GitCode] 下载失败（${err.message}），尝试改用 Cloudflare R2 拉取同一版本`);
+
+    const r2Info = await checkR2ForUpdates();
+    // 只在 R2 上确实是同一版本时才换源；版本不一致说明云端尚未到位，
+    // 保留原始错误，避免把用户引向一个经过包装的、更难排查的失败
+    if (!r2Info || compareVersions(r2Info.version, version) !== 0) {
+      log.warn('[更新-R2] 备用源版本不一致或无更新可用，保留 GitCode 的错误');
+      throw err;
+    }
+
+    // 必须与 scripts/upload-to-r2.js 上传的对象名一致（连字符）
+    const r2InstallerUrl = `${R2_CONFIG.baseUrl}/${encodeURIComponent(`JSecProbe-Setup-${version}.exe`)}`;
+    const destPath = await downloadInstallerFile({
+      url: r2InstallerUrl,
+      version,
+      // 校验改用 R2 自己的摘要：虽然三源同构建、摘要实测一致，
+      // 但"从哪个源下载就用哪个源的摘要"才是可独立成立的不变式
+      expectedSha512: r2Info.sha512,
+      label: '[更新-R2]',
+    });
+    updateSource = 'r2';
+    manualUpdateInfo = { ...r2Info, installerUrl: r2InstallerUrl };
+    manualInstallerPath = destPath;
+    saveInstallerPaths();
+    log.info(`[更新] 已自动切换到 Cloudflare R2 源完成 ${version} 的下载`);
+    sendStatusToWindow({ status: 'downloaded', version });
+  }
 }
 
 export function initAutoUpdater(window: BrowserWindow) {
@@ -616,8 +653,9 @@ async function tryR2Fallback(): Promise<boolean> {
  * 统一的更新检查流程（GitCode 国内源 → GitHub 原生通道 → Cloudflare R2 兜底）。
  *
  * 为什么 GitCode 在最前：国内直连 GitHub Release 经常超时或极慢，而 GitCode 上的
- * Release 一直有自动同步。用"可达性"代替地理判定 —— 8 秒内拿不到结果就降级，
- * 既省掉一次 GeoIP 请求，也天然覆盖"人在国外但能连 GitCode"这类情况。
+ * Release 一直有自动同步。用"可达性"代替地理判定 —— 一个 GITCODE_PHASE_TIMEOUT
+ * 周期内拿不到更新的结论就降级，既省掉一次 GeoIP 请求，
+ * 也天然覆盖"人在国外但能连 GitCode"这类情况。
  *
  * 供启动自动检查、托盘手动检查、IPC 手动检查三处复用。
  * 检查结果通过 autoUpdater 事件或 sendStatusToWindow 推送到渲染进程。
