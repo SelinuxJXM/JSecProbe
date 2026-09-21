@@ -541,7 +541,7 @@ body {
   <aside class="sidebar" id="sidebar" aria-label="目录导航">
     <div class="sidebar-header">
       <div class="sidebar-title"><a href="index.html">📄 产品白皮书</a></div>
-      <div class="sidebar-subtitle">JSecProbe V2.4.5</div>
+      <div class="sidebar-subtitle">JSecProbe V2.4.6</div>
     </div>
     <nav aria-label="目录">
       <div class="toc">
@@ -572,6 +572,7 @@ body {
             <li><a class="toc-h3" href="#h3-25数据安全设计">2.5 数据安全设计</a></li>
             <li><a class="toc-h3" href="#h3-26离线优先">2.6 离线优先</a></li>
             <li><a class="toc-h3" href="#h3-27自动更新">2.7 自动更新</a></li>
+            <li><a class="toc-h4" href="#h4-271安装包签名校验策略">2.7.1 安装包签名校验策略</a></li>
           </ul>
         </div>
 
@@ -678,7 +679,7 @@ body {
   <main class="content" id="main-content">
     <article class="article">
       <h1>JSecProbe 等级保护现场测评系统</h1>
-      <p class="subtitle">产品白皮书 · 当前版本 V2.4.5 · 技术标准 GB/T 22239-2019</p>
+      <p class="subtitle">产品白皮书 · 当前版本 V2.4.6 · 技术标准 GB/T 22239-2019</p>
 
       <h2 id="intro">一、产品概述</h2>
 
@@ -794,6 +795,22 @@ body {
       </ol>
       <p>支持版本检测、下载进度显示、SHA512 校验、安装包数字签名校验、静默安装。</p>
       <p>三个源互为兜底，<strong>不要求同时更新</strong>：某个源缺少最新版本（或尚未同步到安装包）时会自动让位给下一个源，下载阶段同样支持自动换源重试，用户侧无感知。</p>
+      <h4 id="h4-271安装包签名校验策略">2.7.1 安装包签名校验策略</h4>
+      <p>更新包的 SHA512 摘要与安装包<strong>同源</strong>获取（同一个 latest.yml / R2 对象），服务端一旦被控，攻击者可同时替换摘要与安装包。因此安装执行前会额外校验安装包的 Authenticode 数字签名。</p>
+      <table>
+        <thead><tr><th>签名状态</th><th>处置</th></tr></thead>
+        <tbody>
+          <tr><td><code>Valid</code></td><td>放行</td></tr>
+          <tr><td><code>ValidButExpired</code>（签名有效但证书已过期）</td><td>放行并记录告警</td></tr>
+          <tr><td><code>NotSigned</code>（未签名）</td><td>放行并记录告警</td></tr>
+          <tr><td><code>HashMismatch</code> / <code>NotTrusted</code> / <code>NotSignatureFound</code> / <code>Malformed</code> / <code>InvalidSignature</code> / <code>UnknownError</code></td><td><strong>拒绝执行</strong></td></tr>
+        </tbody>
+      </table>
+      <p><strong>为什么「未签名」也放行？</strong>本项目当前尚未购置代码签名证书，安装包一律返回 <code>NotSigned</code>；若将其等同于「不可信」，自管理源（GitCode / R2）的更新将永远无法安装，这比它要防御的威胁更糟。待后续完成签名后，可通过下列开关收紧策略。</p>
+      <ul>
+        <li><code>JSECPROBE_REQUIRE_INSTALLER_SIGNATURE=1</code>：强制要求有效签名，未签名即拒绝安装（取得签名证书后启用）</li>
+        <li><code>JSECPROBE_SKIP_SIGNATURE_CHECK=1</code>：完全跳过签名校验，仅供排障临时使用（日志会留痕）</li>
+      </ul>
 
       <hr>
 
@@ -1405,6 +1422,18 @@ body {
             </td>
           </tr>
           <tr>
+            <td>白皮书 V1.8</td><td>V2.4.6</td>
+            <td>
+              <ul style="margin:0 0 0 18px;padding:0;">
+                <li>修复：更新下载完成后提示「启动安装包失败」——安装包缺少数字签名，而原签名校验逻辑把"未签名"等同于"不可信"一律拒绝，导致 GitCode / R2 两个自管理源的安装包 100% 被拦截；现改为分级处置，仅 HashMismatch / NotTrusted / Malformed / InvalidSignature 等真正指向篡改的状态拒绝执行</li>
+                <li>修复：安装包清单要求管理员权限时无法启动（CreateProcess 不能完成 UAC 提权，errno -740），自动改走 ShellExecute(RunAs)</li>
+                <li>修复：安装失败提示过于笼统，现把真实原因（签名状态 / 提权失败原因）透出给用户</li>
+                <li>2.7 章节新增「安装包签名校验策略」小节，补充分级处置规则与两个环境变量开关</li>
+                <li>附录 D 新增「白皮书变更记录」V1.8 条目</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
             <td>白皮书 V1.7</td><td>V2.4.5</td>
             <td>
               <ul style="margin:0 0 0 18px;padding:0;">
@@ -1499,7 +1528,7 @@ body {
 
       <hr>
       <p style="text-align:center;color:var(--gray-500);font-size:14px;padding:20px 0;">
-        <em>本文档最后更新：2026 年 9 月（V1.7，对应 V2.4.5）</em><br>
+        <em>本文档最后更新：2026 年 9 月（V1.8，对应 V2.4.6）</em><br>
         <strong>JSecProbe - 让等保测评更高效、更规范、更智能</strong>
       </p>
     </article>

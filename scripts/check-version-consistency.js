@@ -44,6 +44,16 @@ const ALLOWED_STALE_VERSIONS = new Set([
   '2.4.2',
   '2.4.3',
   '2.4.4',
+  '2.4.5',
+]);
+
+/**
+ * 明确与「版本号」无关的 x.y.z 字面量 —— 章节编号。
+ * 章节编号（如 2.7.1 小节）与版本号形状完全一样，且主版本号恰好同为 2，
+ * 会被 VERSION_RE 误报。这类编号是有意保留的结构性内容，直接豁免。
+ */
+const IGNORED_NON_VERSION_LITERALS = new Set([
+  '2.7.1',
 ]);
 
 // 只匹配形如 v2.4.1 / V2.4.1 / 2.4.1 的版本号字面量。
@@ -73,6 +83,7 @@ for (const target of TARGETS) {
       const normalized = m[1];
       if (normalized === CURRENT) continue;
       if (ALLOWED_STALE_VERSIONS.has(normalized)) continue;
+      if (IGNORED_NON_VERSION_LITERALS.has(normalized)) continue;
       // 仅关注与当前主版本号相同的候选，避免把第三方依赖/标准编号卷进来
       if (normalized.split('.')[0] !== CURRENT.split('.')[0]) continue;
       problems.push({

@@ -750,19 +750,38 @@ export function triggerUpdateCheck(): void {
 }
 
 /**
- * 校验安装包的 Authenticode 数字签名（P1-5）。
+ * 安装包 Authenticode 签名策略。
  *
- * 背景：更新包的 sha512 与安装包**同源**获取（同一个 latest.yml / R2 对象），
- * 服务端被控或证书被劫持时，攻击者可以同时替换摘要与安装包 —— 校验 sha512 形同虚设。
- * 数字签名是唯一能脱离传输通道独立验证发布者身份的手段，必须在执行前完成校验。
+ * 背景（P1-5）：更新包的 sha512 与安装包**同源**获取（同一个 latest.yml / R2 对象），
+ * 服务端被控时攻击者可同时替换摘要与安装包 —— 因此执行前需要独立的发布者身份校验。
  *
- * 说明：仅在 Windows 上校验；非 Windows 或无 PowerShell 时按"无法校验"处理并明确告警。
- * 自签测试包场景可用环境变量 `JSECPROBE_SKIP_SIGNATURE_CHECK=1` 跳过（会留痕）。
+ * 现实的取舍：本项目目前没有代码签名证书，`Get-AuthenticodeSignature` 一律返回
+ * `NotSigned`。若把"未签名"等同于"不可信"，自管理源（GitCode/R2）的更新将**永远无法安装**
+ * —— 这比它要防御的威胁更糟糕。因此默认策略是：
+ *   - 有签名且有效（含证书过期）→ 放行；
+ *   - **无签名 → 放行但告警**（预期状态，日志留痕，便于日后上了证书再收紧）；
+ *   - 签名无效 / 摘要不匹配 / 不受信任 / 格式损坏 → **一律拒绝**（这时才真正意味着被篡改）。
+ *
+ * 环境变量：
+ *   JSECPROBE_SKIP_SIGNATURE_CHECK=1        完全跳过校验（仅自测，会留痕）
+ *   JSECPROBE_REQUIRE_INSTALLER_SIGNATURE=1 强制要求签名（拿到代码签名证书后启用）
  */
-async function verifyInstallerSignature(installerPath: string): Promise<{ ok: boolean; reason: string }> {
+type SignatureDecision = { ok: boolean; reason: string; status?: string };
+
+/** 明确代表"文件已被改动或来源不可信"的签名状态——这些必须拒绝执行 */
+const BLOCKED_SIGNATURE_STATUS = new Set([
+  'HashMismatch',
+  'NotTrusted',
+  'NotSignatureFound',
+  'Malformed',
+  'InvalidSignature',
+  'UnknownError',
+]);
+
+async function verifyInstallerSignature(installerPath: string): Promise<SignatureDecision> {
   if (process.env.JSECPROBE_SKIP_SIGNATURE_CHECK === '1') {
     log.warn('[更新] 已按 JSECPROBE_SKIP_SIGNATURE_CHECK=1 跳过安装包签名校验（仅限自测场景）');
-    return { ok: true, reason: '已跳过' };
+    return { ok: true, reason: '已跳过签名校验' };
   }
   if (process.platform !== 'win32') {
     return { ok: false, reason: '非 Windows 平台，无法校验 Authenticode 签名' };
@@ -772,7 +791,7 @@ async function verifyInstallerSignature(installerPath: string): Promise<{ ok: bo
   const escaped = installerPath.replace(/'/g, "''");
   const script = `(Get-AuthenticodeSignature -FilePath '${escaped}').Status`;
 
-  return new Promise((resolve) => {
+  const rawStatus = await new Promise<string>((resolve) => {
     const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -782,28 +801,50 @@ async function verifyInstallerSignature(installerPath: string): Promise<{ ok: bo
     child.stdout?.on('data', (d) => { stdout += String(d); });
     child.stderr?.on('data', (d) => { stderr += String(d); });
     // 超时保护：PowerShell 冷启动可能较慢，但不应无限等待
-    const timer = setTimeout(() => { try { child.kill(); } catch { /* 已退出 */ } resolve({ ok: false, reason: '签名校验超时' }); }, 30000);
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* 已退出 */ } resolve(''); }, 30000);
     child.on('error', () => {
       clearTimeout(timer);
-      resolve({ ok: false, reason: '无法执行签名校验（PowerShell 不可用）' });
+      log.warn(`[更新] 无法执行签名校验（PowerShell 不可用）${stderr ? '：' + stderr.trim() : ''}`);
+      resolve('');
     });
     child.on('close', () => {
       clearTimeout(timer);
-      const status = stdout.trim();
-      if (status === 'Valid') {
-        resolve({ ok: true, reason: '签名有效' });
-      } else if (status === 'ValidButExpired') {
-        // 证书过期但签名本身有效：企业环境常见，放行但明确告警
-        log.warn('[更新] 安装包签名有效但证书已过期，仍允许安装');
-        resolve({ ok: true, reason: '签名有效（证书已过期）' });
-      } else {
-        resolve({
-          ok: false,
-          reason: `安装包签名校验未通过（状态：${status || '未知'}${stderr ? `，${stderr.trim()}` : ''}）`,
-        });
-      }
+      resolve(stdout.trim());
     });
   });
+
+  if (rawStatus === 'Valid') {
+    return { ok: true, reason: '签名有效', status: rawStatus };
+  }
+  if (rawStatus === 'ValidButExpired') {
+    // 证书过期但签名本身有效：企业环境常见，放行但明确告警
+    log.warn('[更新] 安装包签名有效但证书已过期，仍允许安装');
+    return { ok: true, reason: '签名有效（证书已过期）', status: rawStatus };
+  }
+
+  const requireSigned = process.env.JSECPROBE_REQUIRE_INSTALLER_SIGNATURE === '1';
+
+  if (!rawStatus || BLOCKED_SIGNATURE_STATUS.has(rawStatus)) {
+    // 只有在确实存在异常签名时才拒绝；读取失败（空输出）也按不可信处理
+    const reason = rawStatus
+      ? `安装包签名校验未通过（状态：${rawStatus}）`
+      : '安装包签名校验未通过（无法读取签名状态）';
+    log.error(`[更新] 拒绝执行安装包：${reason}`);
+    return { ok: false, reason, status: rawStatus || 'UnknownError' };
+  }
+
+  // 走到这里只剩 NotSigned 一类：无签名。
+  if (requireSigned) {
+    const reason = '安装包未经数字签名（已启用强制签名校验），已拒绝安装';
+    log.error(`[更新] ${reason}`);
+    return { ok: false, reason, status: rawStatus };
+  }
+
+  log.warn(
+    `[更新] 安装包未进行数字签名（${rawStatus}），已按默认策略放行。` +
+    'sha512 与下载源一致性已校验；若需强制校验签名请设置 JSECPROBE_REQUIRE_INSTALLER_SIGNATURE=1',
+  );
+  return { ok: true, reason: '未签名（默认策略放行）', status: rawStatus };
 }
 
 /**
@@ -812,17 +853,17 @@ async function verifyInstallerSignature(installerPath: string): Promise<{ ok: bo
  * 注意：shell.openPath 失败时 resolve 错误描述字符串（空串代表成功）而非 reject，
  * 必须通过返回值判断成败；spawn 的 error 事件必须监听，否则会变成未捕获异常。
  */
-async function launchManualInstaller(installerPath: string): Promise<boolean> {
+async function launchManualInstaller(installerPath: string): Promise<SignatureDecision> {
   // 执行前必须校验签名：否则服务端/传输通道被劫持即可向所有测评终端推送并执行任意安装包
   const sig = await verifyInstallerSignature(installerPath);
   if (!sig.ok) {
     log.error(`[更新] 拒绝执行安装包：${sig.reason}`);
-    return false;
+    return sig;
   }
   log.info(`[更新-${updateSource}] 安装更新: ${installerPath}`);
   try {
     const openResult = await shell.openPath(installerPath);
-    if (!openResult) return true;
+    if (!openResult) return { ok: true, reason: '已启动安装包' };
     log.warn(`[更新] shell.openPath 失败: ${openResult}，尝试 spawn 静默安装`);
   } catch (err: any) {
     log.warn(`[更新] shell.openPath 异常: ${err?.message || err}，尝试 spawn 静默安装`);
@@ -837,6 +878,16 @@ async function launchManualInstaller(installerPath: string): Promise<boolean> {
 
       const child = spawnInstaller();
       child.on('error', (spawnErr: any) => {
+        const code = String(spawnErr?.code || '');
+        const errno = Number(spawnErr?.errno);
+        // -740 = ERROR_ELEVATION_REQUIRED：安装包清单要求提权，
+        // CreateProcess 无法完成提权，必须改走 ShellExecute(RunAs) 让 UAC 弹窗
+        const needsElevation = code === 'ELEVATION_REQUIRED' || errno === -740 || code === 'UNKNOWN';
+        if (needsElevation) {
+          log.warn('[更新] 安装包需要管理员权限，改用提权方式启动');
+          launchElevated(installerPath).then(resolve, reject);
+          return;
+        }
         if (spawnErr.code === 'EBUSY') {
           // 文件被占用（常见为应用自身句柄未释放），受控重试一次
           log.warn('[更新] 安装包被占用，5秒后重试...');
@@ -857,11 +908,36 @@ async function launchManualInstaller(installerPath: string): Promise<boolean> {
         resolve();
       });
     });
-    return true;
+    return { ok: true, reason: '已启动安装包' };
   } catch (err: any) {
     log.error('[更新] 启动安装包失败:', err);
-    return false;
+    return { ok: false, reason: `启动安装包失败（${err?.code || err?.message || '未知原因'}）` };
   }
+}
+
+/**
+ * 以管理员权限启动安装包（替代 CreateProcess 无法完成的提权）。
+ * 通过 PowerShell 的 Start-Process -Verb RunAs 走 ShellExecute，UAC 由系统弹出。
+ * 启动成功与否以 Start-Process 是否抛错为准（UAC 被用户取消时会抛"操作被用户取消"）。
+ */
+async function launchElevated(installerPath: string): Promise<void> {
+  const escaped = installerPath.replace(/'/g, "''");
+  const script = `Start-Process -FilePath '${escaped}' -ArgumentList '/S' -Verb RunAs`;
+  return new Promise((resolve, reject) => {
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr?.on('data', (d) => { stderr += String(d); });
+    child.on('error', (err) => reject(err));
+    child.on('close', (code) => {
+      if (code === 0) return resolve();
+      const msg = stderr.trim() || `退出码 ${code}`;
+      // UAC 被取消是用户主动行为，不算技术失败：交由上层决定是否重试
+      reject(new Error(`提权启动失败：${msg}`));
+    });
+  });
 }
 
 export function registerUpdateHandlers() {
@@ -911,9 +987,10 @@ export function registerUpdateHandlers() {
       }
       // 启动成功之前不得清理持久化路径、不得退出应用；
       // 启动失败时保留安装包路径，供用户点击重试
-      const launched = await launchManualInstaller(installerPath);
-      if (!launched) {
-        throw new Error('启动安装包失败，请稍后重试，或到系统设置中重新下载更新后手动安装');
+      const result = await launchManualInstaller(installerPath);
+      if (!result.ok) {
+        // 把真实原因带出去，而不是让用户面对一句无法据此行动的笼统提示
+        throw new Error(`${result.reason}。请稍后重试，或到系统设置中重新下载更新后手动安装`);
       }
       clearInstallerPaths();
       app.quit();
