@@ -6,7 +6,7 @@
         <button
           class="tab-btn"
           :class="{ active: activeTab === 'active' }"
-          @click="activeTab = 'active'; loadProjects()"
+          @click="activeTab = 'active'; reloadProjects()"
         >
           未归档项目
           <span class="tab-badge">{{ stats.activeCount }}</span>
@@ -14,7 +14,7 @@
         <button
           class="tab-btn"
           :class="{ active: activeTab === 'archived' }"
-          @click="activeTab = 'archived'; loadProjects()"
+          @click="activeTab = 'archived'; reloadProjects()"
         >
           已归档项目
           <span class="tab-badge muted">{{ stats.archivedCount }}</span>
@@ -22,7 +22,7 @@
       </div>
 
       <!-- 工具栏 -->
-      <div class="toolbar">
+      <div class="toolbar" data-guide="project-toolbar">
         <div class="toolbar-left">
           <button class="toolbar-btn" @click="handleImport">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -32,7 +32,7 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             <span>导出</span>
           </button>
-          <button class="toolbar-btn primary" @click="addEmptyRow">
+          <button class="toolbar-btn primary" data-guide="project-create" @click="addEmptyRow">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             <span>新建项目</span>
           </button>
@@ -98,19 +98,19 @@
             <tr v-for="(row, index) in filteredRows" :key="row.id" :class="{ active: currentRowIndex === index, new: row.id < 0 }" @click="selectRow(index)" @dblclick="goToDetail(row)">
               <td class="col-index">{{ row.id < 0 ? '新' : index + 1 }}</td>
               <td class="col-no">
-                <input v-if="row.id < 0 || editedRows.includes(String(row.id))" v-model="row.projectNo" class="cell-input mono" placeholder="DJCP-001（留空自动生成）" />
+                <input v-if="isEditing(row)" v-model="row.projectNo" class="cell-input mono" placeholder="DJCP-001（留空自动生成）" @input="onCellEdit(row)" />
                 <span v-else class="mono-text" :title="row.projectNo">{{ row.projectNo }}</span>
               </td>
               <td class="col-name">
-                <input v-if="row.id < 0 || editedRows.includes(String(row.id))" v-model="row.name" class="cell-input" placeholder="项目名称" />
+                <input v-if="isEditing(row)" v-model="row.name" class="cell-input" placeholder="项目名称" @input="onCellEdit(row)" />
                 <span v-else :title="row.name">{{ row.name }}</span>
               </td>
               <td class="col-system">
-                <input v-if="row.id < 0 || editedRows.includes(String(row.id))" v-model="row.systemName" class="cell-input" placeholder="系统名称" />
+                <input v-if="isEditing(row)" v-model="row.systemName" class="cell-input" placeholder="系统名称" @input="onCellEdit(row)" />
                 <span v-else class="text-secondary" :title="row.systemName">{{ row.systemName }}</span>
               </td>
               <td class="col-unit">
-                <input v-if="row.id < 0 || editedRows.includes(String(row.id))" v-model="row.assessedUnit" class="cell-input" placeholder="被测单位" />
+                <input v-if="isEditing(row)" v-model="row.assessedUnit" class="cell-input" placeholder="被测单位" @input="onCellEdit(row)" />
                 <span v-else class="text-secondary" :title="row.assessedUnit">{{ row.assessedUnit }}</span>
               </td>
               <td class="col-standard">
@@ -119,15 +119,15 @@
                   <option v-for="std in standards" :key="std.id" :value="std.id">{{ std.name }}</option>
                 </select>
                 <!-- 已存在项目编辑：标准不可更改（standardId 不可变，避免 records 孤儿），仅展示实际标准名 -->
-                <span v-else-if="editedRows.includes(String(row.id))" class="text-secondary" :title="getStandardName(row.standardId) || row.standardSystem">{{ getStandardName(row.standardId) || row.standardSystem || '—' }}</span>
+                <span v-else-if="isEditing(row)" class="text-secondary" :title="getStandardName(row.standardId) || row.standardSystem">{{ getStandardName(row.standardId) || row.standardSystem || '—' }}</span>
                 <!-- 显示模式：优先展示实际标准名，回退 standardSystem（兼容旧数据） -->
                 <span v-else class="text-secondary" :title="getStandardName(row.standardId) || row.standardSystem">{{ getStandardName(row.standardId) || row.standardSystem || '—' }}</span>
               </td>
               <td class="col-ext">
-                <div v-if="row.id < 0 || editedRows.includes(String(row.id))" class="ext-select-wrapper">
+                <div v-if="isEditing(row)" class="ext-select-wrapper">
                   <span class="ext-display" @click="openExtDialog(row)">{{ formatExtDisplay(row.extensionTypes) }}</span>
                 </div>
-                <span v-else class="text-secondary">{{ formatExtDisplay(row.extensionTypes) }}</span>
+                <span v-else class="text-secondary" :title="formatExtDisplay(row.extensionTypes)">{{ formatExtDisplay(row.extensionTypes) }}</span>
               </td>
               <td class="col-progress">
                 <div class="progress-cell">
@@ -198,13 +198,13 @@
           </span>
         </div>
         <div class="pagination-btns">
-          <button class="page-btn" :disabled="pagination.page <= 1" @click="pagination.page--; loadProjects()">
+          <button class="page-btn" :disabled="pagination.page <= 1" @click="pagination.page--; reloadProjects()">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
           </button>
-          <button v-for="p in visiblePages" :key="p" class="page-btn" :class="{ active: pagination.page === p }" @click="pagination.page = p; loadProjects()">
+          <button v-for="p in visiblePages" :key="p" class="page-btn" :class="{ active: pagination.page === p }" @click="pagination.page = p; reloadProjects()">
             {{ p }}
           </button>
-          <button class="page-btn" :disabled="pagination.page >= totalPages" @click="pagination.page++; loadProjects()">
+          <button class="page-btn" :disabled="pagination.page >= totalPages" @click="pagination.page++; reloadProjects()">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
         </div>
@@ -376,25 +376,97 @@ function onStandardChange(row: any) {
   const grade = std?.level || 3;
   row.level = grade;
   row.levelCombo = `S${grade}A${grade}G${grade}`;
-  if (!editedRows.value.includes(String(row.id))) {
-    editedRows.value.push(String(row.id));
-  }
-  debounceAutoSave();
+  // 单选类操作：即时判定无需长等待
+  markRowEdited(row);
 }
 
-// 编辑状态追踪（用数组替代 Set，避免 ref 无法响应 Set 内部变化）
+// ==================== 两个状态，必须分开 ====================
+// editRowIds：纯 UI 的「行处于编辑态」，退出编辑才移除，与是否脏无关。
+// editedRows ：脏行（数据改过），决定要不要落库。
+// 之前两者共用一个数组，导致「点一下编辑」就触发 4 秒倒计时保存，
+// 保存后又被 saveAllChanges 里的整表重载清空，用户填一半就被踢出编辑态。
+const editRowIds = ref<string[]>([]);
 const editedRows = ref<string[]>([]);
 const deletedIds = ref<string[]>([]);
 const editedCount = computed(() => editedRows.value.length + deletedIds.value.length);
 
+function isEditing(row: any): boolean {
+  return row.id < 0 || editRowIds.value.includes(String(row.id));
+}
+
+/** 单元格真正被改动时才标脏并重新计时：计时口径是「最后一次输入」而非「点开编辑」 */
+function onCellEdit(row: any) {
+  const key = String(row.id);
+  if (!editedRows.value.includes(key)) {
+    editedRows.value.push(key);
+  }
+  debounceAutoSave();
+}
+
+/**
+ * 离散操作（改状态 / 选标准 / 确认扩展项）不是输入行为，
+ * 操作完基本不会再改，用短延迟落库即可。
+ */
+function markRowEdited(row: any, quick = true) {
+  const key = String(row.id);
+  if (!editedRows.value.includes(key)) {
+    editedRows.value.push(key);
+  }
+  debounceAutoSave(quick ? quickDebounce : undefined);
+}
+
+/** 轻量刷新：只更新统计与总数，不动列表 DOM */
+async function loadStats() {
+  if (!window.api) return;
+  try {
+    const isActive = activeTab.value === 'active';
+    const countParams: any = {
+      page: 1,
+      pageSize: 1,
+      keyword: keyword.value || undefined,
+    };
+    if (isActive) {
+      countParams.excludeArchived = true;
+    } else {
+      countParams.status = 'archived';
+    }
+    const res = await window.api.project.list(countParams);
+    if (res.success && res.data) pagination.total = res.data.total;
+
+    const activeRes = await window.api.project.list({ page: 1, pageSize: 1, excludeArchived: true });
+    if (activeRes.success && activeRes.data) stats.activeCount = activeRes.data.total;
+    const archivedRes = await window.api.project.list({ page: 1, pageSize: 1, status: 'archived' });
+    if (archivedRes.success && archivedRes.data) stats.archivedCount = archivedRes.data.total;
+  } catch (err) {
+    console.error('刷新项目统计失败:', err);
+  }
+}
+
+/** 临时行落库成功：换真实 id，并保持该行仍处于编辑态，方便继续补填 */
+function handleRowCreated(row: any, created: any) {
+  const tempKey = String(row.id);
+  row.id = created.id;
+  row.projectNo = created.projectNo || row.projectNo;
+  row.standardId = created.standardId || row.standardId;
+  row.progress = created.progress ?? row.progress;
+  row.updatedAt = created.updatedAt || row.updatedAt;
+  editRowIds.value = editRowIds.value.filter(id => id !== tempKey);
+  if (!editRowIds.value.includes(String(row.id))) {
+    editRowIds.value.push(String(row.id));
+  }
+}
+
 // 自动保存
+const quickDebounce = 1200;
 const autoSave = useProjectAutoSave({
   projectList,
   editedRows,
   deletedIds,
   loadProjects,
+  loadStats,
+  onRowCreated: handleRowCreated,
 });
-const { saveStatus, lastSavedTime, debounceAutoSave, startPeriodicSave, formatSaveTime, cleanup } = autoSave;
+const { saveStatus, lastSavedTime, debounceAutoSave, startPeriodicSave, formatSaveTime, cleanup, markClean } = autoSave;
 
 let tempIdCounter = -1;
 
@@ -428,11 +500,7 @@ function closeExtDialog() {
 function confirmExtDialog() {
   if (extDialogRow.value) {
     extDialogRow.value.extensionTypes = [...extDialogSelected.value];
-    // 标记当前行已编辑
-    if (!editedRows.value.includes(String(extDialogRow.value.id))) {
-      editedRows.value.push(String(extDialogRow.value.id));
-    }
-    debounceAutoSave();
+    markRowEdited(extDialogRow.value);
   }
   closeExtDialog();
 }
@@ -476,10 +544,7 @@ function changeStatus(row: any, newStatus: string) {
     return;
   }
   row.status = newStatus;
-  if (!editedRows.value.includes(String(row.id))) {
-    editedRows.value.push(String(row.id));
-  }
-  debounceAutoSave();
+  markRowEdited(row);
   closeStatusDropdown();
 }
 
@@ -537,14 +602,26 @@ function selectRow(index: number) {
   currentRowIndex.value = index;
 }
 
+/**
+ * 进入/退出编辑态。
+ *
+ * 这里**不能**标脏、更不能启动保存倒计时：点「编辑」只是展开输入框，
+ * 数据一行字都还没改。保存计时应由 onCellEdit（真正敲键盘）触发。
+ * 退出编辑时若期间改过，用短延迟收尾即可。
+ */
 function toggleEdit(row: any) {
   const id = String(row.id);
-  if (editedRows.value.includes(id)) {
-    editedRows.value = editedRows.value.filter(x => x !== id);
+  const wasEditing = row.id < 0 || editRowIds.value.includes(id);
+  if (wasEditing) {
+    editRowIds.value = editRowIds.value.filter(x => x !== id);
+    if (editedRows.value.includes(id)) {
+      debounceAutoSave(quickDebounce);
+    }
   } else {
-    editedRows.value.push(id);
+    if (!editRowIds.value.includes(id)) {
+      editRowIds.value.push(id);
+    }
   }
-  debounceAutoSave();
 }
 
 function addEmptyRow() {
@@ -567,10 +644,11 @@ function addEmptyRow() {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  editedRows.value.push(String(newRow.id));
+  editRowIds.value.push(String(newRow.id));
   projectList.value.unshift(newRow);
   currentRowIndex.value = 0;
-  debounceAutoSave();
+  // 此处不标脏、不触发保存：空行还没有可落库的内容，
+  // 保存时机交给用户敲第一个字（onCellEdit）。
 }
 
 async function loadProjects() {
@@ -597,18 +675,28 @@ async function loadProjects() {
         extensionTypes: row.extensionType ? row.extensionType.split(',').filter(Boolean) : [],
       }));
       pagination.total = res.data.total;
-      editedRows.value = [];
-      deletedIds.value = [];
+      // 列表整个重建了：行对象已换新，旧的脏标记不再有意义。
+      // 但 editRowIds 保留 —— 搜索/翻页回来同一行还能接着填，不用再点一次编辑。
+      markClean();
       currentRowIndex.value = -1;
     }
-
-    const activeRes = await window.api.project.list({ page: 1, pageSize: 1, excludeArchived: true });
-    if (activeRes.success && activeRes.data) stats.activeCount = activeRes.data.total;
-    const archivedRes = await window.api.project.list({ page: 1, pageSize: 1, status: 'archived' });
-    if (archivedRes.success && archivedRes.data) stats.archivedCount = archivedRes.data.total;
+    await loadStats();
   } finally {
     loading.value = false;
   }
+}
+
+/**
+ * 切换页签 / 翻页 / 搜索前的重载入口。
+ *
+ * 直接调 loadProjects 会在返回时清空 editedRows 与 deletedIds（600 行附近），
+ * 防抖窗口内的编辑就这么凭空消失了。这里先落盘再加载。
+ */
+async function reloadProjects() {
+  if (autoSave.hasUnsavedChanges.value) {
+    await autoSave.saveAllChanges();
+  }
+  await loadProjects();
 }
 
 async function saveAllChanges() {
@@ -617,6 +705,9 @@ async function saveAllChanges() {
     const success = await autoSave.saveAllChanges();
     if (success) {
       ElMessage.success('保存成功');
+    } else if (autoSave.hasUnsavedChanges.value) {
+      // 有行没落库（如接口报错）：这里必须说清楚，否则用户以为万事大吉
+      ElMessage.error('部分修改保存失败，请检查内容后重试');
     } else {
       ElMessage.info('没有需要保存的修改');
     }
@@ -632,15 +723,27 @@ async function handleDelete(row: any) {
     return;
   }
   if (row.id < 0) {
+    // 尚未落库的新建行：直接移出列表并撤销其待保存标记即可
     projectList.value = projectList.value.filter(r => r.id !== row.id);
+    editRowIds.value = editRowIds.value.filter(x => x !== String(row.id));
     editedRows.value = editedRows.value.filter(x => x !== String(row.id));
+    return;
+  }
+
+  // 已存在的项目立即删除，不再塞进待保存队列排队：
+  // 之前点完"删除"行就消失了，但真正落库要等防抖或手动保存，
+  // 用户此刻离开页面删除从未发生，回来项目还在。
+  const snapshot = projectList.value;
+  projectList.value = projectList.value.filter(r => r.id !== row.id);
+  editRowIds.value = editRowIds.value.filter(x => x !== String(row.id));
+  editedRows.value = editedRows.value.filter(x => x !== String(row.id));
+  const res = await window.api.project.remove(String(row.id));
+  if (res.success) {
+    ElMessage.success('项目已删除');
+    await loadProjects();
   } else {
-    deletedIds.value.push(String(row.id));
-    editedRows.value = editedRows.value.filter(x => x !== String(row.id));
-    projectList.value = projectList.value.filter(r => r.id !== row.id);
-    // 必须触发自动保存：周期保存的门槛 hasUnsavedChanges 只在 debounceAutoSave 中置位，
-    // 此前删除后不调用它，导致删除不手动保存就会被静默丢弃
-    debounceAutoSave();
+    projectList.value = snapshot;
+    ElMessage.error(res.error?.message || '删除失败，请重试');
   }
 }
 
@@ -825,15 +928,23 @@ async function confirmImport(strategy: 'skip' | 'overwrite' | 'copy') {
   }
 }
 
+// Ctrl+S 保存（由 MainLayout 统一派发 app:global-save）
+function onGlobalSave() {
+  if (saving.value) return;
+  saveAllChanges();
+}
+
 onMounted(() => {
   loadStandards();
   loadProjects();
   startPeriodicSave();
   document.addEventListener('click', handleGlobalClick);
+  window.addEventListener('app:global-save', onGlobalSave);
 });
 
 onUnmounted(() => {
   cleanup();
+  window.removeEventListener('app:global-save', onGlobalSave);
   // P2-12：搜索防抖定时器此前从未清理，组件卸载后回调仍会触发 loadProjects()，
   // 对已销毁的组件写入响应式状态，快速切换页面时可能用旧请求结果覆盖新数据。
   if (searchTimer) {
@@ -848,7 +959,7 @@ onUnmounted(() => {
 .page-container {
   padding: 24px;
   background: var(--color-bg-page, #F5F6FA);
-  min-height: calc(100vh - var(--titlebar-height, 40px) - 52px);
+  min-height: calc(100vh - var(--titlebar-height, 40px) - var(--header-height, 56px));
 }
 
 .project-card {
@@ -863,14 +974,14 @@ onUnmounted(() => {
   z-index: 9999;
   background: var(--color-bg-card, #fff);
   border: 1px solid var(--color-border-base, #E2E6ED);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
   padding: 4px;
   min-width: 88px;
 
   .status-option {
     padding: 6px 12px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     font-size: 12px;
     color: var(--color-text-primary, #111827);
@@ -920,7 +1031,7 @@ onUnmounted(() => {
       min-width: 20px;
       height: 18px;
       padding: 0 6px;
-      border-radius: 999px;
+      border-radius: var(--radius-full);
       font-size: 11px;
       font-weight: 600;
       line-height: 1;
@@ -1105,7 +1216,10 @@ onUnmounted(() => {
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
-    min-width: 1180px;
+    /* 下面 11 列固定宽度合计 1746px。此前 min-width 只有 1180px，
+       table-layout: fixed 会把所有列等比压缩到 1180，长文本列（项目名称/系统名称/被测单位）
+       被压到只剩声明宽度的 2/3，内容过早省略。对齐到列宽总和，窄屏交给横向滚动。 */
+    min-width: 1746px;
 
     thead tr {
       background: var(--color-bg-hover);
@@ -1204,13 +1318,13 @@ onUnmounted(() => {
             flex: 1 1 auto;
             height: 6px;
             background: var(--color-primary-light, #E8F0FE);
-            border-radius: 3px;
+            border-radius: var(--radius-sm);
             min-width: 40px;
             max-width: 66px;
 
             .progress-fill {
               height: 100%;
-              border-radius: 3px;
+              border-radius: var(--radius-sm);
               transition: width 0.2s;
             }
           }
@@ -1264,7 +1378,7 @@ onUnmounted(() => {
           display: inline-flex;
           align-items: center;
           padding: 2px 10px;
-          border-radius: 10px;
+          border-radius: var(--radius-lg);
           font-size: 12px;
           line-height: 20px;
           cursor: pointer;
@@ -1419,9 +1533,9 @@ onUnmounted(() => {
       align-items: center;
       gap: 4px;
       padding: 2px 8px;
-      border-radius: 999px;
+      border-radius: var(--radius-full);
       background: var(--color-warning-light);
-      color: #D97706;
+      color: var(--color-warning);
       font-size: 11px;
       font-weight: 500;
     }
@@ -1431,7 +1545,7 @@ onUnmounted(() => {
       align-items: center;
       gap: 4px;
       padding: 2px 8px;
-      border-radius: 999px;
+      border-radius: var(--radius-full);
       font-size: 11px;
       font-weight: 500;
 
@@ -1443,24 +1557,24 @@ onUnmounted(() => {
       }
 
       &.saving {
-        background: #EFF6FF;
-        color: #2563EB;
-        .save-dot { background: #2563EB; animation: pulse 1s infinite; }
+        background: var(--color-primary-light);
+        color: var(--color-primary);
+        .save-dot { background: var(--color-primary); animation: pulse 1s infinite; }
       }
       &.saved {
-        background: #ECFDF5;
-        color: #059669;
-        .save-dot { background: #059669; }
+        background: var(--color-success-light);
+        color: var(--color-success);
+        .save-dot { background: var(--color-success); }
       }
       &.unsaved {
-        background: #FFFBEB;
-        color: #D97706;
-        .save-dot { background: #D97706; }
+        background: var(--color-warning-light);
+        color: var(--color-warning);
+        .save-dot { background: var(--color-warning); }
       }
       &.error {
-        background: #FEF2F2;
-        color: #DC2626;
-        .save-dot { background: #DC2626; }
+        background: var(--color-danger-light);
+        color: var(--color-danger);
+        .save-dot { background: var(--color-danger); }
       }
     }
   }
@@ -1566,7 +1680,7 @@ onUnmounted(() => {
 
 .ext-dialog {
   background: var(--color-bg-card);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   width: 420px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
   overflow: hidden;
@@ -1578,7 +1692,7 @@ onUnmounted(() => {
   justify-content: space-between;
   padding: 16px 20px;
   border-bottom: 1px solid #E5E7EB;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   color: #111827;
 
@@ -1613,7 +1727,7 @@ onUnmounted(() => {
   gap: 10px;
   padding: 10px 8px;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   margin-bottom: 4px;
 
   &:hover {
@@ -1643,7 +1757,7 @@ onUnmounted(() => {
 
 .ext-dialog-btn {
   padding: 8px 18px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   cursor: pointer;
   border: none;
@@ -1683,7 +1797,7 @@ onUnmounted(() => {
 
   &:hover {
     background: var(--color-primary-light);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
   }
 }
 

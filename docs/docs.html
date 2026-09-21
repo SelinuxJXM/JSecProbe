@@ -541,7 +541,7 @@ body {
   <aside class="sidebar" id="sidebar" aria-label="目录导航">
     <div class="sidebar-header">
       <div class="sidebar-title"><a href="index.html">📄 产品白皮书</a></div>
-      <div class="sidebar-subtitle">JSecProbe V2.4.4</div>
+      <div class="sidebar-subtitle">JSecProbe V2.4.5</div>
     </div>
     <nav aria-label="目录">
       <div class="toc">
@@ -678,7 +678,7 @@ body {
   <main class="content" id="main-content">
     <article class="article">
       <h1>JSecProbe 等级保护现场测评系统</h1>
-      <p class="subtitle">产品白皮书 · 当前版本 V2.4.4 · 技术标准 GB/T 22239-2019</p>
+      <p class="subtitle">产品白皮书 · 当前版本 V2.4.5 · 技术标准 GB/T 22239-2019</p>
 
       <h2 id="intro">一、产品概述</h2>
 
@@ -1405,6 +1405,22 @@ body {
             </td>
           </tr>
           <tr>
+            <td>白皮书 V1.7</td><td>V2.4.5</td>
+            <td>
+              <ul style="margin:0 0 0 18px;padding:0;">
+                <li>修复：项目列表自动保存打断输入 —— 拆分「编辑态」与「脏标记」为两个独立状态，倒计时改为从最后一次输入起算（8 秒），保存后不再整表重载，就地回写服务端字段并保留可编辑状态</li>
+                <li>修复：系统构成（资产台账）保存后整表重载导致输入焦点与滚动位置丢失，改为只刷新分类统计；新增行用创建接口返回体就地转为真实行</li>
+                <li>修复：保存往返瞬间用户继续输入的内容被服务端回显覆盖（名称类字段一律以浏览器值为准）</li>
+                <li>健壮性：自动保存只清除成功落库的行，失败行保留脏标记由周期保存重试；明确区分「没有需要保存的修改」与「部分修改保存失败」</li>
+                <li>体验：新手引导按真实工作流重排（建项目 → 录资产 → 现场核查 → 问题汇总 → 出报告），支持键盘操作与焦点管理、断点续播、完结页行动按钮，高亮改用 data-guide 锚点</li>
+                <li>体验：系统构成 / 现场核查 / 问题汇总三页新增场景化首访提示，可关闭且各自独立记住</li>
+                <li>界面：自动采集页命令列表改为卡片式布局，命令代码改为随内容收缩的内联代码片，点击卡片任意处即可勾选</li>
+                <li>界面：AI 智能辅助页 5 步进度条改为标准 stepper（圆点 + 连接线，完成步骤打勾），移除无点击处理的假指针</li>
+                <li>界面：全局 UI/UX 优化（页面标题卡片化、统计卡样式统一、补全 CSS 变量、表格数字等宽对齐等）</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
             <td>白皮书 V1.6</td><td>V2.4.4</td>
             <td>
               <ul style="margin:0 0 0 18px;padding:0;">
@@ -1483,7 +1499,7 @@ body {
 
       <hr>
       <p style="text-align:center;color:var(--gray-500);font-size:14px;padding:20px 0;">
-        <em>本文档最后更新：2026 年 9 月（V1.6，对应 V2.4.4）</em><br>
+        <em>本文档最后更新：2026 年 9 月（V1.7，对应 V2.4.5）</em><br>
         <strong>JSecProbe - 让等保测评更高效、更规范、更智能</strong>
       </p>
     </article>

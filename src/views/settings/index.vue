@@ -1288,7 +1288,7 @@ onUnmounted(() => {
     margin-top: 16px;
     padding: 12px;
     background: var(--bg-hover);
-    border-radius: 6px;
+    border-radius: var(--radius-base);
   }
 }
 
@@ -1331,7 +1331,7 @@ onUnmounted(() => {
     .mode-tag {
       font-size: 11px;
       padding: 2px 6px;
-      border-radius: 4px;
+      border-radius: var(--radius-sm);
 
       &.recommended {
         background: #f0f9ff;

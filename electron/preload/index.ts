@@ -23,11 +23,13 @@ const updateService = {
 
 const aiService = {
   chat: ipc<{ content: string; suggestions: string[]; modelName?: string; switched?: boolean }>('ai:chat'),
+  cancelChat: ipc<{ canceled: boolean }>('ai:cancelChat'),
   analyzeAssessment: ipc<{ content: string }>('ai:analyzeAssessment'),
   batchAnalyzeScreenshots: ipc<{ content: string }>('ai:batchAnalyzeScreenshots'),
   analyzeIssue: ipc<{ content: string }>('ai:analyzeIssue'),
   analyzeIssueDescription: ipc<{ content: string }>('ai:analyzeIssueDescription'),
-  batchAnalyzeIssues: ipc<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }> }>('ai:batchAnalyzeIssues'),
+  batchAnalyzeIssues: ipc<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }>; canceled?: boolean }>('ai:batchAnalyzeIssues'),
+  cancelBatchIssueAnalysis: ipc<{ canceled: boolean }>('ai:cancelBatchIssueAnalysis'),
   searchKnowledge: ipc<{ content: string; modelName?: string; referencedDocs: Array<{ id: string; title: string }> }>('ai:searchKnowledge'),
   recommendCommands: ipc<{ commands: any[]; aiMethods: any[] }>('ai:recommendCommands'),
   identifyAssets: ipc<{ assets: any[] }>('ai:identifyAssets'),

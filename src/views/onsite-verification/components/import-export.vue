@@ -541,7 +541,7 @@ async function handleExportCommand(command: string) {
   font-size: 13px;
   border: 1px solid var(--color-border-base);
   background: var(--color-bg-card);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   cursor: pointer;
   color: var(--color-text-secondary, #4B5563);
   transition: all 0.15s;
@@ -566,7 +566,7 @@ async function handleExportCommand(command: string) {
     padding: 8px 12px;
     margin-bottom: 8px;
     background: var(--color-bg-base);
-    border-radius: 6px;
+    border-radius: var(--radius-base);
 
     .checkbox-label {
       display: flex;
@@ -603,7 +603,7 @@ async function handleExportCommand(command: string) {
       align-items: center;
       padding: 6px 10px;
       cursor: pointer;
-      border-radius: 4px;
+      border-radius: var(--radius-sm);
       transition: background 0.15s;
 
       &:hover {
@@ -661,7 +661,7 @@ async function handleExportCommand(command: string) {
         gap: 8px;
         padding: 6px 10px 6px 32px;
         cursor: pointer;
-        border-radius: 4px;
+        border-radius: var(--radius-sm);
         transition: background 0.15s;
 
         &:hover {
@@ -709,7 +709,7 @@ async function handleExportCommand(command: string) {
     padding: 8px 12px;
     margin-bottom: 8px;
     font-size: 13px;
-    border-radius: 6px;
+    border-radius: var(--radius-base);
     background: var(--color-warning-light);
     color: var(--color-warning);
   }

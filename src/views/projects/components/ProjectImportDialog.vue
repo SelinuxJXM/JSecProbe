@@ -190,7 +190,7 @@ function confirm() {
 
 .archive-dialog {
   background: var(--color-bg-card, #fff);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   width: 560px;
   max-height: 82vh;
   display: flex;
@@ -261,7 +261,7 @@ function confirm() {
   align-items: center;
   gap: 2px;
   padding: 10px 4px;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   background: var(--color-bg-hover, #f0f4f9);
 }
 
@@ -284,7 +284,7 @@ function confirm() {
 .enc-tag {
   margin-left: 6px;
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: var(--color-bg-active, #e8f0fd);
   color: var(--color-text-secondary, #4a5568);
 }
@@ -294,7 +294,7 @@ function confirm() {
   max-height: 200px;
   overflow-y: auto;
   border: 1px solid var(--color-border-light, #eef1f6);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
 }
 
 .import-item {
@@ -320,7 +320,7 @@ function confirm() {
 .conflict-tag {
   font-size: 11px;
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: var(--color-bg-active, #e8f0fd);
   color: var(--color-text-secondary, #4a5568);
 }
@@ -337,7 +337,7 @@ function confirm() {
   gap: 8px;
   padding: 10px 8px;
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
 
   &:hover {
     background: var(--color-bg-hover, #f0f4f9);
@@ -367,7 +367,7 @@ function confirm() {
   font-size: 11px;
   font-weight: 400;
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: var(--color-bg-active, #e8f0fd);
   color: var(--color-text-secondary, #4a5568);
 }
@@ -409,7 +409,7 @@ function confirm() {
 
 .dialog-btn {
   padding: 7px 18px;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   font-size: 13px;
   cursor: pointer;
   border: 1px solid var(--color-border-base, #e2e6ed);

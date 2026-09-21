@@ -651,7 +651,7 @@ defineExpose({ open });
 
 .content-body :deep(pre) {
   background: #f3f4f6;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   padding: 12px 16px;
   overflow-x: auto;
 }

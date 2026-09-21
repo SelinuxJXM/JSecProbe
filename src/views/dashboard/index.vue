@@ -301,9 +301,28 @@ onUnmounted(() => {
   themeObserver = null;
 });
 
+// 图表文字/网格线默认色是深灰，深色卡片上几乎看不见，这里统一按主题取色
+const chartTheme = computed(() => (isDark.value
+  ? { text: '#94A3B8', axis: '#334155', split: '#1E293B', tooltipBg: '#1E293B', tooltipBorder: '#334155' }
+  : { text: '#4A5568', axis: '#E2E6ED', split: '#EEF1F6', tooltipBg: '#FFFFFF', tooltipBorder: '#E2E6ED' }));
+
+const chartTooltip = computed(() => ({
+  backgroundColor: chartTheme.value.tooltipBg,
+  borderColor: chartTheme.value.tooltipBorder,
+  textStyle: { color: chartTheme.value.text },
+}));
+
+const chartAxis = computed(() => ({
+  axisLine: { lineStyle: { color: chartTheme.value.axis } },
+  axisLabel: { color: chartTheme.value.text },
+  nameTextStyle: { color: chartTheme.value.text },
+  splitLine: { lineStyle: { color: chartTheme.value.split } },
+}));
+
 const statusChartOption = computed(() => ({
-  tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-  legend: { bottom: '0%', left: 'center' },
+  color: ['#1B5FD9', '#18A957', '#909399'],
+  tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)', ...chartTooltip.value },
+  legend: { bottom: '0%', left: 'center', textStyle: { color: chartTheme.value.text } },
   series: [{
     type: 'pie',
     radius: ['40%', '70%'],
@@ -323,13 +342,14 @@ const statusChartOption = computed(() => ({
 
 const levelChartOption = computed(() => {
   return {
-    tooltip: { trigger: 'axis' },
+    tooltip: { trigger: 'axis', ...chartTooltip.value },
     grid: { left: 60, right: 20, bottom: 30, top: 20 },
     xAxis: {
       type: 'category',
       data: ['二级', '三级', '四级', '其他'],
+      ...chartAxis.value,
     },
-    yAxis: { type: 'value', minInterval: 1 },
+    yAxis: { type: 'value', minInterval: 1, ...chartAxis.value },
     series: [{
       type: 'bar',
       data: [
@@ -345,13 +365,13 @@ const levelChartOption = computed(() => {
 });
 
 const trendChartOption = computed(() => ({
-  tooltip: { trigger: 'axis' },
-  legend: { bottom: '0%', left: 'center' },
+  tooltip: { trigger: 'axis', ...chartTooltip.value },
+  legend: { bottom: '0%', left: 'center', textStyle: { color: chartTheme.value.text } },
   grid: { left: 60, right: 60, bottom: 60, top: 20 },
-  xAxis: { type: 'category', data: trendData.value.months },
+  xAxis: { type: 'category', data: trendData.value.months, ...chartAxis.value },
   yAxis: [
-    { type: 'value', minInterval: 1, name: '新建' },
-    { type: 'value', minInterval: 1, name: '累计', splitLine: { show: false } },
+    { type: 'value', minInterval: 1, name: '新建', ...chartAxis.value },
+    { type: 'value', minInterval: 1, name: '累计', ...chartAxis.value, splitLine: { show: false } },
   ],
   series: [
     {
@@ -585,40 +605,12 @@ onMounted(() => {
   margin-bottom: var(--spacing-lg);
 }
 
+/* 统计卡结构统一由 global.scss 的 .stat-card 提供，此处只保留本页配色 */
 .stat-card {
-  background: var(--color-bg-card);
-  border-radius: var(--radius-md);
-  padding: var(--spacing-lg);
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-md);
-  border: 1px solid var(--color-border-light);
-  
   .stat-icon {
-    width: 48px;
-    height: 48px;
-    border-radius: var(--radius-md);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 24px;
-    
     &.project { background: var(--color-primary-light); color: var(--color-primary); }
     &.inprogress { background: var(--color-warning-light); color: var(--color-warning); }
     &.completed { background: var(--color-success-light); color: var(--color-success); }
-  }
-  
-  .stat-value {
-    font-size: var(--font-size-2xl);
-    font-weight: var(--font-weight-bold);
-    color: var(--color-text-primary);
-    line-height: 1.2;
-  }
-  
-  .stat-label {
-    font-size: var(--font-size-sm);
-    color: var(--color-text-tertiary);
-    margin-top: var(--spacing-xs);
   }
 }
 

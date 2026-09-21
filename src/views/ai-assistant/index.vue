@@ -9,7 +9,7 @@
         <el-select
           v-model="selectedProjectId"
           placeholder="选择项目"
-          style="width: 200px; margin-right: 8px;"
+          style="width: 200px"
           :loading="projectsLoading"
           clearable
         >
@@ -32,21 +32,29 @@
       </div>
     </div>
 
-    <!-- 5步进度指示 -->
+    <!-- 5步进度指示：圆点 + 连接线的标准 stepper -->
     <div class="ai-progress-bar" v-if="workflowMode">
-      <div
-        v-for="(step, index) in workflowSteps"
-        :key="step.key"
-        class="step-item"
-        :class="{
-          'step-active': index === workflowStep,
-          'step-completed': index < workflowStep,
-        }"
-        :title="step.label + (index <= workflowStep ? '（已完成/进行中）' : '（待进行）')"
-      >
-        <span class="step-number">{{ index + 1 }}</span>
-        <span class="step-label">{{ step.label }}</span>
-      </div>
+      <template v-for="(step, index) in workflowSteps" :key="step.key">
+        <div
+          class="step-item"
+          :class="{
+            'step-active': index === workflowStep,
+            'step-completed': index < workflowStep,
+          }"
+          :title="step.label + (index < workflowStep ? '（已完成）' : index === workflowStep ? '（进行中）' : '（待进行）')"
+        >
+          <span class="step-number">
+            <el-icon v-if="index < workflowStep" :size="11"><Check /></el-icon>
+            <template v-else>{{ index + 1 }}</template>
+          </span>
+          <span class="step-label">{{ step.label }}</span>
+        </div>
+        <div
+          v-if="index < workflowSteps.length - 1"
+          class="step-connector"
+          :class="{ done: index < workflowStep }"
+        ></div>
+      </template>
     </div>
 
     <div class="ai-layout">
@@ -221,10 +229,19 @@
             <div class="ai-input-actions">
               <el-button :icon="Paperclip" circle title="添加附件" @click="triggerAttachmentUpload" />
               <el-button
+                v-if="loading"
+                type="danger"
+                plain
+                :icon="VideoPause"
+                @click="stopGenerating"
+              >
+                停止生成
+              </el-button>
+              <el-button
+                v-else
                 type="primary"
                 :icon="Promotion"
-                :disabled="(!inputMessage.trim() && pendingAttachments.length === 0) || loading"
-                :loading="loading"
+                :disabled="!inputMessage.trim() && pendingAttachments.length === 0"
                 @click="sendMessage()"
               >
                 发送
@@ -239,7 +256,9 @@
       <div class="ai-settings">
         <!-- 合规声明 -->
         <div class="compliance-notice">
-          <div class="compliance-notice-title">⚠️ 数据合规声明</div>
+          <div class="compliance-notice-title">
+            <el-icon class="notice-icon"><WarningFilled /></el-icon>数据合规声明
+          </div>
           <div class="compliance-notice-body">
             <p>AI分析功能会将测评数据（包括核查记录、截图、文档等）发送到您配置的第三方AI服务进行处理。在启用AI功能前，请确保：</p>
             <ul>
@@ -808,12 +827,14 @@ import {
   Tools,
   Document,
   Warning,
+  WarningFilled,
   Picture,
   ChatDotRound,
   User,
   MagicStick,
   Promotion,
   Paperclip,
+  VideoPause,
   CircleClose,
   Monitor,
   Download,
@@ -821,6 +842,7 @@ import {
   Refresh,
   CircleCheck,
   Iphone,
+  Check,
 } from '@element-plus/icons-vue';
 import PromptManagerDrawer from './components/prompt-manager-drawer.vue';
 
@@ -1068,6 +1090,7 @@ async function loadRecommendedModels() {
     }
   } catch (err) {
     console.error('加载推荐模型失败:', err);
+    ElMessage.error('推荐模型列表加载失败');
   }
 }
 
@@ -1080,6 +1103,7 @@ async function loadInstallGuide() {
     }
   } catch (err) {
     console.error('加载安装指南失败:', err);
+    ElMessage.error('本地引擎安装指南加载失败');
   }
 }
 
@@ -1458,6 +1482,7 @@ async function loadCloudModels() {
     }
   } catch (e) {
     console.error('加载云端模型列表失败:', e);
+    ElMessage.error('云端模型列表加载失败，请检查网络或 AI 设置');
   }
 }
 
@@ -1661,7 +1686,7 @@ async function sendMessage(customMessage?: string, context?: string) {
   if (isConfigured.value) {
     try {
       const res = await window.api.ai.chat({
-        messages: messages.value.map(m => ({ role: m.role, content: m.content, attachments: m.attachments })),
+        messages: buildRequestMessages(),
         model: aiSettings.mode === 'local' ? localEngineModel.value : aiSettings.model,
         temperature: aiSettings.temperature,
         context: context || undefined,
@@ -1677,8 +1702,17 @@ async function sendMessage(customMessage?: string, context?: string) {
         nextTick(() => scrollToBottom());
         return;
       }
+      // 用户主动停止：不写错误气泡，直接恢复可输入状态
+      if (res.error?.code === 'AI_CHAT_CANCELED') {
+        loading.value = false;
+        return;
+      }
       throw new Error(res.error?.message || 'AI回复失败');
     } catch (error: any) {
+      if (error?.message === '已停止生成') {
+        loading.value = false;
+        return;
+      }
       // AI调用失败，显示错误信息，不降级
       messages.value.push({
         id: Date.now() + Math.random(),
@@ -1703,6 +1737,38 @@ async function sendMessage(customMessage?: string, context?: string) {
   nextTick(() => scrollToBottom());
 }
 
+/**
+ * 构造发送给模型的消息窗口。
+ * 此前每轮都把完整对话历史（含所有附件 base64）全量上报，长对话后请求体越滚越大，
+ * 云端响应越来越慢、还容易撞上 token 上限。这里按「最近 N 条 + 总字符预算」截一个窗口，
+ * 界面上的历史仍然完整保留，只是不再每轮重复发送最早的那些。
+ */
+const HISTORY_MAX_MESSAGES = 20;
+const HISTORY_MAX_CHARS = 30000;
+
+function buildRequestMessages() {
+  const picked: Array<{ role: string; content: string; attachments?: any }> = [];
+  let chars = 0;
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i];
+    const size = (m.content?.length || 0) + (m.attachments?.length ? 4000 : 0);
+    if (picked.length >= HISTORY_MAX_MESSAGES || chars + size > HISTORY_MAX_CHARS) break;
+    picked.unshift({ role: m.role, content: m.content, attachments: m.attachments });
+    chars += size;
+  }
+  return picked;
+}
+
+async function stopGenerating() {
+  if (!loading.value) return;
+  try {
+    await window.api?.ai.cancelChat();
+    ElMessage.info('已停止生成');
+  } catch (err: any) {
+    ElMessage.error('停止失败：' + (err.message || '未知错误'));
+  }
+}
+
 async function quickAction(action: string) {
   const actions: Record<string, string> = {
     analyze: '帮我分析当前项目的测评结果',
@@ -1715,7 +1781,18 @@ async function quickAction(action: string) {
   sendMessage(prompt, context);
 }
 
-function clearChat() {
+async function clearChat() {
+  if (messages.value.length > 0) {
+    try {
+      await ElMessageBox.confirm(
+        `将清空当前 ${messages.value.length} 条对话记录，清空后无法恢复。确定继续吗？`,
+        '清空对话',
+        { type: 'warning', confirmButtonText: '清空', cancelButtonText: '取消' },
+      );
+    } catch {
+      return;
+    }
+  }
   messages.value = [];
   pendingAttachments.value = [];
 }
@@ -1870,37 +1947,37 @@ onActivated(() => {
   flex-direction: column;
 }
 
+/* 头部按钮组：间距统一交给 gap，抵消 EP 相邻按钮自带的 margin-left（否则 6px gap 叠成 18px） */
+.page-header-actions {
+  :deep(.el-button + .el-button) {
+    margin-left: 0;
+  }
+}
+
+/* 步骤条：圆点编号 + 连接线，完成步骤打勾；全部走主题 token，深浅色自动适配 */
 .ai-progress-bar {
   display: flex;
   align-items: center;
-  gap: 0;
-  padding: 12px 20px;
+  gap: 4px;
+  padding: 10px 20px;
   background: var(--color-bg-card);
+  border: 1px solid var(--color-border-light);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   margin-bottom: var(--spacing-md);
+  overflow-x: auto;
 }
 
 .step-item {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 14px;
-  border-radius: var(--radius-md, 6px) 0 0 var(--radius-md, 6px);
-  background: var(--color-border-light, #F0F0F3);
-  color: var(--color-text-secondary, #4B5563);
+  gap: 7px;
+  padding: 5px 10px;
+  border-radius: var(--radius-full);
   font-size: var(--text-sm, 12px);
-  cursor: pointer;
+  color: var(--color-text-tertiary, #9CA3AF);
   white-space: nowrap;
-  transition: background 0.15s, color 0.15s;
-
-  &:not(:first-child) {
-    border-radius: 0 var(--radius-md, 6px) var(--radius-md, 6px) 0;
-  }
-
-  &:not(:last-child) {
-    margin-right: -1px;
-  }
+  transition: color 0.15s, background-color 0.15s;
 
   .step-number {
     display: inline-flex;
@@ -1908,36 +1985,50 @@ onActivated(() => {
     justify-content: center;
     width: 20px;
     height: 20px;
-    border-radius: var(--radius-full, 9999px);
-    background: var(--color-border-default, #E5E7EB);
+    border-radius: var(--radius-full);
+    border: 1px solid var(--color-border-default, #E5E7EB);
+    background: transparent;
     font-size: var(--text-xs, 11px);
     font-weight: 600;
-    color: var(--color-text-secondary, #4B5563);
+    color: inherit;
+    flex-shrink: 0;
+    transition: background-color 0.15s, border-color 0.15s, color 0.15s;
   }
 
   &.step-completed {
-    background: var(--color-border-light, #F0F0F3);
     color: var(--color-text-secondary, #4B5563);
+    cursor: default;
 
     .step-number {
-      background: var(--color-border-default, #E5E7EB);
-      color: var(--color-text-secondary, #4B5563);
+      border-color: var(--color-primary, #1B5FD9);
+      background: var(--color-primary-lighter, #F5F8FF);
+      color: var(--color-primary, #1B5FD9);
     }
   }
 
   &.step-active {
-    background: var(--color-primary, #1B5FD9);
-    color: var(--color-text-inverse, #FFFFFF);
+    color: var(--color-primary, #1B5FD9);
+    font-weight: 600;
+    background: var(--color-primary-lighter, #F5F8FF);
 
     .step-number {
-      background: rgba(255, 255, 255, 0.25);
+      border-color: var(--color-primary, #1B5FD9);
+      background: var(--color-primary, #1B5FD9);
       color: var(--color-text-inverse, #FFFFFF);
     }
   }
+}
 
-  &:hover:not(.step-active) {
-    background: var(--color-primary-light, #E8F0FE);
-    color: var(--color-primary, #1B5FD9);
+.step-connector {
+  flex: 0 1 40px;
+  min-width: 12px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--color-border-default, #E5E7EB);
+  transition: background-color 0.2s;
+
+  &.done {
+    background: var(--color-primary, #1B5FD9);
   }
 }
 
@@ -1960,7 +2051,7 @@ onActivated(() => {
 .ai-sidebar-section {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 16px;
 }
 
@@ -1983,7 +2074,7 @@ onActivated(() => {
   align-items: center;
   gap: 6px;
   padding: 12px 8px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   transition: all 0.2s;
   background: var(--bg-hover);
@@ -1998,7 +2089,7 @@ onActivated(() => {
 
 .ai-upload-area {
   border: 2px dashed var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 24px 16px;
   text-align: center;
   cursor: pointer;
@@ -2058,7 +2149,7 @@ onActivated(() => {
   flex: 1;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -2103,7 +2194,7 @@ onActivated(() => {
   .suggestion-item {
     padding: 12px 20px;
     background: var(--bg-hover);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     cursor: pointer;
     font-size: 14px;
     color: var(--text-secondary);
@@ -2177,7 +2268,7 @@ onActivated(() => {
   gap: 6px;
   max-width: 100%;
   padding: 3px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   background: var(--bg-hover);
   font-size: 12px;
   color: var(--text-primary);
@@ -2196,7 +2287,7 @@ onActivated(() => {
 
 .msg-bubble {
   padding: 12px 16px;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: var(--bg-hover);
   color: var(--text-primary);
   font-size: 14px;
@@ -2206,7 +2297,7 @@ onActivated(() => {
   pre {
     background: rgba(0, 0, 0, 0.1);
     padding: 12px;
-    border-radius: 6px;
+    border-radius: var(--radius-base);
     overflow-x: auto;
     margin: 8px 0;
     
@@ -2219,7 +2310,7 @@ onActivated(() => {
   code {
     background: rgba(0, 0, 0, 0.1);
     padding: 2px 6px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     font-size: 13px;
   }
   
@@ -2293,7 +2384,7 @@ onActivated(() => {
   max-width: 240px;
   padding: 4px 10px;
   border: 1px solid var(--border-color);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   background: var(--bg-hover);
   font-size: 12px;
   color: var(--text-primary);
@@ -2365,7 +2456,7 @@ onActivated(() => {
 .setting-hint {
   padding: 10px 14px;
   background: rgba(41, 128, 185, 0.1);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
   color: #2980b9;
   line-height: 1.6;
@@ -2374,7 +2465,7 @@ onActivated(() => {
 .test-result {
   margin-top: 8px;
   padding: 8px 12px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
   line-height: 1.6;
   
@@ -2394,7 +2485,7 @@ onActivated(() => {
     margin-top: 6px;
     padding: 6px;
     background: rgba(0, 0, 0, 0.05);
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
     font-size: 11px;
     color: var(--color-text-secondary, #666);
     word-break: break-all;
@@ -2407,7 +2498,7 @@ onActivated(() => {
   padding: 10px 12px;
   background: rgba(64, 158, 255, 0.06);
   border: 1px solid rgba(64, 158, 255, 0.15);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
 }
 
 .desensitize-rules-title {
@@ -2442,7 +2533,7 @@ onActivated(() => {
   font-weight: 500;
   color: #409eff;
   background: rgba(64, 158, 255, 0.1);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   padding: 0 5px;
   text-align: center;
   flex-shrink: 0;
@@ -2452,22 +2543,29 @@ onActivated(() => {
   font-size: 11px;
   background: rgba(0, 0, 0, 0.06);
   padding: 0 4px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-family: 'Consolas', 'Courier New', monospace;
 }
 
 .compliance-notice {
   background: rgba(230, 162, 60, 0.08);
   border: 1px solid rgba(230, 162, 60, 0.25);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   padding: 14px 16px;
 }
 
 .compliance-notice-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 14px;
   font-weight: 600;
   color: #e6a23c;
   margin-bottom: 10px;
+
+  .notice-icon {
+    font-size: 15px;
+  }
 }
 
 .compliance-notice-body {
@@ -2535,7 +2633,7 @@ onActivated(() => {
 .markdown-body code {
   background: rgba(0, 0, 0, 0.06);
   padding: 0.15em 0.4em;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-size: 0.85em;
   font-family: Consolas, Monaco, monospace;
 }
@@ -2544,7 +2642,7 @@ onActivated(() => {
   background: #1e1e1e;
   color: #d4d4d4;
   padding: 0.8em;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   overflow-x: auto;
   margin: 0.4em 0;
 }
@@ -2574,7 +2672,7 @@ onActivated(() => {
 .markdown-body a { color: #409eff; text-decoration: none; }
 .markdown-body a:hover { text-decoration: underline; }
 
-.markdown-body img { max-width: 100%; border-radius: 4px; margin: 0.3em 0; }
+.markdown-body img { max-width: 100%; border-radius: var(--radius-sm); margin: 0.3em 0; }
 
 .markdown-body strong { font-weight: 600; }
 
@@ -2589,7 +2687,7 @@ onActivated(() => {
 .ollama-status-panel {
   background: var(--bg-hover);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 14px 16px;
 }
 
@@ -2655,7 +2753,7 @@ onActivated(() => {
   padding: 12px 14px;
   background: var(--bg-hover);
   border: 1px solid var(--border-color);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   cursor: pointer;
   transition: all 0.2s;
 
@@ -2712,7 +2810,7 @@ onActivated(() => {
   margin-top: 10px;
   padding: 8px 10px;
   background: rgba(64, 158, 255, 0.06);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   border: 1px solid rgba(64, 158, 255, 0.15);
 }
 
@@ -2785,7 +2883,7 @@ onActivated(() => {
   padding: 20px 32px;
   background: var(--bg-hover);
   border: 2px solid var(--border-color);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
   transition: all 0.2s;
   font-size: 14px;
@@ -2818,7 +2916,7 @@ onActivated(() => {
   margin-top: 24px;
   padding: 16px;
   background: var(--bg-hover);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 .instructions-title {
@@ -2913,7 +3011,7 @@ onActivated(() => {
 
 .install-guide-platform {
   background: var(--bg-hover);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   padding: 12px 14px;
 }
 
@@ -3014,14 +3112,14 @@ onActivated(() => {
   color: var(--text-secondary);
   font-size: 13px;
   background: var(--bg-hover);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
 }
 
 .model-card {
   padding: 12px 14px;
   background: var(--bg-hover);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   transition: all 0.2s;
 
   &.model-active {
@@ -3053,7 +3151,7 @@ onActivated(() => {
   color: var(--text-secondary);
   padding: 2px 8px;
   background: var(--bg-primary);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .model-card-info {

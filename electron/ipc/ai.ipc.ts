@@ -82,6 +82,12 @@ const aiLocks = new Map<AiLockKey, boolean>();
 let currentProgress: { stage: string; message: string; percent: number; timestamp: number } | null = null;
 const PROGRESS_EXPIRE_MS = 5 * 60 * 1000; // 5 分钟过期
 
+// 批量问题分析的取消标志。批量任务可能长达数十分钟，
+// 用户选错文件或模型响应过慢时必须能中止，不能只能干等。
+let batchIssueCancelRequested = false;
+let batchIssueRunning = false;
+let chatAbortController: AbortController | null = null;
+
 function sanitize<T>(obj: T): any {
   try {
     return JSON.parse(JSON.stringify(obj));
@@ -497,18 +503,27 @@ const AI_FETCH_TIMEOUT_MS = 120_000;
  * 带超时的 AI 请求。三处 callWithFailover 的 aiFetch 此前均未创建 AbortController，
  * 云端无响应时请求会一直悬挂，故障转移会串行叠加多个悬挂请求。
  */
-async function aiFetchWithTimeout(url: string, init: any, timeoutMs = AI_FETCH_TIMEOUT_MS): Promise<any> {
+async function aiFetchWithTimeout(url: string, init: any, timeoutMs = AI_FETCH_TIMEOUT_MS, externalSignal?: AbortSignal): Promise<any> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
   try {
     return await aiFetch(url, { ...init, signal: controller.signal });
   } catch (error: any) {
+    if (externalSignal?.aborted) {
+      throw new Error('用户已取消');
+    }
     if (error?.name === 'AbortError' || controller.signal.aborted) {
       throw new Error(`请求超时（${Math.round(timeoutMs / 1000)}秒无响应）`);
     }
     throw error;
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
   }
 }
 
@@ -789,9 +804,10 @@ export function registerAIHandlers(): void {
     temperature?: number;
     mode?: string;
     config?: any;
+    signal?: AbortSignal;
   }): Promise<{ success: boolean; modelId?: string; modelName?: string; content: string; error?: string }> {
     // 默认温度对齐 ai_configs 建表与初始化值（0.7）；此前此处为 0.3，与配置漂移
-    const { messages, temperature = 0.7, mode = 'cloud', config } = params;
+    const { messages, temperature = 0.7, mode = 'cloud', config, signal } = params;
     const db = getDb();
 
     // 优先使用云端模型列表（mode === 'cloud'）
@@ -846,7 +862,7 @@ export function registerAIHandlers(): void {
                 'Authorization': `Bearer ${apiKey}`,
               },
               body: requestBody,
-            });
+            }, undefined, signal);
 
             if (!response.ok) {
               const errorBody = await response.text().catch(() => '');
@@ -862,6 +878,11 @@ export function registerAIHandlers(): void {
             log.info(`[AI故障转移] 模型 ${model.name} 调用成功, 返回内容长度: ${content.length}字符`);
             return { success: true, modelId: model.id, modelName: model.name, content };
           } catch (error: any) {
+            // 用户主动取消：不再故障转移到下一个模型，直接向上抛出
+            if (signal?.aborted) {
+              log.info('[AI故障转移] 用户已取消，终止后续尝试');
+              throw new Error('用户已取消');
+            }
             log.warn(`[AI故障转移] 模型 ${model.name} 失败: ${error.message}`);
             lastError = error.message || String(error);
             continue; // 尝试下一个
@@ -892,7 +913,7 @@ export function registerAIHandlers(): void {
             'Authorization': `Bearer ${apiKey}`,
           },
           body: requestBody,
-        });
+        }, undefined, signal);
 
         if (!response.ok) {
           const errorBody = await response.text().catch(() => '');
@@ -1443,6 +1464,9 @@ export function registerAIHandlers(): void {
     context?: string;
   }) => {
     assertTrusted(_event);
+    // 本地/云端长回答可能持续一分钟以上，用户需要能中途停止
+    const chatController = new AbortController();
+    chatAbortController = chatController;
     try {
       const db = getDb();
       const configs = await db.select().from(schema.aiConfigs).limit(1);
@@ -1472,7 +1496,7 @@ export function registerAIHandlers(): void {
       }
 
       // 使用故障转移机制
-      const result = await callWithFailover({ messages, temperature, mode, config });
+      const result = await callWithFailover({ messages, temperature, mode, config, signal: chatController.signal });
 
       try {
         writeOperationLog({
@@ -1498,6 +1522,14 @@ export function registerAIHandlers(): void {
         },
       });
     } catch (error: any) {
+      // 用户主动停止不算错误，前端不再弹错误气泡、也不把"已取消"写成 AI 回复
+      if (chatController.signal.aborted) {
+        log.info('[ai:chat] 用户已停止生成');
+        return sanitize({
+          success: false,
+          error: { code: 'AI_CHAT_CANCELED', message: '已停止生成' },
+        });
+      }
       log.error('AI Chat Error:', error);
       return sanitize({
         success: false,
@@ -1506,7 +1538,20 @@ export function registerAIHandlers(): void {
           message: error.message || 'AI调用失败',
         },
       });
+    } finally {
+      if (chatAbortController === chatController) chatAbortController = null;
     }
+  });
+
+  // 停止当前 AI 对话生成（中止底层 HTTP 请求）
+  ipcMain.handle('ai:cancelChat', async (_event) => {
+    assertTrusted(_event);
+    if (chatAbortController) {
+      chatAbortController.abort();
+      chatAbortController = null;
+      return sanitize({ success: true, data: { canceled: true } });
+    }
+    return sanitize({ success: true, data: { canceled: false } });
   });
 
   ipcMain.handle('ai:analyzeAssessment', async (_event, rawParams: any) => {
@@ -2122,8 +2167,15 @@ export function registerAIHandlers(): void {
 
       let successCount = 0;
       let failCount = 0;
+      batchIssueCancelRequested = false;
+      batchIssueRunning = true;
 
       for (let i = 0; i < params.issues.length; i++) {
+        if (batchIssueCancelRequested) {
+          log.info(`[ai:batchAnalyzeIssues] 收到取消请求，在第 ${i}/${total} 条处中止`);
+          break;
+        }
+
         const issue = params.issues[i];
         sendProgress({
           stage: 'analyzing',
@@ -2177,21 +2229,28 @@ export function registerAIHandlers(): void {
         }
       }
 
-      sendProgress({ stage: 'done', message: '分析完成', percent: 100, current: total, total });
+      const canceled = batchIssueCancelRequested;
+      sendProgress({
+        stage: canceled ? 'canceled' : 'done',
+        message: canceled ? `已中止，完成 ${results.length}/${total}` : '分析完成',
+        percent: 100,
+        current: results.length,
+        total,
+      });
 
-      log.info(`[ai:batchAnalyzeIssues] 批量分析完成, 成功: ${successCount}, 失败: ${failCount}`);
+      log.info(`[ai:batchAnalyzeIssues] 批量分析${canceled ? '被中止' : '完成'}, 成功: ${successCount}, 失败: ${failCount}`);
 
       try {
         writeOperationLog({
           action: 'ai_batch_analyze_issues',
           module: 'ai',
-          description: `AI批量分析问题: 总数=${total}, 成功=${results.filter(r => r.success).length}`,
+          description: `AI批量分析问题: 总数=${total}, 成功=${results.filter(r => r.success).length}${canceled ? ', 用户中止' : ''}`,
         });
       } catch (logErr: any) {
         log.error('[操作日志] 写入批量问题分析日志失败:', logErr.message);
       }
 
-      return sanitize({ success: true, data: { results } });
+      return sanitize({ success: true, data: { results, canceled } });
     } catch (error: any) {
       sendProgress({ stage: 'error', message: error.message || '分析失败', percent: 0, current: 0, total: rawParams.issues?.length || 0 });
       log.error('[ai:batchAnalyzeIssues] 错误:', error.message);
@@ -2200,7 +2259,22 @@ export function registerAIHandlers(): void {
         success: false,
         error: { code: 'AI_BATCH_ISSUE_ERROR', message: error.message || 'AI批量分析失败' },
       });
+    } finally {
+      batchIssueCancelRequested = false;
+      batchIssueRunning = false;
     }
+  });
+
+  // 中止批量问题分析。只置标志位，由分析循环在每条之间检查，
+  // 已发出的单条请求仍会跑完（避免半截写入），但不会继续下一条。
+  ipcMain.handle('ai:cancelBatchIssueAnalysis', async (_event) => {
+    assertTrusted(_event);
+    if (!batchIssueRunning) {
+      return sanitize({ success: true, data: { canceled: false } });
+    }
+    batchIssueCancelRequested = true;
+    log.info('[ai:cancelBatchIssueAnalysis] 已请求中止批量分析');
+    return sanitize({ success: true, data: { canceled: true } });
   });
 
   // OCR 相关 IPC 处理器

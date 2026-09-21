@@ -2,7 +2,7 @@
   <!-- 迷你AI进度条（批量分析最小化时显示） -->
   <div v-if="batchMinimized" class="mini-ai-progress" @click="batchProgress.visible = true; batchMinimized = false">
     <div class="mini-ai-progress-header">
-      <span class="mini-ai-progress-title">🤖 AI分析整改建议中</span>
+      <span class="mini-ai-progress-title"><el-icon><MagicStick /></el-icon> AI分析整改建议中</span>
       <span class="mini-ai-progress-percent">{{ batchPercentDisplay }}</span>
     </div>
     <div class="mini-ai-progress-bar-container">
@@ -22,7 +22,7 @@
   >
     <template #header>
       <div class="ai-dialog-header">
-        <span class="ai-dialog-title">🤖 AI整改建议</span>
+        <span class="ai-dialog-title"><el-icon><MagicStick /></el-icon> AI整改建议</span>
         <button class="ai-close-btn" @click="singleDialogVisible = false" title="关闭">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -62,6 +62,7 @@
     <div v-if="singleLoading" class="ai-loading-area">
       <div class="loading-spinner"></div>
       <p class="loading-text">{{ singleLoadingText }}</p>
+      <p v-if="singleElapsed > 0" class="loading-elapsed">已等待 {{ singleElapsed }} 秒</p>
     </div>
 
     <div v-else-if="singleResult" class="ai-result-area">
@@ -89,7 +90,7 @@
   <el-dialog v-model="batchProgress.visible" width="600px" :close-on-click-modal="false" :show-close="false" :close-on-press-escape="false" class="ai-batch-dialog">
     <template #header>
       <div class="ai-dialog-header">
-        <span class="ai-dialog-title">🤖 AI批量分析整改建议</span>
+        <span class="ai-dialog-title"><el-icon><MagicStick /></el-icon> AI批量分析整改建议</span>
         <div class="ai-dialog-header-actions">
           <button class="ai-minimize-btn" @click="batchProgress.visible = false; batchMinimized = true" title="最小化">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -153,7 +154,7 @@
       </div>
 
       <!-- 完成统计 -->
-      <div v-if="batchProgress.stage === 'done'" class="batch-summary">
+      <div v-if="batchProgress.stage === 'done' || batchProgress.stage === 'canceled'" class="batch-summary">
         <div class="summary-item success">
           <span class="summary-icon">✓</span>
           <span class="summary-text">成功 {{ batchSuccessCount }} 个</span>
@@ -174,8 +175,20 @@
     </div>
     <template #footer>
       <div class="dialog-footer">
-        <el-button v-if="batchProgress.stage === 'error'" type="primary" @click="batchProgress.visible = false">关闭</el-button>
-        <el-button v-if="batchProgress.stage === 'done'" type="success" @click="batchProgress.visible = false">完成</el-button>
+        <template v-if="batchProgress.stage === 'done' || batchProgress.stage === 'canceled' || batchProgress.stage === 'error'">
+          <el-button
+            :type="batchProgress.stage === 'done' ? 'success' : 'primary'"
+            @click="batchProgress.visible = false"
+          >
+            {{ batchProgress.stage === 'canceled' ? '已中止，关闭' : batchProgress.stage === 'done' ? '完成' : '关闭' }}
+          </el-button>
+        </template>
+        <template v-else>
+          <el-button @click="batchProgress.visible = false; batchMinimized = true">最小化</el-button>
+          <el-button type="danger" plain :loading="batchCanceling" @click="cancelBatchAnalysis">
+            {{ batchCanceling ? '正在中止...' : '中止分析' }}
+          </el-button>
+        </template>
       </div>
     </template>
   </el-dialog>
@@ -184,6 +197,7 @@
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount } from 'vue';
 import { ElMessage } from 'element-plus';
+import { MagicStick } from '@element-plus/icons-vue';
 import type { Issue } from '../../../../shared/types';
 
 const props = defineProps<{
@@ -204,6 +218,7 @@ const singleResult = ref<string | null>(null);
 const currentIssue = ref<Issue | null>(null);
 const singleStep = ref(0);
 const singleLoadingText = ref('正在读取配置...');
+const singleElapsed = ref(0);
 
 const singleStepTexts = [
   '正在读取配置...',
@@ -212,6 +227,8 @@ const singleStepTexts = [
   'AI正在分析中，请耐心等待...',
   '正在生成整改建议...',
 ];
+
+let singleElapsedTimer: ReturnType<typeof setInterval> | null = null;
 
 // ==================== 批量分析状态 ====================
 const batchProgress = ref({
@@ -223,6 +240,7 @@ const batchProgress = ref({
   total: 0,
 });
 const batchLoading = ref(false);
+const batchCanceling = ref(false);
 const batchMinimized = ref(false);
 const batchElapsedTime = ref(0);
 const batchEstimatedRemaining = ref(0);
@@ -231,6 +249,12 @@ const batchFailedCount = ref(0);
 const batchIssueList = ref<Array<{ issueId: string; issueTitle: string; issueDescription: string; failed: boolean }>>([]);
 
 function closeBatchDialog() {
+  // 分析中直接关掉会让用户误以为任务也被取消了，收进最小化即可
+  if (batchLoading.value) {
+    batchProgress.value.visible = false;
+    batchMinimized.value = true;
+    return;
+  }
   batchProgress.value.visible = false;
 }
 
@@ -264,14 +288,27 @@ async function analyzeIssue(issue: Issue) {
   singleResult.value = null;
   singleStep.value = 1;
   singleLoadingText.value = singleStepTexts[0];
+  singleElapsed.value = 0;
 
-  // 模拟步骤进度
+  // 前 3 步（读取配置 / 编码输入 / 提交 AI）是本地动作，用固定节奏推进阶段感。
+  // 第 4 步「等待响应」取决于远端模型，真实耗时 30-60 秒不等，
+  // 因此这里刻意不自动跳到第 5 步 —— 否则进度条早早走满而请求还没回来，
+  // 界面会长时间停在"已完成"的假象上，比不做进度更像卡死。
   const stepInterval = setInterval(() => {
-    if (singleStep.value < 5 && singleLoading.value) {
+    if (singleStep.value < 4 && singleLoading.value) {
       singleStep.value++;
       singleLoadingText.value = singleStepTexts[singleStep.value - 1];
     }
   }, 800);
+
+  // 进入等待阶段后开始计时，让用户确认请求仍在进行中
+  singleElapsedTimer = setInterval(() => {
+    if (!singleLoading.value) return;
+    singleElapsed.value++;
+    if (singleStep.value >= 4) {
+      singleLoadingText.value = singleStepTexts[3];
+    }
+  }, 1000);
 
   try {
     const params = {
@@ -310,6 +347,10 @@ async function analyzeIssue(issue: Issue) {
     ElMessage.error('AI分析失败：' + (err.message || '未知错误'));
   } finally {
     clearInterval(stepInterval);
+    if (singleElapsedTimer) {
+      clearInterval(singleElapsedTimer);
+      singleElapsedTimer = null;
+    }
     singleLoading.value = false;
   }
 }
@@ -321,6 +362,20 @@ function applySingleResult() {
 }
 
 // ==================== 批量分析 ====================
+async function cancelBatchAnalysis() {
+  if (!window.api || !batchLoading.value) return;
+  batchCanceling.value = true;
+  try {
+    await window.api.ai.cancelBatchIssueAnalysis();
+    // 中止需要等当前这条跑完才生效，先给即时反馈，避免看起来没反应
+    ElMessage.info('正在中止，当前这条分析完成后即停止');
+  } catch (err: any) {
+    ElMessage.error('中止失败：' + (err.message || '未知错误'));
+  } finally {
+    batchCanceling.value = false;
+  }
+}
+
 async function batchAnalyzeIssues(issues: Issue[]) {
   if (!window.api || issues.length === 0) return;
 
@@ -382,6 +437,27 @@ async function batchAnalyzeIssues(issues: Issue[]) {
 
     console.log('[issue-ai-analysis.batchAnalyzeIssues] IPC返回, success:', res.success, 'hasData:', !!res.data);
 
+    if (res.success && res.data?.canceled) {
+      // 用户中途中止：已完成的部分照常应用，未完成的保持原样
+      for (const result of res.data.results) {
+        if (result.success && result.suggestion) {
+          emit('applySuggestion', result.issueId, result.suggestion);
+          batchSuccessCount.value++;
+        } else {
+          batchFailedCount.value++;
+        }
+      }
+      const remain = batchProgress.value.total - batchSuccessCount.value - batchFailedCount.value;
+      ElMessage.info(`已中止分析，完成 ${batchSuccessCount.value} 条${remain > 0 ? `，剩余 ${remain} 条未处理` : ''}`);
+      batchProgress.value = {
+        ...batchProgress.value,
+        stage: 'canceled',
+        message: `已中止，完成 ${batchSuccessCount.value}/${batchProgress.value.total}`,
+        percent: 100,
+      };
+      return;
+    }
+
     if (res.success && res.data) {
       for (const result of res.data.results) {
         if (result.success && result.suggestion) {
@@ -421,6 +497,7 @@ async function batchAnalyzeIssues(issues: Issue[]) {
       batchTimerInterval = null;
     }
     batchLoading.value = false;
+    batchCanceling.value = false;
   }
 }
 
@@ -463,6 +540,11 @@ defineExpose({
     font-size: 16px;
     font-weight: 600;
     color: #fff;
+
+    .el-icon {
+      vertical-align: -2px;
+      margin-right: 4px;
+    }
   }
 
   .ai-close-btn {
@@ -471,7 +553,7 @@ defineExpose({
     border: none;
     background: transparent;
     color: rgba(255, 255, 255, 0.8);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -596,6 +678,13 @@ defineExpose({
     color: #6B7280;
     font-size: 14px;
   }
+
+  .loading-elapsed {
+    margin-top: 6px;
+    color: #9CA3AF;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
 }
 
 .ai-result-area {
@@ -619,7 +708,7 @@ defineExpose({
       line-height: 1.6;
       background: var(--color-bg-page, #F5F6FA);
       padding: 10px 12px;
-      border-radius: 6px;
+      border-radius: var(--radius-base);
 
       &.conclusion-text {
         line-height: 1.8;
@@ -649,7 +738,7 @@ defineExpose({
   padding: 8px 16px;
   cursor: pointer;
   border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: 0 4px 20px rgba(27, 95, 217, 0.4);
   transition: all 0.2s ease;
 
@@ -677,14 +766,14 @@ defineExpose({
   .mini-ai-progress-bar-container {
     height: 4px;
     background: rgba(255, 255, 255, 0.3);
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
     overflow: hidden;
     margin-bottom: 4px;
 
     .mini-ai-progress-bar {
       height: 100%;
       background: #fff;
-      border-radius: 2px;
+      border-radius: var(--radius-xs);
       transition: width 0.3s ease;
     }
   }
@@ -715,7 +804,7 @@ defineExpose({
       border: none;
       background: transparent;
       color: rgba(255, 255, 255, 0.8);
-      border-radius: 4px;
+      border-radius: var(--radius-sm);
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -772,14 +861,14 @@ html:not(.dark) .ai-issue-dialog {
 .ai-progress-bar {
   height: 14px;
   background: #E5E7EB;
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
 .ai-progress-fill {
   height: 100%;
   background: linear-gradient(90deg, #1B5FD9 0%, #3B82F6 100%);
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   transition: width 0.3s ease;
 }
 
@@ -799,7 +888,7 @@ html:not(.dark) .ai-issue-dialog {
   margin-top: 12px;
   padding: 10px 16px;
   background: #F9FAFB;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid #E5E7EB;
 }
 
@@ -825,7 +914,7 @@ html:not(.dark) .ai-issue-dialog {
 .issue-list-progress {
   margin-top: 16px;
   border: 1px solid #E5E7EB;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
@@ -929,7 +1018,7 @@ html:not(.dark) .ai-issue-dialog {
   margin-top: 16px;
   padding: 12px 16px;
   background: #F0FDF4;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid #BBF7D0;
 }
 

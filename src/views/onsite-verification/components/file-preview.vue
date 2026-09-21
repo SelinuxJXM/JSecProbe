@@ -185,7 +185,7 @@ defineExpose({
   width: auto;
   height: auto;
   object-fit: contain;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
 }
 
@@ -198,7 +198,7 @@ defineExpose({
   width: 100%;
   height: 100%;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .preview-word-wrapper {
@@ -236,7 +236,7 @@ defineExpose({
   height: 70vh;
   overflow: auto;
   background: #1F2937;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .preview-text-content {

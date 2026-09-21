@@ -404,7 +404,7 @@
                 </el-table>
               </div>
 
-              <div v-if="aiDiffData.advice" style="padding: 10px 12px; background: var(--el-color-primary-light-9); border-radius: 6px; font-size: 13px; line-height: 1.7; color: var(--el-text-color-primary)">
+              <div v-if="aiDiffData.advice" style="padding: 10px 12px; background: var(--el-color-primary-light-9); border-radius: var(--radius-base); font-size: 13px; line-height: 1.7; color: var(--el-text-color-primary)">
                 <span style="font-weight: 600; color: var(--el-color-primary)">AI 建议：</span>{{ aiDiffData.advice }}
               </div>
             </div>
@@ -511,7 +511,7 @@
               <el-table-column label="合规率" min-width="140">
                 <template #default="{ row }">
                   <div style="display: flex; align-items: center; gap: 8px">
-                    <div style="flex: 1; height: 6px; background: var(--el-border-color-lighter); border-radius: 3px; overflow: hidden">
+                    <div style="flex: 1; height: 6px; background: var(--el-border-color-lighter); border-radius: var(--radius-sm); overflow: hidden">
                       <div
                         :style="{ width: (row.complianceRate ?? 0) + '%', height: '100%', borderRadius: '3px', background: (row.complianceRate ?? 0) >= 80 ? '#18A957' : (row.complianceRate ?? 0) >= 50 ? '#D48806' : '#F56C6C' }"
                       />
@@ -555,7 +555,7 @@
 
               <div v-if="aiComplianceData.gaps && aiComplianceData.gaps.length > 0" style="margin-bottom: 12px">
                 <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px; color: var(--el-text-color-secondary)">主要差距（{{ aiComplianceData.gaps.length }} 项）</div>
-                <div v-for="gap in aiComplianceData.gaps" :key="gap.domain + gap.gap" style="padding: 10px 12px; background: var(--el-bg-color); border-radius: 6px; margin-bottom: 8px; border: 1px solid var(--el-border-color-lighter)">
+                <div v-for="gap in aiComplianceData.gaps" :key="gap.domain + gap.gap" style="padding: 10px 12px; background: var(--el-bg-color); border-radius: var(--radius-base); margin-bottom: 8px; border: 1px solid var(--el-border-color-lighter)">
                   <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px">
                     <el-tag :type="gap.priority === 'high' ? 'danger' : gap.priority === 'medium' ? 'warning' : 'info'" size="small">{{ gap.priority === 'high' ? '高' : gap.priority === 'medium' ? '中' : '低' }}</el-tag>
                     <span style="font-weight: 600; font-size: 13px">{{ gap.domain }}</span>

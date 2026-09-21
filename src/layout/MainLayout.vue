@@ -6,9 +6,10 @@
         <span v-if="!appStore.sidebarCollapsed" class="logo-text">JSecProbe</span>
       </div>
       
-      <nav class="sidebar-menu">
+      <nav class="sidebar-menu" data-guide="nav-menu">
         <el-menu
           :default-active="activeMenu"
+          :default-openeds="['/project-detail']"
           :collapse="appStore.sidebarCollapsed"
           :collapse-transition="false"
           @select="handleMenuSelect"
@@ -99,6 +100,9 @@
           </el-icon>
           <el-breadcrumb separator="/">
             <el-breadcrumb-item :to="{ path: '/projects' }">首页</el-breadcrumb-item>
+            <el-breadcrumb-item v-if="currentProjectName" class="bc-project">
+              {{ currentProjectName }}
+            </el-breadcrumb-item>
             <el-breadcrumb-item>{{ currentPageTitle }}</el-breadcrumb-item>
           </el-breadcrumb>
         </div>
@@ -112,7 +116,7 @@
             <el-icon class="header-icon" @click="openWhitepaper"><QuestionFilled /></el-icon>
           </el-tooltip>
           <el-dropdown trigger="click">
-            <div class="user-info">
+            <div class="user-info" data-guide="user-menu">
               <el-avatar :size="32" class="user-avatar">
                 {{ userStore.user?.realName?.charAt(0) || 'A' }}
               </el-avatar>
@@ -123,6 +127,7 @@
               <el-dropdown-menu>
                 <el-dropdown-item @click="router.push('/personal-center')">个人中心</el-dropdown-item>
                 <el-dropdown-item @click="onboardingRef?.restart()">查看引导</el-dropdown-item>
+                <el-dropdown-item @click="handleResetHints">重置页面提示</el-dropdown-item>
                 <el-dropdown-item divided @click="handleLogout">退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -289,7 +294,7 @@ import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAppStore } from '@/stores/app';
 import { useUserStore } from '@/stores/user';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   Bell,
   QuestionFilled,
@@ -300,6 +305,7 @@ import {
 import SidebarIcon from '@/components/SidebarIcon.vue';
 import OnboardingGuide from '@/components/OnboardingGuide/index.vue';
 import DOMPurify from 'dompurify';
+import { resetAllHints } from '@/utils/onboarding-state';
 
 const route = useRoute();
 const router = useRouter();
@@ -406,7 +412,25 @@ function handleUpdateStatus(status: any) {
 let unsubscribe: (() => void) | undefined;
 let onboardingTimer: ReturnType<typeof setTimeout> | undefined;
 
+/**
+ * 全局 Ctrl+S：页面通过 `window.addEventListener('app:global-save', handler)`
+ * 注册自己的保存逻辑即可。此前只有现场核查页有快捷键，而项目列表与资产台账
+ * 恰恰是编辑量最大、却只能滚到页底点按钮的两个页面。
+ * 页面未注册时不做任何事，避免误吞浏览器/系统的保存行为之外的操作。
+ */
+function handleGlobalKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+    const target = e.target as HTMLElement | null;
+    // 输入框内的 Ctrl+S 同样视为保存（Excel 习惯），但要阻止默认行为
+    e.preventDefault();
+    const event = new CustomEvent('app:global-save', { detail: { source: target?.tagName || '' } });
+    window.dispatchEvent(event);
+  }
+}
+
 onMounted(async () => {
+  window.addEventListener('keydown', handleGlobalKeydown);
+
   if (window.api) {
     const versionRes = await window.api.update.getCurrentVersion();
     if (versionRes.success && versionRes.data) {
@@ -426,6 +450,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', handleGlobalKeydown);
   if (unsubscribe) {
     unsubscribe();
   }
@@ -455,6 +480,41 @@ const currentPageTitle = computed(() => {
   return route.meta.title as string || '';
 });
 
+// 面包屑带上当前项目名：多项目并行时，单看「现场核查」无法确认在改哪个项目，
+// 而核查记录是要出具正式文档的，认错项目的代价很高。
+const currentProjectName = ref('');
+let nameRequestToken = 0;
+
+async function loadCurrentProjectName() {
+  const pid = appStore.currentProjectId;
+  const token = ++nameRequestToken;
+  if (!pid || !window.api?.project) {
+    currentProjectName.value = '';
+    return;
+  }
+  try {
+    const res = await window.api.project.get(pid);
+    // 快速切换项目时，丢弃已过期的响应
+    if (token !== nameRequestToken) return;
+    currentProjectName.value = res.success && res.data ? (res.data.name || res.data.customerName || '') : '';
+  } catch {
+    if (token === nameRequestToken) currentProjectName.value = '';
+  }
+}
+
+watch(
+  () => [appStore.currentProjectId, route.fullPath],
+  () => { loadCurrentProjectName(); },
+  { immediate: true },
+);
+
+function handleResetHints() {
+  // 提示按页面各自记住「看过了」，平时没有再看的入口；给一个重置开关，
+  // 便于换新同事接手或事后想再确认时重新看一遍
+  resetAllHints();
+  ElMessage.success('页面提示已重置，重新进入对应页面时会再次显示');
+}
+
 function handleMenuSelect(index: string) {
   // 一级菜单直接跳转
   if (index === '/dashboard' || index === '/projects/list' ||
@@ -477,7 +537,18 @@ function handleMenuSelect(index: string) {
   }
 }
 
-function handleLogout() {
+async function handleLogout() {
+  // 退出会中断当前项目上下文，且各编辑页的待保存改动会随组件卸载一起丢失，
+  // 误点代价不小 —— 加一道确认，并在文案里明确提示未保存内容有风险
+  try {
+    await ElMessageBox.confirm(
+      '退出后将返回登录页，未保存的修改可能会丢失。确定退出登录吗？',
+      '退出登录',
+      { type: 'warning', confirmButtonText: '退出', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
   userStore.logout();
   router.push('/login');
 }
@@ -503,41 +574,14 @@ function handleLogout() {
     width: var(--sidebar-width-collapsed);
   }
 
-  // el-menu active bar styling
+  // 菜单主题变量（菜单项自身的尺寸/激活态由下方 .sidebar-menu 统一定义，
+  // 此处不再重复一套 —— 两套规则特异性相同，后写的会把先写的 margin 覆盖掉，
+  // 激活竖条因此被挤到 overflow:hidden 的裁剪区外，永远看不见）
   :deep(.el-menu) {
     --el-menu-bg-color: var(--color-sidebar-bg);
     --el-menu-text-color: var(--color-sidebar-text);
     --el-menu-active-color: var(--color-sidebar-text-active);
     border-right: none;
-
-    .el-menu-item {
-      height: 40px;
-      line-height: 40px;
-      margin: 2px 8px;
-      padding: 0 12px !important;
-      border-radius: 6px;
-      position: relative;
-
-      &.is-active {
-        background: var(--color-sidebar-bg-active);
-
-        &::before {
-          content: '';
-          position: absolute;
-          left: -8px;
-          top: 50%;
-          transform: translateY(-50%);
-          width: 3px;
-          height: 18px;
-          background: var(--color-primary);
-          border-radius: 0 2px 2px 0;
-        }
-      }
-
-      &:hover {
-        background: var(--color-sidebar-bg-hover) !important;
-      }
-    }
   }
 }
 
@@ -552,7 +596,7 @@ function handleLogout() {
     width: 36px;
     height: 36px;
     flex-shrink: 0;
-    border-radius: 10px;
+    border-radius: var(--radius-lg);
     background: var(--color-sidebar-card-bg);
     padding: 3px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
@@ -587,6 +631,7 @@ function handleLogout() {
       border-radius: 0;
       display: flex;
       align-items: center;
+      position: relative;
 
       &:hover {
         background: var(--color-sidebar-bg-hover) !important;
@@ -613,6 +658,19 @@ function handleLogout() {
     .el-menu-item.is-active {
       background: var(--color-sidebar-bg-active) !important;
       color: var(--color-sidebar-text-active) !important;
+
+      // 左侧激活竖条。菜单项自带 margin: 2px 0，竖条贴着 left: 0 正好落在可视区内
+      &::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 3px;
+        height: 18px;
+        background: var(--color-primary);
+        border-radius: 0 2px 2px 0;
+      }
     }
 
     .el-sub-menu {
@@ -781,6 +839,24 @@ function handleLogout() {
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
+  min-width: 0;
+
+  /* 项目名可能很长，超出时截断，避免把右侧操作区挤走 */
+  :deep(.bc-project) {
+    max-width: 220px;
+    overflow: hidden;
+
+    .el-breadcrumb__inner {
+      display: inline-block;
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: bottom;
+      font-weight: 500;
+      color: var(--color-text-secondary);
+    }
+  }
 }
 
 .toggle-btn {
@@ -1029,13 +1105,13 @@ function handleLogout() {
           flex: 1;
           height: 8px;
           background: var(--color-bg-hover);
-          border-radius: 4px;
+          border-radius: var(--radius-sm);
           overflow: hidden;
           
           .progress-bar-fill {
             height: 100%;
             background: linear-gradient(90deg, #409EFF 0%, #67C23A 100%);
-            border-radius: 4px;
+            border-radius: var(--radius-sm);
             transition: width 0.3s ease;
           }
         }

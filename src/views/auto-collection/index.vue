@@ -206,7 +206,13 @@
           <div class="ac-cmd-scroll">
             <el-scrollbar height="100%" class="ac-cmd-list">
               <el-checkbox-group v-model="selectedCommandIds" class="ac-cmd-group">
-                <div v-for="cmd in filteredCommands" :key="cmd.id" class="ac-cmd-item">
+                <div
+                  v-for="cmd in filteredCommands"
+                  :key="cmd.id"
+                  class="ac-cmd-item"
+                  :class="{ selected: selectedCommandIds.includes(cmd.id) }"
+                  @click="toggleCommandSelection(cmd, $event)"
+                >
                   <el-checkbox :value="cmd.id">
                     <span class="ac-cmd-name">{{ cmd.name }}</span>
                     <span class="ac-cmd-target">{{ cmd.target }}</span>
@@ -791,6 +797,19 @@ function toggleSelectAll() {
   } else {
     selectedCommandIds.value = filteredCommands.value.map((c) => c.id);
   }
+}
+
+/**
+ * 点击卡片任意位置切换勾选（点在勾选框自身上则交给原生逻辑，避免双触发）。
+ * 用整体替换数组而非 splice：el-checkbox-group 的子项按 modelValue 引用计算选中态。
+ */
+function toggleCommandSelection(cmd: any, e: MouseEvent) {
+  const target = e.target as HTMLElement;
+  if (target.closest('.el-checkbox')) return;
+  const id = cmd.id;
+  selectedCommandIds.value = selectedCommandIds.value.includes(id)
+    ? selectedCommandIds.value.filter((x: any) => x !== id)
+    : [...selectedCommandIds.value, id];
 }
 
 const canStartReason = computed(() => {
@@ -1413,7 +1432,7 @@ onUnmounted(() => {
 .ac-profile-conn-type {
   background: var(--color-bg-hover);
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--color-primary);
 }
 
@@ -1482,13 +1501,24 @@ onUnmounted(() => {
   box-sizing: border-box;
 }
 
+/* 命令卡片：圆角描边容器替代原先的"分隔线 + 通栏灰条"组合 */
 .ac-cmd-item {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--color-border-light);
+  margin: 6px 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
-.ac-cmd-item:last-child {
-  border-bottom: none;
+.ac-cmd-item:hover {
+  border-color: var(--color-primary);
+  background: var(--color-bg-hover);
+}
+
+.ac-cmd-item.selected {
+  border-color: var(--color-primary);
+  background: var(--color-primary-lighter);
 }
 
 .ac-cmd-name {
@@ -1498,22 +1528,28 @@ onUnmounted(() => {
 
 .ac-cmd-target {
   margin-left: 8px;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--color-primary);
   background: var(--color-primary-light);
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
+/* 命令文本：随内容收缩的内联代码片，不再撑满整行 */
 .ac-cmd-command {
-  margin-top: 3px;
+  display: inline-block;
+  max-width: 100%;
+  margin-top: 4px;
   margin-left: 24px;
-  font-size: 12px;
+  padding: 2px 8px;
+  font-family: var(--font-family-mono);
+  font-size: 11px;
+  line-height: 1.6;
   color: var(--color-text-secondary);
-  background: var(--color-bg-hover);
-  padding: 3px 8px;
-  border-radius: 4px;
+  background: var(--color-bg-subtle);
+  border-radius: var(--radius-sm);
   word-break: break-all;
+  cursor: default;
 }
 
 .ac-setup-panel .ac-panel-footer {
@@ -1690,7 +1726,7 @@ onUnmounted(() => {
   padding: 8px;
   background: var(--color-bg-base);
   border: 1px solid var(--color-border-base);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
   line-height: 1.5;
   white-space: pre-wrap;

@@ -200,9 +200,8 @@ async function handleSubmit() {
   overflow-y: auto;
 }
 
+/* 标题栏沿用 global.scss 的 .page-header（卡片式），此处只定义本页特有的标题排版 */
 .page-header {
-  margin-bottom: var(--spacing-lg);
-
   .page-title {
     font-size: var(--font-size-xl);
     font-weight: var(--font-weight-semibold);

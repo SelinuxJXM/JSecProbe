@@ -12,16 +12,30 @@
   --color-danger: #E53935;
   --color-danger-light: #FDECEC;
   --color-info: #5C6C8C;
+  /* AI 功能专用色。此前 #7c3aed / #8b5cf6 / #a78bfa 三个值散落在三个文件里，统一到此 */
+  --color-ai: #7C3AED;
+  --color-ai-hover: #8B5CF6;
+  --color-ai-soft: #A78BFA;
+  --color-ai-light: #F3EEFF;
 
   --color-text-primary: #1A2332;
   --color-text-secondary: #4A5568;
   --color-text-tertiary: #8B95A7;
   --color-text-placeholder: #B0B7C3;
   --color-text-disabled: #C5CBD6;
+  --color-text-inverse: #FFFFFF;
+  --color-text-quaternary: #A8B0BF;
+  --color-text: #1A2332;
 
   --color-border-base: #E2E6ED;
   --color-border-light: #EEF1F6;
   --color-border-lighter: #F5F7FA;
+  /* 以下为历史遗留/别名变量。它们此前从未在 :root 定义，
+     调用处靠 var(--xxx, #E5E7EB) 的回退值生效 —— 浅色下看不出问题，
+     深色模式下变量仍未定义、回退的浅灰色照样命中，深色卡片上就会出现亮边框。 */
+  --color-border: #E2E6ED;
+  --color-border-default: #E2E6ED;
+  --color-border-hover: #C5CBD6;
 
   --color-bg-base: #F5F7FA;
   --color-bg-page: #EEF1F6;
@@ -29,6 +43,11 @@
   --color-bg-hover: #F0F4F9;
   --color-bg-active: #E8F0FD;
   --color-bg-surface-hover: #F5F7FA;
+  --color-bg-subtle: #F5F7FA;
+  --color-bg-container: #FFFFFF;
+  --color-bg-tag: #F0F4F9;
+  --color-primary-subtle: #E8F0FD;
+  --color-info-light: #EEF2F8;
 
   --color-sidebar-bg: #FFFFFF;
   --color-sidebar-bg-hover: #F0F4F9;
@@ -73,6 +92,9 @@
   --font-size-2xl: 24px;
   --font-size-3xl: 30px;
 
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-family-mono: 'SFMono-Regular', Consolas, 'Roboto Mono', 'Courier New', monospace;
+
   --font-weight-normal: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
@@ -94,7 +116,11 @@
   --text-placeholder: var(--color-text-placeholder);
   --bg-card: var(--color-bg-card);
   --bg-hover: var(--color-bg-hover);
+  --bg-primary: var(--color-primary);
   --border-color: var(--color-border-base);
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
 }
 
 /* Dark mode */
@@ -114,10 +140,16 @@ html[data-theme="dark"] {
   --color-text-tertiary: #64748B;
   --color-text-placeholder: #475569;
   --color-text-disabled: #334155;
+  --color-text-inverse: #0F172A;
+  --color-text-quaternary: #475569;
+  --color-text: #E2E8F0;
 
   --color-border-base: #334155;
   --color-border-light: #1E293B;
   --color-border-lighter: #0F172A;
+  --color-border: #334155;
+  --color-border-default: #334155;
+  --color-border-hover: #475569;
 
   --color-bg-base: #0F172A;
   --color-bg-page: #0F172A;
@@ -125,6 +157,15 @@ html[data-theme="dark"] {
   --color-bg-hover: #334155;
   --color-bg-active: rgba(59, 130, 246, 0.15);
   --color-bg-surface-hover: #263548;
+  --color-bg-subtle: #263548;
+  --color-bg-container: #1E293B;
+  --color-bg-tag: rgba(255, 255, 255, 0.06);
+  --color-primary-subtle: rgba(59, 130, 246, 0.15);
+  --color-info-light: rgba(92, 108, 140, 0.25);
+  --color-ai: #A78BFA;
+  --color-ai-hover: #C4B5FD;
+  --color-ai-soft: #C4B5FD;
+  --color-ai-light: rgba(139, 92, 246, 0.15);
 
   --color-sidebar-bg: #0F172A;
   --color-sidebar-bg-hover: #1E293B;
@@ -151,5 +192,9 @@ html[data-theme="dark"] {
   --text-placeholder: var(--color-text-placeholder);
   --bg-card: var(--color-bg-card);
   --bg-hover: var(--color-bg-hover);
+  --bg-primary: var(--color-primary);
   --border-color: var(--color-border-base);
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
 }

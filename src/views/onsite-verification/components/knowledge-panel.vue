@@ -592,7 +592,7 @@ loadKnowledgeBase();
   height: 32px;
   padding: 0 10px 0 32px;
   border: 1px solid var(--color-border-default, #e5e7eb);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   font-size: 12px;
   background: var(--color-bg-page, #f5f6fa);
   outline: none;
@@ -614,7 +614,7 @@ loadKnowledgeBase();
 /* 核查命令卡片 - 简洁列表式 */
 .command-card {
   border: 1px solid var(--color-border-default, #e5e7eb);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   padding: 8px 10px;
   background: var(--color-bg-card);
   cursor: pointer;
@@ -652,7 +652,7 @@ loadKnowledgeBase();
   color: #6b7280;
   background: var(--color-bg-base);
   padding: 1px 5px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   line-height: 1.4;
 }
 
@@ -662,7 +662,7 @@ loadKnowledgeBase();
   color: #374151;
   background: var(--color-bg-base);
   border: 1px solid #f3f4f6;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   padding: 4px 6px;
   line-height: 1.4;
   white-space: nowrap;
@@ -688,7 +688,7 @@ loadKnowledgeBase();
   border: 1px solid #d1fae5;
   padding: 4px 8px;
   margin: 6px 16px 0;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   line-height: 1.4;
 }
 .industry-hint b {
@@ -705,7 +705,7 @@ loadKnowledgeBase();
   display: inline-block;
   font-size: 10px;
   padding: 1px 5px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   line-height: 1.4;
 }
 .cmd-tag.tag-industry {
@@ -731,7 +731,7 @@ loadKnowledgeBase();
   display: none;
   gap: 2px;
   background: rgba(255, 255, 255, 0.95);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
   padding: 2px;
 }
@@ -740,7 +740,7 @@ loadKnowledgeBase();
   font-size: 10px;
   padding: 2px 8px;
   border: none;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-weight: 500;
   white-space: nowrap;
@@ -772,7 +772,7 @@ loadKnowledgeBase();
 /* 作业指导书卡片 */
 .document-card {
   border: 1px solid var(--color-border-default, #e5e7eb);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   background: var(--color-bg-card);
   transition: box-shadow 0.2s, border-color 0.2s;
@@ -806,7 +806,7 @@ loadKnowledgeBase();
   color: #92400e;
   background: var(--color-warning-light);
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
 }
 
 .document-card .doc-card-summary {
@@ -831,7 +831,7 @@ loadKnowledgeBase();
 .document-card .doc-card-footer .doc-btn-copy-text {
   font-size: 10px;
   padding: 3px 10px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-weight: 500;
   transition: all 0.15s;
@@ -932,7 +932,7 @@ loadKnowledgeBase();
   margin: 4px 16px 8px;
   padding: 7px 10px;
   border: 1px dashed var(--color-primary, #1b5fd9);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   background: var(--color-primary-light, rgba(27, 95, 217, 0.06));
   color: var(--color-primary, #1b5fd9);
   font-size: 12px;
@@ -998,7 +998,7 @@ loadKnowledgeBase();
 
 .ai-rc-item {
   border: 1px solid var(--color-border-default, #e5e7eb);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 10px 12px;
 }
 
@@ -1019,7 +1019,7 @@ loadKnowledgeBase();
 .ai-rc-quote {
   font-size: 11px;
   padding: 3px 12px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   border: none;
   background: var(--color-primary, #1b5fd9);
   color: #fff;
@@ -1037,7 +1037,7 @@ loadKnowledgeBase();
   color: #374151;
   background: var(--color-bg-base, #f5f6fa);
   border: 1px solid var(--color-border-light, #f0f0f3);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 5px 8px;
   word-break: break-all;
   line-height: 1.5;
@@ -1095,7 +1095,7 @@ loadKnowledgeBase();
   flex-shrink: 0;
   font-size: 10px;
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
 }
 
 .ai-method-type.type-check {
@@ -1109,7 +1109,7 @@ loadKnowledgeBase();
 }
 
 .ai-method-type.type-test {
-  color: #7c3aed;
+  color: var(--color-ai);
   background: rgba(124, 58, 237, 0.1);
 }
 
@@ -1147,7 +1147,7 @@ loadKnowledgeBase();
 .ai-gen-badge {
   font-size: 10px;
   padding: 1px 5px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   color: #d97706;
   background: rgba(217, 119, 6, 0.1);
   border: 1px dashed rgba(217, 119, 6, 0.45);
@@ -1163,7 +1163,7 @@ loadKnowledgeBase();
 .ai-rc-save {
   font-size: 11px;
   padding: 3px 10px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--color-primary, #1b5fd9);
   background: transparent;
   color: var(--color-primary, #1b5fd9);

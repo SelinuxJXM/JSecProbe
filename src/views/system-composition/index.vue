@@ -26,7 +26,7 @@
     </div>
 
     <!-- 资产分类导航栏（带图标） -->
-    <div class="category-nav-bar">
+    <div class="category-nav-bar" data-guide="asset-category">
       <div
         v-for="cat in categories"
         :key="cat.id"
@@ -38,6 +38,17 @@
         <span>{{ cat.name }}</span>
       </div>
     </div>
+
+    <!-- 首访提示：只在该页面首次进入时出现，关闭后不再打扰 -->
+    <PageHint
+      hint-key="system-composition"
+      title="第一次登记资产？看这三点"
+      :tips="[
+        '上方分类导航共 12 类资产（机房、网络边界、网络设备、安全设备、服务器与存储、终端、业务应用、数据资源、密码产品、安全人员等），逐类登记即可。',
+        '已有设备台账就用「导入资产」按模板批量导入；来不及整理可以先试「AI 识别」。',
+        '标为「测评对象」的资产才会被现场核查引用，与测评无关的资产可以不勾。',
+      ]"
+    />
 
     <!-- 数据表格卡片 -->
     <div class="data-table-card">
@@ -55,7 +66,7 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
             AI 缺失提醒
           </button>
-          <button class="toolbar-btn" @click="handleImport">
+          <button class="toolbar-btn" data-guide="asset-import" @click="handleImport">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             导入资产
           </button>
@@ -136,7 +147,7 @@
         <!-- 虚拟设备（仅设备类资产区分虚拟/物理） -->
         <el-table-column v-if="isDeviceCategory" label="虚拟设备" width="80" align="center">
           <template #default="{ row }">
-            <el-checkbox v-model="row.isVirtual" @change="markModified(row)" />
+            <el-checkbox v-model="row.isVirtual" @change="markModified(row, true)" />
           </template>
         </el-table-column>
         <el-table-column v-if="osColumn" :label="osColumn.label" :min-width="osColumn.minWidth">
@@ -173,7 +184,7 @@
         <!-- 数量 -->
         <el-table-column v-if="currentCategory !== 'machine_room' && currentCategory !== 'network_boundary' && currentCategory !== 'business_app' && currentCategory !== 'data_resource' && currentCategory !== 'management_platform' && currentCategory !== 'sys_doc' && currentCategory !== 'other_asset' && currentCategory !== 'crypto_product' && currentCategory !== 'security_personnel'" label="数量" width="70" align="center">
           <template #default="{ row }">
-            <el-input-number v-model="row.quantity" :min="1" :max="999" size="small" controls-position="right" style="width: 68px" @change="markModified(row)" />
+            <el-input-number v-model="row.quantity" :min="1" :max="999" size="small" controls-position="right" style="width: 68px" @change="markModified(row, true)" />
           </template>
         </el-table-column>
         <!-- IP地址 -->
@@ -200,7 +211,7 @@
         </el-table-column>
         <el-table-column v-if="currentCategory !== 'sys_doc' && currentCategory !== 'security_personnel'" label="重要程度" width="100" align="center">
           <template #default="{ row }">
-            <el-select v-model="row.importance" size="small" style="width: 100%" @change="markModified(row)">
+            <el-select v-model="row.importance" size="small" style="width: 100%" @change="markModified(row, true)">
               <el-option label="关键" value="high" />
               <el-option label="重要" value="medium" />
               <el-option label="一般" value="low" />
@@ -209,7 +220,7 @@
         </el-table-column>
         <el-table-column label="测评对象" width="80" align="center">
           <template #default="{ row }">
-            <el-switch v-model="row.isAssessmentTarget" size="small" :active-value="true" :inactive-value="false" @change="markModified(row)" />
+            <el-switch v-model="row.isAssessmentTarget" size="small" :active-value="true" :inactive-value="false" @change="markModified(row, true)" />
             <span style="font-size:12px; color:#4B5563; margin-left:4px;">是</span>
           </template>
         </el-table-column>
@@ -244,13 +255,13 @@
           </span>
         </div>
         <div class="pagination-btns">
-          <button class="page-btn" :disabled="pagination.page <= 1" @click="pagination.page--; loadAssets()">
+          <button class="page-btn" :disabled="pagination.page <= 1" @click="pagination.page--; reloadAssets()">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
           </button>
-          <button v-for="p in visiblePages" :key="p" class="page-btn" :class="{ active: pagination.page === p }" @click="pagination.page = p; loadAssets()">
+          <button v-for="p in visiblePages" :key="p" class="page-btn" :class="{ active: pagination.page === p }" @click="pagination.page = p; reloadAssets()">
             {{ p }}
           </button>
-          <button class="page-btn" :disabled="pagination.page >= totalPages" @click="pagination.page++; loadAssets()">
+          <button class="page-btn" :disabled="pagination.page >= totalPages" @click="pagination.page++; reloadAssets()">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
         </div>
@@ -508,6 +519,7 @@ import {
 import type { Asset, AssetCategory, AssetListResult } from '@shared/types';
 import { ASSET_CATEGORIES } from '@shared/asset-categories';
 import { useAssetAutoSave } from './composables/useAssetAutoSave';
+import PageHint from '@/components/PageHint/index.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -559,6 +571,47 @@ const modifiedRows = reactive(new Set<string>());
 const deletedIds = reactive(new Set<string>());
 const modifiedCount = computed(() => modifiedRows.size + deletedIds.size);
 
+/**
+ * 轻量刷新：只取总数与分类计数，不重建列表。
+ * 常规自动保存走这条路，避免把用户正在填写的单元格重排掉。
+ */
+async function loadCategoryStats() {
+  const projectId = route.params.id as string;
+  if (!projectId || !window.api) return;
+  try {
+    const res = await window.api.asset.list({
+      projectId,
+      category: currentCategory.value,
+      keyword: keyword.value || undefined,
+      page: 1,
+      pageSize: 1,
+    });
+    if (res.success && res.data) {
+      const data = res.data as AssetListResult;
+      pagination.total = data.total;
+      categories.value = data.categoryStats;
+    }
+  } catch (err) {
+    console.error('刷新资产统计失败:', err);
+  }
+}
+
+/**
+ * 临时行落库成功后的回写。
+ * 只写「身份字段」——名称/用途/备注这些用户可能正在敲的字段以浏览器值为准，
+ * 否则保存往返期间继续输入的内容会被服务端回显覆盖掉。
+ */
+function handleRowCreated(row: Asset, created: any) {
+  const anyRow = row as any;
+  anyRow.id = created.id;
+  anyRow.projectId = created.projectId || anyRow.projectId;
+  anyRow.category = created.category || anyRow.category;
+  anyRow.createdAt = created.createdAt || anyRow.createdAt;
+  anyRow.updatedAt = created.updatedAt || anyRow.updatedAt;
+  anyRow.sortOrder = created.sortOrder ?? anyRow.sortOrder;
+  anyRow.quantity = created.quantity ?? anyRow.quantity;
+}
+
 // 自动保存
 const autoSave = useAssetAutoSave({
   assetList,
@@ -567,8 +620,13 @@ const autoSave = useAssetAutoSave({
   currentCategory,
   route,
   loadAssets,
+  loadStats: loadCategoryStats,
+  onRowCreated: handleRowCreated,
 });
-const { saveStatus, lastSavedTime, debounceAutoSave, startPeriodicSave, formatSaveTime, cleanup } = autoSave;
+const { saveStatus, lastSavedTime, debounceAutoSave, startPeriodicSave, formatSaveTime, cleanup, markClean } = autoSave;
+
+// 离散操作（勾选/选择/计数步进）不是连续输入，操作完即可落库
+const QUICK_SAVE_DELAY = 1200;
 
 const pagination = reactive({
   page: 1,
@@ -904,8 +962,8 @@ async function loadAssets() {
       }));
       pagination.total = data.total;
       categories.value = data.categoryStats;
-      modifiedRows.clear();
-      deletedIds.clear();
+      // 列表整个重建了：行对象已换新，旧的脏标记不再有意义
+      markClean();
       
       if (currentCategory.value === 'data_resource' && data.total === 0) {
         const defaults = [
@@ -990,11 +1048,22 @@ async function loadAssets() {
   }
 }
 
+/**
+ * 翻页 / 切分类前的重载入口：先把待保存的资产编辑落盘。
+ * loadAssets 会清空 modifiedRows，直接调用会让这一页的编辑凭空消失。
+ */
+async function reloadAssets() {
+  if (autoSave.hasUnsavedChanges.value) {
+    await autoSave.saveAllChanges();
+  }
+  await loadAssets();
+}
+
 // 切换分类
 function handleCategoryChange(categoryId: string) {
   currentCategory.value = categoryId;
   pagination.page = 1;
-  loadAssets();
+  reloadAssets();
 }
 
 // AI 资产识别
@@ -1280,10 +1349,17 @@ function addEmptyRow() {
 }
 
 // 标记行为已修改
-function markModified(row: Asset) {
+/**
+ * 标记一行已修改，并把保存倒计时推后。
+ *
+ * 计时口径是「最后一次改动」而非「第一次进页面」：每次输入都会重置倒计时，
+ * 正在填写的行不会在填到一半时被落库，更不会被重排掉焦点。
+ * @param quick true = 勾选框/下拉/开关这类离散操作，用短延迟（不是连续输入行为）
+ */
+function markModified(row: Asset, quick = false) {
   if (row.id) {
     modifiedRows.add(String(row.id));
-    debounceAutoSave();
+    debounceAutoSave(quick ? QUICK_SAVE_DELAY : undefined);
   }
 }
 
@@ -1294,6 +1370,9 @@ async function saveAllChanges() {
     const success = await autoSave.saveAllChanges();
     if (success) {
       ElMessage.success('保存成功');
+    } else if (autoSave.hasUnsavedChanges.value) {
+      // 有行没落库（如接口报错）：必须说清楚，否则用户以为万事大吉
+      ElMessage.error('部分修改保存失败，请检查内容后重试');
     } else {
       ElMessage.info('没有需要保存的修改');
     }
@@ -1475,10 +1554,17 @@ function handleTablePaste(event: ClipboardEvent) {
 
 let pasteHandler: ((e: Event) => void) | null = null;
 
+// Ctrl+S 保存（由 MainLayout 统一派发 app:global-save）
+function onGlobalSave() {
+  if (saving.value) return;
+  saveAllChanges();
+}
+
 onMounted(() => {
   loadProject();
   loadAssets();
   startPeriodicSave();
+  window.addEventListener('app:global-save', onGlobalSave);
   
   nextTick(() => {
     pasteHandler = (e: Event) => {
@@ -1492,6 +1578,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   cleanup();
+  window.removeEventListener('app:global-save', onGlobalSave);
   // P2-12：搜索防抖定时器此前从未清理。组件卸载后若定时器仍在等待，
   // 回调里的 loadAssets() 会对已销毁的组件发起请求并写入响应式状态，
   // 快速切换页面时会打出"组件已卸载"类告警，甚至用旧页面的结果覆盖新数据。
@@ -1552,7 +1639,7 @@ onUnmounted(() => {
       align-items: center;
       gap: 6px;
       padding: 6px 14px;
-      border-radius: 999px;
+      border-radius: var(--radius-full);
       background: var(--color-bg-base);
       color: var(--color-text-tertiary);
       font-size: 13px;
@@ -1605,7 +1692,7 @@ onUnmounted(() => {
     align-items: center;
     gap: 5px;
     padding: 10px 14px;
-    font-size: 12.5px;
+    font-size: 13px;
     color: var(--color-text-secondary);
     border-bottom: 2px solid transparent;
     cursor: pointer;
@@ -1657,7 +1744,7 @@ onUnmounted(() => {
         min-width: 20px;
         height: 20px;
         padding: 0 6px;
-        border-radius: 999px;
+        border-radius: var(--radius-full);
         background: var(--color-primary-light);
         color: var(--color-primary);
         font-size: 11px;
@@ -1684,7 +1771,7 @@ onUnmounted(() => {
         height: 32px;
         padding: 0 12px;
         border: 1px solid var(--color-border-default);
-        border-radius: 6px;
+        border-radius: var(--radius-base);
         background: var(--color-bg-card);
         color: var(--color-text-secondary);
         font-size: 12px;
@@ -1738,7 +1825,7 @@ onUnmounted(() => {
         width: 32px;
         height: 32px;
         border: 1px solid transparent;
-        border-radius: 6px;
+        border-radius: var(--radius-base);
         background: transparent;
         color: var(--color-text-tertiary);
         cursor: pointer;
@@ -1834,7 +1921,7 @@ onUnmounted(() => {
     padding: 0 8px;
     height: 22px;
     line-height: 22px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     font-size: 12px;
     font-weight: 500;
 
@@ -1879,7 +1966,7 @@ onUnmounted(() => {
         align-items: center;
         gap: 4px;
         padding: 2px 8px;
-        border-radius: 999px;
+        border-radius: var(--radius-full);
         background: var(--color-warning-light);
         color: #D97706;
         font-size: 11px;
@@ -1891,7 +1978,7 @@ onUnmounted(() => {
         align-items: center;
         gap: 4px;
         padding: 2px 8px;
-        border-radius: 999px;
+        border-radius: var(--radius-full);
         font-size: 11px;
         font-weight: 500;
 
@@ -1903,24 +1990,24 @@ onUnmounted(() => {
         }
 
         &.saving {
-          background: #EFF6FF;
-          color: #2563EB;
-          .save-dot { background: #2563EB; animation: pulse 1s infinite; }
+          background: var(--color-primary-light);
+          color: var(--color-primary);
+          .save-dot { background: var(--color-primary); animation: pulse 1s infinite; }
         }
         &.saved {
-          background: #ECFDF5;
-          color: #059669;
-          .save-dot { background: #059669; }
+          background: var(--color-success-light);
+          color: var(--color-success);
+          .save-dot { background: var(--color-success); }
         }
         &.unsaved {
-          background: #FFFBEB;
-          color: #D97706;
-          .save-dot { background: #D97706; }
+          background: var(--color-warning-light);
+          color: var(--color-warning);
+          .save-dot { background: var(--color-warning); }
         }
         &.error {
-          background: #FEF2F2;
-          color: #DC2626;
-          .save-dot { background: #DC2626; }
+          background: var(--color-danger-light);
+          color: var(--color-danger);
+          .save-dot { background: var(--color-danger); }
         }
       }
     }
@@ -2016,7 +2103,7 @@ onUnmounted(() => {
   :deep(.el-input__wrapper) {
     box-shadow: none;
     border: 1px solid transparent;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     padding: 0 8px;
     height: 30px;
     background: transparent;
@@ -2049,11 +2136,11 @@ onUnmounted(() => {
 
 // AI 资产识别 / 缺失提醒
 .toolbar-btn.ai-btn {
-  color: #8b5cf6;
+  color: var(--color-ai);
   border-color: rgba(139, 92, 246, 0.35);
 
   &:hover:not(:disabled) {
-    color: #7c3aed;
+    color: var(--color-ai-hover);
     border-color: rgba(139, 92, 246, 0.65);
     background: rgba(139, 92, 246, 0.06);
   }
@@ -2065,7 +2152,7 @@ onUnmounted(() => {
 }
 
 .ai-tip {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--color-text-tertiary);
   line-height: 1.6;
   margin-bottom: 10px;
@@ -2099,7 +2186,7 @@ onUnmounted(() => {
     gap: 6px;
     padding: 8px 10px;
     border: 1px solid var(--color-border-base);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     transition: border-color 0.15s, background 0.15s;
 
     &.checked {
@@ -2175,7 +2262,7 @@ onUnmounted(() => {
 .ai-attachments {
   margin-bottom: 4px;
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 10px 12px;
 
   .ai-attachments-header {
@@ -2191,7 +2278,7 @@ onUnmounted(() => {
     }
 
     .ai-attachments-hint {
-      font-size: 11.5px;
+      font-size: 12px;
       color: var(--color-text-tertiary);
     }
   }
@@ -2217,7 +2304,7 @@ onUnmounted(() => {
     gap: 8px;
     padding: 6px 8px;
     background: var(--color-bg-subtle);
-    border-radius: 6px;
+    border-radius: var(--radius-base);
     font-size: 12px;
 
     .ai-att-icon {
@@ -2272,7 +2359,7 @@ onUnmounted(() => {
 
   .ai-missing-item {
     border: 1px solid var(--color-border-base);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     padding: 12px 14px;
     background: var(--color-bg-base);
 
@@ -2280,7 +2367,7 @@ onUnmounted(() => {
       display: flex;
       align-items: center;
       gap: 6px;
-      font-size: 13.5px;
+      font-size: 13px;
       font-weight: 600;
       color: #d97706;
       margin-bottom: 8px;
@@ -2289,7 +2376,7 @@ onUnmounted(() => {
     .ai-missing-row {
       display: flex;
       gap: 8px;
-      font-size: 12.5px;
+      font-size: 13px;
       line-height: 1.7;
       color: var(--color-text-secondary);
 
@@ -2312,7 +2399,7 @@ onUnmounted(() => {
   flex-wrap: wrap;
   padding: 10px 16px;
   border: 1px solid var(--color-border-default);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   background: var(--color-bg-card);
   margin-bottom: 12px;
 
@@ -2333,7 +2420,7 @@ onUnmounted(() => {
     min-width: 120px;
     padding: 0 8px;
     border: 1px solid var(--color-border-default);
-    border-radius: 6px;
+    border-radius: var(--radius-base);
     font-size: 12px;
     color: var(--color-text-primary);
     background: var(--color-bg-card);
@@ -2348,7 +2435,7 @@ onUnmounted(() => {
     height: 30px;
     padding: 0 12px;
     border: 1px solid var(--color-border-default);
-    border-radius: 6px;
+    border-radius: var(--radius-base);
     background: var(--color-bg-card);
     font-size: 12px;
     color: var(--color-text-secondary);

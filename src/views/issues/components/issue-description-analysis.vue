@@ -2,7 +2,7 @@
   <!-- 迷你AI进度条（批量分析最小化时显示） -->
   <div v-if="batchMinimized" class="mini-ai-progress" @click="batchProgress.visible = true; batchMinimized = false">
     <div class="mini-ai-progress-header">
-      <span class="mini-ai-progress-title">📝 AI分析问题描述中</span>
+      <span class="mini-ai-progress-title"><el-icon><EditPen /></el-icon> AI分析问题描述中</span>
       <span class="mini-ai-progress-percent">{{ batchPercentDisplay }}</span>
     </div>
     <div class="mini-ai-progress-bar-container">
@@ -22,7 +22,7 @@
   >
     <template #header>
       <div class="ai-dialog-header">
-        <span class="ai-dialog-title">📝 AI分析问题描述</span>
+        <span class="ai-dialog-title"><el-icon><EditPen /></el-icon> AI分析问题描述</span>
         <button class="ai-close-btn" @click="singleDialogVisible = false" title="关闭">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -89,7 +89,7 @@
   <el-dialog v-model="batchProgress.visible" width="600px" :close-on-click-modal="false" :show-close="false" :close-on-press-escape="false" class="ai-batch-dialog">
     <template #header>
       <div class="ai-dialog-header">
-        <span class="ai-dialog-title">📝 AI批量分析问题描述</span>
+        <span class="ai-dialog-title"><el-icon><EditPen /></el-icon> AI批量分析问题描述</span>
         <div class="ai-dialog-header-actions">
           <button class="ai-minimize-btn" @click="batchProgress.visible = false; batchMinimized = true" title="最小化">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -185,6 +185,7 @@
 import { ref, computed, onBeforeUnmount } from 'vue';
 import type { Issue } from '../../../../shared/types';
 import { ElMessage } from 'element-plus';
+import { EditPen } from '@element-plus/icons-vue';
 
 const props = defineProps<{
   getIssueDomainId: (domainName: string) => string;
@@ -457,6 +458,11 @@ defineExpose({
     font-size: 16px;
     font-weight: 600;
     color: #fff;
+
+    .el-icon {
+      vertical-align: -2px;
+      margin-right: 4px;
+    }
   }
 
   .ai-close-btn {
@@ -465,7 +471,7 @@ defineExpose({
     border: none;
     background: transparent;
     color: rgba(255, 255, 255, 0.8);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -613,7 +619,7 @@ defineExpose({
       line-height: 1.6;
       background: var(--color-bg-page, #F5F6FA);
       padding: 10px 12px;
-      border-radius: 6px;
+      border-radius: var(--radius-base);
 
       &.conclusion-text {
         line-height: 1.8;
@@ -643,7 +649,7 @@ defineExpose({
   padding: 8px 16px;
   cursor: pointer;
   border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
   transition: all 0.2s ease;
 
@@ -660,6 +666,11 @@ defineExpose({
     .mini-ai-progress-title {
       font-size: 13px;
       font-weight: 600;
+
+      .el-icon {
+        vertical-align: -2px;
+        margin-right: 4px;
+      }
     }
 
     .mini-ai-progress-percent {
@@ -671,14 +682,14 @@ defineExpose({
   .mini-ai-progress-bar-container {
     height: 4px;
     background: rgba(255, 255, 255, 0.3);
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
     overflow: hidden;
     margin-bottom: 4px;
 
     .mini-ai-progress-bar {
       height: 100%;
       background: #fff;
-      border-radius: 2px;
+      border-radius: var(--radius-xs);
       transition: width 0.3s ease;
     }
   }
@@ -709,7 +720,7 @@ defineExpose({
       border: none;
       background: transparent;
       color: rgba(255, 255, 255, 0.8);
-      border-radius: 4px;
+      border-radius: var(--radius-sm);
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -863,14 +874,14 @@ html.dark .ai-batch-dialog {
 .ai-progress-bar {
   height: 14px;
   background: #E5E7EB;
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
 .ai-progress-fill {
   height: 100%;
   background: linear-gradient(90deg, #1B5FD9 0%, #3B82F6 100%);
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   transition: width 0.3s ease;
 }
 
@@ -890,7 +901,7 @@ html.dark .ai-batch-dialog {
   margin-top: 12px;
   padding: 10px 16px;
   background: #F9FAFB;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid #E5E7EB;
 }
 
@@ -916,7 +927,7 @@ html.dark .ai-batch-dialog {
 .issue-list-progress {
   margin-top: 16px;
   border: 1px solid #E5E7EB;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
@@ -1020,7 +1031,7 @@ html.dark .ai-batch-dialog {
   margin-top: 16px;
   padding: 12px 16px;
   background: #F0FDF4;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid #BBF7D0;
 }
 

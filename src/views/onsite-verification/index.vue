@@ -14,7 +14,11 @@
     <!-- 项目上下文栏 -->
     <div class="project-context-bar">
       <div class="breadcrumb">
-        <span class="customer-name">{{ project?.name || '山西长治王庄煤业有限责任公司' }}</span>
+        <!-- 与另外两个项目页保持一致的返回入口（此前只有这个页面没有） -->
+        <el-icon class="back-btn" @click="goBack"><ArrowLeft /></el-icon>
+        <!-- 兜底文案此前是一个陌生的真实公司名（山西长治王庄煤业），
+             加载失败时会让用户误以为进错了项目，改为中性占位 -->
+        <span class="customer-name">{{ project?.name || '未选择项目' }}</span>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
         <span class="current-page">现场核查</span>
         <!-- 行业标识（仅行标项目显示） -->
@@ -28,7 +32,7 @@
     <div class="top-toolbar">
       <div class="toolbar-left">
         <!-- 3-Step Phase Indicator -->
-        <div class="phase-steps">
+        <div class="phase-steps" data-guide="check-phase">
           <div class="phase-step completed" @click="goToPhase('assets')">
             <span class="step-num">1</span>
             <span class="step-text">系统构成</span>
@@ -85,7 +89,7 @@
       </div>
       <div class="toolbar-right">
         <!-- 保存状态指示器 -->
-        <div class="save-status-indicator" :class="autoSave.saveStatus.value" v-if="autoSave.saveStatus.value !== 'idle'">
+        <div class="save-status-indicator" data-guide="check-autosave" :class="autoSave.saveStatus.value" v-if="autoSave.saveStatus.value !== 'idle'">
           <span class="save-status-icon">
             <svg v-if="autoSave.saveStatus.value === 'saving'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
             <svg v-else-if="autoSave.saveStatus.value === 'saved'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
@@ -107,9 +111,9 @@
           @refresh="handleImportRefresh"
         />
 
-        <el-button class="toolbar-btn" @click="syncIssues">
+        <el-button class="toolbar-btn" :loading="syncingIssues" :disabled="syncingIssues" @click="syncIssues">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          <span>同步问题</span>
+          <span>{{ syncingIssues ? '同步中...' : '同步问题' }}</span>
         </el-button>
         <el-button type="primary" class="toolbar-btn primary" @click="autoSave.triggerManualSave()" :loading="autoSave.saveStatus.value === 'saving'">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
@@ -117,6 +121,17 @@
         </el-button>
       </div>
     </div>
+
+    <!-- 首访提示：只在第一次进入该页面时出现，关闭后不再打扰 -->
+    <PageHint
+      hint-key="onsite-verification"
+      title="第一次做现场核查？看这三点"
+      :tips="[
+        '左侧选测评对象（按资产或安全层面分类），中间表格逐条填结果，「不适用」的项要显式标记才会被排除出符合率。',
+        '改动会自动保存，右上角显示「已自动保存 / 未保存」；需要立刻落盘可按 Ctrl+S 或点「保存」。',
+        '取证截图可以批量上传后用「AI分析」自动生成现状描述与整改建议，再人工校订。',
+      ]"
+    />
 
     <!-- 三栏布局 -->
     <div class="three-columns">
@@ -233,7 +248,7 @@
               <col style="width: 400px">
               <col style="width: 110px">
               <col style="width: 280px">
-              <col style="width: 50px">
+              <col style="width: 64px">
             </colgroup>
             <thead>
               <tr>
@@ -332,6 +347,7 @@
 import { ref, computed, onMounted, onUpdated, onBeforeUnmount, provide } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
+import { ArrowLeft } from '@element-plus/icons-vue';
 
 // 导入 composables
 import { useAutoSave } from './composables/useAutoSave';
@@ -344,6 +360,7 @@ import ScreenshotManager from './components/screenshot-manager.vue';
 import KnowledgePanel from './components/knowledge-panel.vue';
 import ImportExport from './components/import-export.vue';
 import AiAnalysis from './components/ai-analysis.vue';
+import PageHint from '@/components/PageHint/index.vue';
 
 // 安全解析截图路径：数据库存储的 JSON 可能因历史脏数据损坏，解析失败时降级为空数组，避免中断整段加载逻辑
 function safeParseScreenshots(raw?: string | null): string[] {
@@ -359,6 +376,17 @@ function safeParseScreenshots(raw?: string | null): string[] {
 // ==================== 路由和基础状态 ====================
 const route = useRoute();
 const router = useRouter();
+
+// 返回：本页是项目子页面，退回项目列表。离开前先把当前对象的编辑落盘，
+// 否则最后一段 1.5s 防抖窗口内的修改会随路由切换一起丢掉。
+async function goBack() {
+  try {
+    await autoSave.saveAllRows();
+  } catch {
+    // 保存失败也允许用户离开，至少不会把人卡在这一页
+  }
+  router.push('/projects/list');
+}
 
 // ==================== 核心状态 ====================
 const project = ref<any>(null);
@@ -763,6 +791,11 @@ async function getProjectStandardId(): Promise<string> {
 
 // 选择全局层面
 async function selectGlobalDomain(domainId: string) {
+  // 先把上一个对象的待保存编辑落盘：1.5 秒防抖里的 saveAllRows 读到的是
+  // 切换后的 currentAsset / tableRows，不 flush 会把旧对象的填写内容丢失或串到新视图
+  if (autoSave.hasUnsavedChanges?.value) {
+    await autoSave.saveAllRows();
+  }
   currentAsset.value = null;
   currentDomainId.value = domainId;
 
@@ -846,12 +879,18 @@ async function selectGlobalDomain(domainId: string) {
     calculateControlPointRowSpans();
     loadProgress();
   } catch (error) {
+    // 原先只 console.error：表格保持空白或旧数据，用户分不清"加载失败"还是"本来就没这项"
     console.error('加载全局测评项失败:', error);
+    ElMessage.error('测评项加载失败，请重试或检查项目所选标准');
   }
 }
 
 // 选择资产
 async function selectAsset(asset: any) {
+  // 同上：切换测评对象前先把当前对象的编辑保存掉，避免丢失/串数据
+  if (autoSave.hasUnsavedChanges?.value) {
+    await autoSave.saveAllRows();
+  }
   currentAsset.value = asset;
 
   if (!window.api) return;
@@ -954,6 +993,7 @@ async function selectAsset(asset: any) {
     loadProgress();
   } catch (error) {
     console.error('加载测评项失败:', error);
+    ElMessage.error('该测评对象的测评项加载失败，请重试');
   }
 }
 
@@ -1053,10 +1093,15 @@ async function handleImportRefresh() {
 }
 
 // 同步问题
+const syncingIssues = ref(false);
+
 async function syncIssues() {
   const projectId = route.params.id as string;
   if (!projectId || !window.api) return;
+  // 该操作要扫描全部测评记录，且没有 loading 时可被重复点击触发多次生成
+  if (syncingIssues.value) return;
 
+  syncingIssues.value = true;
   try {
     const res = await window.api.issue.generateFromRecords(projectId);
     if (res.success) {
@@ -1071,6 +1116,8 @@ async function syncIssues() {
     }
   } catch (error) {
     ElMessage.error('同步失败');
+  } finally {
+    syncingIssues.value = false;
   }
 }
 
@@ -1385,6 +1432,16 @@ onUpdated(() => {
     gap: 6px;
     font-size: 13px;
 
+    .back-btn {
+      cursor: pointer;
+      color: var(--color-text-tertiary, #9CA3AF);
+      transition: color 0.15s;
+
+      &:hover {
+        color: var(--color-primary, #1B5FD9);
+      }
+    }
+
     .customer-name {
       color: var(--color-text-tertiary, #9CA3AF);
     }
@@ -1398,7 +1455,7 @@ onUpdated(() => {
     .industry-badge {
       margin-left: 6px;
       padding: 1px 8px;
-      border-radius: 10px;
+      border-radius: var(--radius-lg);
       font-size: 11px;
       font-weight: 500;
       line-height: 18px;
@@ -1426,7 +1483,7 @@ onUpdated(() => {
     transition: all 0.15s;
 
     &:first-child {
-      border-radius: 6px 0 0 6px;
+      border-radius: var(--radius-base) 0 0 6px;
     }
 
     &:last-child {
@@ -1459,7 +1516,7 @@ onUpdated(() => {
     .step-num {
       width: 20px;
       height: 20px;
-      border-radius: 999px;
+      border-radius: var(--radius-full);
       background: var(--color-border-default, #D1D5DB);
       display: flex;
       align-items: center;
@@ -1502,7 +1559,7 @@ onUpdated(() => {
     align-items: center;
     gap: 5px;
     padding: 4px 10px;
-    border-radius: 6px;
+    border-radius: var(--radius-base);
     font-size: 12px;
     transition: all 0.3s ease;
     background: var(--color-bg-base, #F9FAFB);
@@ -1560,7 +1617,7 @@ onUpdated(() => {
       gap: 2px;
 
       .stat-label {
-        font-size: 10px;
+        font-size: 11px;
         color: var(--color-text-tertiary, #9CA3AF);
       }
 
@@ -1609,7 +1666,7 @@ onUpdated(() => {
     height: 36px;
     padding: 0 14px;
     border: 1px solid var(--color-border-default, #E5E7EB);
-    border-radius: 6px;
+    border-radius: var(--radius-base);
     background: var(--color-bg-card);
     color: var(--color-text-secondary, #4B5563);
     font-size: 13px;
@@ -1686,7 +1743,7 @@ onUpdated(() => {
       height: 32px;
       padding: 0 10px 0 32px;
       border: 1px solid var(--color-border-default, #E5E7EB);
-      border-radius: 6px;
+      border-radius: var(--radius-base);
       font-size: 12px;
       background: var(--color-bg-page, #F5F6FA);
       outline: none;
@@ -1709,7 +1766,7 @@ onUpdated(() => {
     align-items: center;
     gap: 4px;
     padding: 5px 8px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     font-size: 13px;
     color: var(--color-text-primary, #111827);
@@ -1759,7 +1816,7 @@ onUpdated(() => {
     align-items: center;
     gap: 4px;
     padding: 5px 8px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     font-size: 12px;
     color: var(--color-text-secondary, #4B5563);
@@ -1780,7 +1837,7 @@ onUpdated(() => {
     }
 
     .tree-count {
-      font-size: 10px;
+      font-size: 11px;
       color: var(--color-text-tertiary, #9CA3AF);
       margin-left: auto;
 
@@ -1855,7 +1912,7 @@ onUpdated(() => {
     gap: 4px;
     padding: 6px 12px;
     border: 1px solid var(--color-border-default, #E5E7EB);
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
     background: var(--color-bg-card);
     color: var(--color-text-secondary, #4B5563);
     font-size: 12px;
@@ -1922,7 +1979,7 @@ onUpdated(() => {
   .mini-btn {
     padding: 2px 8px;
     border: 1px solid var(--color-border-default, #E5E7EB);
-    border-radius: 3px;
+    border-radius: var(--radius-sm);
     background: var(--color-bg-card);
     font-size: 11px;
     cursor: pointer;
@@ -1949,7 +2006,7 @@ onUpdated(() => {
       width: 60px;
       height: 60px;
       object-fit: cover;
-      border-radius: 4px;
+      border-radius: var(--radius-sm);
       border: 1px solid var(--color-border-default, #E5E7EB);
     }
 
@@ -1961,12 +2018,12 @@ onUpdated(() => {
       align-items: center;
       justify-content: center;
       border: 1px solid var(--color-border-default, #E5E7EB);
-      border-radius: 4px;
+      border-radius: var(--radius-sm);
       background: var(--color-bg-card);
     }
 
     .batch-file-ext {
-      font-size: 9px;
+      font-size: 11px;
       font-weight: 600;
       color: var(--color-text-tertiary, #9CA3AF);
       margin-top: 2px;
@@ -1983,7 +2040,7 @@ onUpdated(() => {
       color: #fff;
       border: none;
       cursor: pointer;
-      font-size: 10px;
+      font-size: 11px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -1991,7 +2048,7 @@ onUpdated(() => {
 
     .batch-screenshot-name {
       display: block;
-      font-size: 10px;
+      font-size: 11px;
       color: var(--color-text-tertiary, #9CA3AF);
       overflow: hidden;
       text-overflow: ellipsis;
@@ -2020,7 +2077,9 @@ onUpdated(() => {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
-  min-width: 1200px;
+  /* colgroup 六列合计 1304px。此前 min-width 1200px 会让 fixed 布局把各列等比压窄，
+     操作列更被压到不足 50px，28px 的按钮放不下。对齐到列宽总和。 */
+  min-width: 1304px;
   font-size: 13px;
 
   th {
@@ -2147,7 +2206,7 @@ onUpdated(() => {
     background: transparent;
     cursor: pointer;
     text-align: center;
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
     appearance: none;
     display: block;
     margin: 0 auto;
@@ -2187,7 +2246,7 @@ onUpdated(() => {
     width: 28px;
     height: 28px;
     border: 1px solid var(--color-border-default, #E5E7EB);
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
     background: var(--color-bg-card);
     cursor: pointer;
     display: inline-flex;
@@ -2230,7 +2289,7 @@ onUpdated(() => {
   background: var(--color-bg-card);
   border: 1px solid var(--color-border-default, #E5E7EB);
   border-right: none;
-  border-radius: 4px 0 0 4px;
+  border-radius: var(--radius-sm) 0 0 4px;
   cursor: pointer;
   z-index: 10;
   display: flex;
@@ -2261,7 +2320,7 @@ onUpdated(() => {
   color: #fff;
   font-size: 14px;
   border: none;
-  border-radius: 4px 0 0 4px;
+  border-radius: var(--radius-sm) 0 0 4px;
   cursor: pointer;
   z-index: 20;
   transition: background 0.15s;

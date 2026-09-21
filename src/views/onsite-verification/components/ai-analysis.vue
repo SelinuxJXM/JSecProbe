@@ -2,7 +2,7 @@
   <!-- 迷你AI进度条（批量分析最小化时显示） -->
   <div v-if="batchAiMinimized" class="mini-ai-progress" @click="batchAiProgress.visible = true; batchAiMinimized = false">
     <div class="mini-ai-progress-header">
-      <span class="mini-ai-progress-title">🤖 AI分析中</span>
+      <span class="mini-ai-progress-title"><el-icon><MagicStick /></el-icon> AI分析中</span>
       <span class="mini-ai-progress-percent">{{ batchAiProgressPercentDisplay }}</span>
     </div>
     <div class="mini-ai-progress-bar-container">
@@ -15,7 +15,7 @@
   <!-- 迷你AI单条分析进度条（最小化时显示） -->
   <div v-if="aiDialogMinimized" class="mini-ai-progress mini-ai-single" @click="aiDialogVisible = true; aiDialogMinimized = false">
     <div class="mini-ai-progress-header">
-      <span class="mini-ai-progress-title">🤖 AI单条分析</span>
+      <span class="mini-ai-progress-title"><el-icon><MagicStick /></el-icon> AI单条分析</span>
       <span class="mini-ai-progress-percent">{{ Math.round((aiStep / 6) * 100) }}%</span>
     </div>
     <div class="mini-ai-progress-bar-container">
@@ -35,7 +35,7 @@
   >
     <template #header>
       <div class="ai-progress-header">
-        <span class="ai-progress-title">🤖 AI智能分析</span>
+        <span class="ai-progress-title"><el-icon><MagicStick /></el-icon> AI智能分析</span>
         <div class="ai-progress-header-actions">
           <button v-if="aiLoading" class="ai-minimize-btn" @click="aiDialogVisible = false; aiDialogMinimized = true" title="最小化">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -48,32 +48,32 @@
     </template>
     <div class="ai-flow-steps">
       <div class="flow-step" :class="{ active: aiStep >= 1, done: aiStep > 1 }">
-        <span class="step-icon">📷</span>
+        <span class="step-icon"><el-icon :size="16"><Picture /></el-icon></span>
         <span class="step-text">上传文件</span>
       </div>
       <div class="step-arrow">→</div>
       <div class="flow-step" :class="{ active: aiStep >= 2, done: aiStep > 2 }">
-        <span class="step-icon">🔍</span>
+        <span class="step-icon"><el-icon :size="16"><Search /></el-icon></span>
         <span class="step-text">AI识别内容</span>
       </div>
       <div class="step-arrow">→</div>
       <div class="flow-step" :class="{ active: aiStep >= 3, done: aiStep > 3 }">
-        <span class="step-icon">📊</span>
+        <span class="step-icon"><el-icon :size="16"><DataAnalysis /></el-icon></span>
         <span class="step-text">AI分析结果</span>
       </div>
       <div class="step-arrow">→</div>
       <div class="flow-step" :class="{ active: aiStep >= 4, done: aiStep > 4 }">
-        <span class="step-icon">✅</span>
+        <span class="step-icon"><el-icon :size="16"><CircleCheck /></el-icon></span>
         <span class="step-text">AI判定合规性</span>
       </div>
       <div class="step-arrow">→</div>
       <div class="flow-step" :class="{ active: aiStep >= 5, done: aiStep > 5 }">
-        <span class="step-icon">📋</span>
+        <span class="step-icon"><el-icon :size="16"><Document /></el-icon></span>
         <span class="step-text">提取关键证据点</span>
       </div>
       <div class="step-arrow">→</div>
       <div class="flow-step" :class="{ active: aiStep >= 6, done: aiStep > 6 }">
-        <span class="step-icon">📝</span>
+        <span class="step-icon"><el-icon :size="16"><EditPen /></el-icon></span>
         <span class="step-text">生成测评结论</span>
       </div>
     </div>
@@ -130,14 +130,14 @@
   <!-- AI使用合规确认弹窗 -->
   <el-dialog v-model="showAiConsentDialog" title="AI分析使用确认" width="520px" :close-on-click-modal="false">
     <div class="ai-consent-content">
-      <div class="ai-consent-icon">⚠️</div>
+      <div class="ai-consent-icon"><el-icon :size="28"><WarningFilled /></el-icon></div>
       <div class="ai-consent-title">数据合规确认</div>
       <div class="ai-consent-body">
         <p>AI分析功能会将当前测评数据（包括核查记录、截图、文档等）发送到您配置的第三方AI服务进行处理。在使用AI分析功能前，请确认：</p>
         <ul>
-          <li>✅ 已获得被测评单位的数据处理授权</li>
-          <li>✅ 您配置的AI服务符合数据安全与隐私保护要求</li>
-          <li>✅ 您了解发送的数据可能包含系统配置信息、截图内容等敏感信息</li>
+          <li><el-icon class="consent-check"><CircleCheck /></el-icon>已获得被测评单位的数据处理授权</li>
+          <li><el-icon class="consent-check"><CircleCheck /></el-icon>您配置的AI服务符合数据安全与隐私保护要求</li>
+          <li><el-icon class="consent-check"><CircleCheck /></el-icon>您了解发送的数据可能包含系统配置信息、截图内容等敏感信息</li>
         </ul>
         <p class="ai-consent-hint">您可以在「AI设置」中开启隐私模式（仅发送文本，不发送截图），或配置本地部署的LLM以实现数据不出本地。</p>
       </div>
@@ -152,7 +152,7 @@
   <el-dialog v-model="batchAiProgress.visible" width="480px" :close-on-click-modal="false" :show-close="false" :close-on-press-escape="false" class="ai-progress-dialog">
     <template #header>
       <div class="ai-progress-header">
-        <span class="ai-progress-title">🤖 AI批量分析</span>
+        <span class="ai-progress-title"><el-icon><MagicStick /></el-icon> AI批量分析</span>
         <div class="ai-progress-header-actions">
           <button v-if="batchAiProgress.percent < 100 && batchAiProgress.stage !== 'error'" class="ai-minimize-btn" @click="batchAiProgress.visible = false; batchAiMinimized = true" title="最小化">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -232,6 +232,16 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { onBeforeUnmount } from 'vue';
+import {
+  MagicStick,
+  Picture,
+  Search,
+  DataAnalysis,
+  CircleCheck,
+  Document,
+  EditPen,
+  WarningFilled,
+} from '@element-plus/icons-vue';
 
 const props = defineProps<{
   tableRows: any[];
@@ -450,7 +460,7 @@ onBeforeUnmount(() => {
       line-height: 1.6;
       background: var(--color-bg-page, #F5F6FA);
       padding: 10px 12px;
-      border-radius: 6px;
+      border-radius: var(--radius-base);
 
       &.mono {
         font-family: var(--font-family-mono, monospace);
@@ -503,7 +513,7 @@ onBeforeUnmount(() => {
   .compliance-tag {
     display: inline-block;
     padding: 4px 12px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     font-size: 13px;
     font-weight: 600;
 
@@ -572,14 +582,14 @@ onBeforeUnmount(() => {
   .mini-ai-progress-bar-container {
     height: 4px;
     background: rgba(255, 255, 255, 0.3);
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
     overflow: hidden;
     margin-bottom: 4px;
     
     .mini-ai-progress-bar {
       height: 100%;
       background: #fff;
-      border-radius: 2px;
+      border-radius: var(--radius-xs);
       transition: width 0.3s ease;
     }
   }
@@ -621,7 +631,7 @@ onBeforeUnmount(() => {
     border: none;
     background: transparent;
     color: #6B7280;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -735,7 +745,7 @@ onBeforeUnmount(() => {
     margin-bottom: 16px;
     padding: 12px 16px;
     background: var(--color-bg-base);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     border: 1px solid #E5E7EB;
     
     .progress-label {
@@ -761,14 +771,14 @@ onBeforeUnmount(() => {
   .ai-progress-bar {
     height: 14px;
     background: #E5E7EB;
-    border-radius: 7px;
+    border-radius: var(--radius-md);
     overflow: hidden;
   }
   
   .ai-progress-fill {
     height: 100%;
     background: linear-gradient(90deg, #1B5FD9 0%, #3B82F6 100%);
-    border-radius: 7px;
+    border-radius: var(--radius-md);
     transition: width 0.3s ease;
   }
   
@@ -843,6 +853,22 @@ onBeforeUnmount(() => {
 .ai-consent-icon {
   font-size: 32px;
   margin-bottom: 12px;
+  color: var(--color-warning);
+}
+
+.consent-check {
+  margin-right: 6px;
+  vertical-align: -2px;
+  color: var(--color-success);
+}
+
+/* 标题里的 AI 图标：与文字基线对齐 */
+.ai-progress-title,
+.mini-ai-progress-title {
+  .el-icon {
+    vertical-align: -2px;
+    margin-right: 4px;
+  }
 }
 
 .ai-consent-title {

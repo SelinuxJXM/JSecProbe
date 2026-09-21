@@ -294,7 +294,7 @@ watch(visible, (v) => {
     flex: 1;
     padding: 10px 14px;
     background: var(--color-primary-light);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     font-size: 12px;
     color: var(--color-primary);
     line-height: 1.6;
@@ -302,7 +302,7 @@ watch(visible, (v) => {
     code {
       padding: 0 4px;
       background: rgba(0, 0, 0, 0.06);
-      border-radius: 3px;
+      border-radius: var(--radius-sm);
       font-family: 'Consolas', 'Monaco', monospace;
     }
   }
@@ -321,7 +321,7 @@ watch(visible, (v) => {
   gap: 12px;
   padding: 10px 12px;
   border: 1px solid var(--border-color);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   background: var(--bg-hover);
 
   .prompt-card-main {
@@ -435,7 +435,7 @@ watch(visible, (v) => {
     margin: 0;
     padding: 10px 12px;
     background: var(--bg-hover);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     font-family: 'Consolas', 'Monaco', monospace;
     font-size: 12px;
     line-height: 1.6;

@@ -87,17 +87,50 @@ a {
   overflow: auto;
 }
 
+/* 表格数字等宽：避免翻页/刷新时因数字字形宽度不同导致整列左右跳动。
+   只影响数字字形，中英文文本排版不受影响。 */
+td,
+th {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 页面标题栏：卡片式，与内容区卡片同一套视觉。
+   此前只有 issues 页自带一份卡片版实现（局部 scoped 覆盖全局裸标题版），
+   六个页面的标题栏长得都不一样。现在统一到全局，局部不再各写一套。
+   结构兼容两种写法：
+     A. <div class="page-header"><div class="page-header-title"/><div class="page-header-desc"/></div>
+     B. <div class="page-header"><div>…title+desc…</div><div class="page-header-actions"/></div>
+   —— desc 用 flex-basis:100% 强制换行，保证 A 写法下依然是上下堆叠。 */
 .page-header {
-  margin-bottom: var(--spacing-lg);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 14px 20px;
+  margin-bottom: var(--spacing-base);
+  background: var(--color-bg-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--color-border-light);
+
   &-title {
-    font-size: var(--font-size-xl);
+    font-size: var(--font-size-lg);
     font-weight: var(--font-weight-semibold);
     color: var(--color-text-primary);
   }
   &-desc {
+    flex: 1 1 100%;
     font-size: var(--font-size-sm);
     color: var(--color-text-tertiary);
     margin-top: var(--spacing-xs);
+  }
+  &-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    margin-left: auto;
   }
 }
 
@@ -106,6 +139,61 @@ a {
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
   border: 1px solid var(--color-border-light);
+}
+
+/* 统计卡片：此前 dashboard（48px 图标 / 24px 数值 / radius-md）与
+   issues（40px / 20px / radius-lg + hover 抬升）各写一套，尺寸与手感都不一致。
+   统一到全局，页面内只保留各自的主题配色（.stat-high / &.project 之类）。 */
+.stat-card {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: 16px 20px;
+  background: var(--color-bg-card);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-light);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.2s, transform 0.15s;
+
+  &:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+  }
+
+  /* 页面里两种包裹元素命名（dashboard 用 stat-content，issues 用 stat-info） */
+  .stat-content,
+  .stat-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .stat-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-md);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    flex-shrink: 0;
+  }
+
+  .stat-value {
+    font-size: 22px;
+    font-weight: var(--font-weight-bold);
+    line-height: 1.2;
+    color: var(--color-text-primary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stat-label {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-tertiary);
+    font-weight: var(--font-weight-medium);
+    margin-top: 2px;
+  }
 }
 
 /* Dark mode overrides for Element Plus and common components */

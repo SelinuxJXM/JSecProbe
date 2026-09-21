@@ -170,7 +170,7 @@ function handleContextMenu(event: MouseEvent, node: CategoryNode): void {
   gap: 6px;
   padding: 8px 12px;
   margin: 2px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   cursor: pointer;
   color: var(--color-text-secondary, #606266);
   font-size: 13px;
@@ -215,7 +215,7 @@ function handleContextMenu(event: MouseEvent, node: CategoryNode): void {
 
 .tree-node-count {
   padding: 1px 6px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--color-bg-tag, #f4f4f5);
   color: var(--color-text-tertiary, #909399);
   font-size: 11px;

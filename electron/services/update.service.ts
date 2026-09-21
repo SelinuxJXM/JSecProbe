@@ -71,6 +71,14 @@ let manualUpdateInfo: ManualUpdateInfo | null = null;
 let manualInstallerPath: string | null = null;
 let pendingCheckFallback = false;
 let activeDownload = false;
+/**
+ * 本轮检查中已确认"可达且无新版本"的源（'gitcode' | 'r2'）。
+ * 用途：GitCode/R2 任一源成功应答"无新版本"后，即使 GitHub 超时，
+ * 检查流程本身也是成功的 —— 最终结论应是"已是最新版本"而非报错。
+ * （否则国内用户在最新版上点检查更新，会因为 GitHub 被墙看到
+ * "GitHub 连接超时，请检查网络后重试"这种误导性错误。）
+ */
+let upToDateSource: 'gitcode' | 'r2' | null = null;
 
 /** 整个 GitCode 阶段的耗时上限：超过就认定"国内源不适用"，立即降级 GitHub */
 const GITCODE_PHASE_TIMEOUT = 10000;
@@ -265,6 +273,7 @@ async function checkR2ForUpdates(): Promise<{ version: string; sha512: string; s
     log.info(`[更新-R2] 当前版本: ${currentVersion}, R2 版本: ${info.version}`);
     if (compareVersions(info.version, currentVersion) <= 0) {
       log.info('[更新-R2] R2 上无新版本');
+      upToDateSource = 'r2';
       return null;
     }
     return info;
@@ -361,6 +370,7 @@ async function checkGitCodeForUpdates(deadline: number = Date.now() + GITCODE_PH
     log.info(`[更新-GitCode] 当前版本: ${currentVersion}, GitCode 版本: ${info.version}`);
     if (compareVersions(info.version, currentVersion) <= 0) {
       log.info('[更新-GitCode] GitCode 上无新版本');
+      upToDateSource = 'gitcode';
       return null;
     }
 
@@ -661,9 +671,21 @@ async function tryR2Fallback(): Promise<boolean> {
  * 检查结果通过 autoUpdater 事件或 sendStatusToWindow 推送到渲染进程。
  */
 async function performUpdateCheck(context: string): Promise<void> {
-  if (pendingCheckFallback) return;
+  if (pendingCheckFallback) {
+    // 已有一轮检查在进行（如启动时的自动检查还没结束）。
+    // 此时绝不能静默 return —— 那会让用户点了"检查更新"却看不到任何反应；
+    // UI 回到"正在检查"状态即可，本轮检查的结果照常推送。
+    log.info(`[更新] ${context}检查发起时已有检查在进行，复用其结果`);
+    sendStatusToWindow({ status: 'checking' });
+    return;
+  }
 
   pendingCheckFallback = true;
+  upToDateSource = null;
+  // 立即通知 UI 进入"正在检查"：'checking' 事件原先只在 GitHub 阶段
+  // （electron-updater 的 checking-for-update）才发，GitCode 阶段最长 10 秒
+  // 期间 UI 毫无反应，看起来就像点击没生效。
+  sendStatusToWindow({ status: 'checking' });
   try {
     // 1) 国内优先：GitCode
     const gitcodeInfo = await checkGitCodeForUpdates();
@@ -699,6 +721,14 @@ async function performUpdateCheck(context: string): Promise<void> {
       if (shouldFallback) {
         if (await tryR2Fallback()) return;
         log.info('[更新-R2] 备用源也无更新可用');
+        if (upToDateSource) {
+          // GitCode / R2 至少一个源可达且确认无新版本 —— 检查流程本身是成功的。
+          // 不能把 GitHub 的超时当成最终结论报错，否则最新版用户在国内
+          // 会看到"GitHub 连接超时"的假故障。
+          log.info(`[更新] ${upToDateSource} 源已确认当前为最新版本`);
+          sendStatusToWindow({ status: 'notavailable', version: app.getVersion() });
+          return;
+        }
         if (error.message === 'GITHUB_TIMEOUT') {
           sendStatusToWindow({ status: 'error', error: 'GitHub 连接超时，请检查网络后重试' });
           return;

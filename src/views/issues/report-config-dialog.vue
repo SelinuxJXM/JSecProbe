@@ -11,7 +11,7 @@
       <!-- 格式选择 -->
       <div class="config-section">
         <div class="section-title">
-          <span class="section-icon">📄</span>
+          <span class="section-icon"><el-icon><Document /></el-icon></span>
           <span>报告格式</span>
         </div>
         <el-radio-group v-model="config.format" class="format-selector">
@@ -39,7 +39,7 @@
       <!-- 模板选择 -->
       <div class="config-section">
         <div class="section-title">
-          <span class="section-icon">📋</span>
+          <span class="section-icon"><el-icon><Tickets /></el-icon></span>
           <span>报告模板</span>
         </div>
         <el-radio-group v-model="config.template" class="template-selector">
@@ -76,7 +76,7 @@
       <!-- 章节选择 -->
       <div class="config-section">
         <div class="section-title">
-          <span class="section-icon">📑</span>
+          <span class="section-icon"><el-icon><Files /></el-icon></span>
           <span>包含章节</span>
           <span class="section-hint">已选 {{ config.includeSections.length }}/10</span>
         </div>
@@ -117,7 +117,7 @@
       <!-- AI 增强 -->
       <div class="config-section">
         <div class="section-title">
-          <span class="section-icon">🤖</span>
+          <span class="section-icon"><el-icon><MagicStick /></el-icon></span>
           <span>AI 智能生成</span>
         </div>
         <div class="ai-enhance-container">
@@ -134,7 +134,7 @@
       <!-- 保存位置 -->
       <div class="config-section">
         <div class="section-title">
-          <span class="section-icon">💾</span>
+          <span class="section-icon"><el-icon><FolderOpened /></el-icon></span>
           <span>保存位置</span>
         </div>
         <div class="save-path-container">
@@ -159,6 +159,7 @@
 <script setup lang="ts">
 import { ref, reactive } from 'vue';
 import { ElMessage } from 'element-plus';
+import { Document, Files, Tickets, MagicStick, FolderOpened } from '@element-plus/icons-vue';
 
 const visible = ref(false);
 const generating = ref(false);
@@ -275,7 +276,10 @@ defineExpose({ open });
 }
 
 .section-icon {
+  display: inline-flex;
+  align-items: center;
   font-size: 16px;
+  color: var(--color-primary);
 }
 
 .section-hint {
@@ -303,7 +307,7 @@ defineExpose({ open });
   gap: 12px;
   padding: 14px 16px;
   border: 2px solid #e5e7eb;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
   transition: all 0.2s ease;
   background: #fafbfc;
@@ -324,7 +328,7 @@ defineExpose({ open });
 .format-icon {
   width: 44px;
   height: 44px;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -374,7 +378,7 @@ defineExpose({ open });
 .template-card {
   padding: 14px;
   border: 2px solid #e5e7eb;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
   transition: all 0.2s ease;
   background: #fafbfc;
@@ -408,7 +412,7 @@ defineExpose({ open });
 .template-tag {
   font-size: 10px;
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-weight: 500;
 }
 
@@ -456,7 +460,7 @@ defineExpose({ open });
   display: block;
   padding: 8px 12px;
   border: 1px solid var(--color-border-base, #e5e7eb);
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   font-size: 13px;
   color: var(--color-text-secondary, #4b5563);
   text-align: center;
@@ -483,7 +487,7 @@ defineExpose({ open });
   gap: 8px;
   padding: 12px 14px;
   border: 1px solid var(--color-border-base, #e5e7eb);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--color-bg-card, #fafbfc);
 }
 

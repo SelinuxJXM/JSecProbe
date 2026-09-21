@@ -16,9 +16,10 @@
       <span class="remove-shot" @click.stop="handleRemoveScreenshot(idx)">×</span>
     </div>
   </div>
-  <button class="screenshot-btn" @click.stop="handleUploadScreenshot">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-    上传文件
+  <button class="screenshot-btn" :disabled="uploading" @click.stop="handleUploadScreenshot">
+    <svg v-if="uploading" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+    <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+    {{ uploading ? `正在上传 ${uploadDone}/${uploadTotal}` : '上传文件' }}
   </button>
 
   <!-- 文件预览弹窗 -->
@@ -152,11 +153,18 @@ function buildNextRow(patch: (row: any) => void): any {
   return next;
 }
 
+// 批量上传进度：一次选 20 张时原先按钮不变灰、也没有进度，
+// 用户会以为卡死而重复点击
+const uploading = ref(false);
+const uploadDone = ref(0);
+const uploadTotal = ref(0);
+
 async function handleUploadScreenshot() {
   if (!window.api) {
     ElMessage.error('上传功能不可用');
     return;
   }
+  if (uploading.value) return;
   try {
     const res = await window.api.dialog.showOpenDialog({
       title: '选择文件',
@@ -173,6 +181,11 @@ async function handleUploadScreenshot() {
 
     const projectId = props.projectId || '';
     const itemId = props.row?.itemId || '';
+
+    uploading.value = true;
+    uploadDone.value = 0;
+    uploadTotal.value = res.data.filePaths.length;
+    const failures: string[] = [];
 
     for (const filePath of res.data.filePaths) {
       const fileType = getFileType(filePath);
@@ -204,8 +217,10 @@ async function handleUploadScreenshot() {
         }
       }
 
+      uploadDone.value++;
+
       if (uploadError) {
-        ElMessage.error(`${filePath.split('\\').pop()}: ${uploadError}`);
+        failures.push(`${filePath.split('\\').pop()}: ${uploadError}`);
       } else if (savedPath) {
         // 不直接改 props.row（见 buildNextRow 的说明）
         const nextRow = buildNextRow((row) => {
@@ -214,13 +229,23 @@ async function handleUploadScreenshot() {
           }
         });
         emit('update:row', nextRow);
-        const fileName = savedPath.split('\\').pop()?.split('/').pop() || '文件';
-        ElMessage.success(`已添加 ${fileName}`);
         emit('auto-save', nextRow);
       }
     }
+
+    // 汇总提示而非逐条弹 toast：20 个文件弹 20 次会刷屏
+    const okCount = uploadTotal.value - failures.length;
+    if (failures.length === 0) {
+      ElMessage.success(`已添加 ${okCount} 个文件`);
+    } else {
+      ElMessage.warning(`${okCount} 个成功，${failures.length} 个失败：${failures[0]}${failures.length > 1 ? ' 等' : ''}`);
+    }
   } catch (error: any) {
     ElMessage.error('上传失败：' + (error.message || '未知错误'));
+  } finally {
+    uploading.value = false;
+    uploadDone.value = 0;
+    uploadTotal.value = 0;
   }
 }
 
@@ -335,7 +360,7 @@ async function handleRemoveScreenshot(index: number) {
   position: relative;
   width: 48px;
   height: 48px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   border: 1px solid var(--color-border-default, #E5E7EB);
   cursor: pointer;
@@ -413,7 +438,7 @@ async function handleRemoveScreenshot(index: number) {
   padding: 3px 8px;
   background: var(--color-bg-card);
   border: 1px dashed var(--color-border-default, #E5E7EB);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--color-text-tertiary, #9CA3AF);
   font-size: 11px;
   cursor: pointer;
@@ -464,7 +489,7 @@ async function handleRemoveScreenshot(index: number) {
   width: auto;
   height: auto;
   object-fit: contain;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
 }
 
@@ -477,7 +502,7 @@ async function handleRemoveScreenshot(index: number) {
   width: 100%;
   height: 100%;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .preview-word-wrapper {
@@ -521,7 +546,7 @@ async function handleRemoveScreenshot(index: number) {
   color: #374151;
   background: #F9FAFB;
   padding: 16px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   max-height: 60vh;
   overflow-y: auto;
   margin: 0;

@@ -31,20 +31,33 @@
         <div class="page-header-desc">查看和管理测评发现的问题</div>
       </div>
       <div class="page-header-actions">
-        <el-button type="primary" :icon="Refresh" @click="handleGenerate">
-          从测评记录生成
+        <el-button type="primary" data-guide="issue-generate" :icon="Refresh" :loading="generating" @click="handleGenerate">
+          {{ generating ? '生成中...' : '从测评记录生成' }}
         </el-button>
         <el-button :icon="Plus" @click="handleAdd">新增问题</el-button>
-        <el-button :icon="Upload" @click="handleImport">导入问题</el-button>
-        <el-button :icon="Document" @click="handleDownloadTemplate">下载导入模板</el-button>
-        <el-button type="success" :icon="Download" @click="handleExport">
-          导出问题清单
+        <el-button :icon="Upload" :loading="importing" @click="handleImport">
+          {{ importing ? '导入中...' : '导入问题' }}
         </el-button>
-        <el-button type="warning" :icon="Document" @click="handleGenerateReport">
+        <el-button :icon="Document" @click="handleDownloadTemplate">下载导入模板</el-button>
+        <el-button type="success" :icon="Download" :loading="exporting" @click="handleExport">
+          {{ exporting ? '导出中...' : '导出问题清单' }}
+        </el-button>
+        <el-button type="warning" data-guide="report-generate" :icon="Document" @click="handleGenerateReport">
           生成项目报告
         </el-button>
       </div>
     </div>
+
+    <!-- 首访提示：只在该页面首次进入时出现，关闭后不再打扰 -->
+    <PageHint
+      hint-key="issues"
+      title="第一次看问题汇总？看这三点"
+      :tips="[
+        '先点「从测评记录生成」，系统会把现场核查中判定为不符合 / 部分符合的项自动转成问题清单，不用手抄。',
+        '汇总后可统一编辑风险等级与整改建议，也能「导出问题清单」发给客户确认。',
+        '清单定稿后点「生成项目报告」，按配置好的章节模板一键输出测评报告。',
+      ]"
+    />
 
     <div class="stat-cards-row">
       <div class="stat-card stat-high">
@@ -84,7 +97,7 @@
               测评符合率 = 符合 /（已判定 − 不适用）<br />
               统计自现场核查的测评记录，与「问题总数」不是同一口径，两者不能相减或相除。
             </template>
-            <el-statistic :value="complianceRateValue" :precision="2" suffix="%" />
+            <div class="stat-value">{{ complianceRateValue.toFixed(2) }}%</div>
           </el-tooltip>
           <div class="stat-label">测评符合率</div>
         </div>
@@ -159,18 +172,20 @@
           </el-button>
           <el-dropdown @command="handleAiBatchCommand" trigger="click">
             <el-button type="primary" size="small">
-              🤖 AI分析<el-icon class="el-icon--right"><arrow-down /></el-icon>
+              <el-icon class="el-icon--left"><MagicStick /></el-icon>AI分析<el-icon class="el-icon--right"><ArrowDown /></el-icon>
             </el-button>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="describe">
-                  📝 批量分析问题描述
+                  <el-icon class="dropdown-item-icon"><EditPen /></el-icon>
+                  批量分析问题描述
                   <span class="dropdown-scope-hint">
                     {{ selectedRows.length > 0 ? `(选中${selectedRows.length}个)` : '(全部)' }}
                   </span>
                 </el-dropdown-item>
                 <el-dropdown-item command="suggestion">
-                  💡 批量分析整改建议
+                  <el-icon class="dropdown-item-icon"><Opportunity /></el-icon>
+                  批量分析整改建议
                   <span class="dropdown-scope-hint">
                     {{ selectedRows.length > 0 ? `(选中${selectedRows.length}个)` : '(全部)' }}
                   </span>
@@ -427,11 +442,14 @@ import {
   MagicStick,
   Reading,
   Upload,
+  EditPen,
+  Opportunity,
 } from '@element-plus/icons-vue';
 import type { Issue, IssueSummary } from '../../../shared/types';
 import ReportConfigDialog from './report-config-dialog.vue';
 import IssueAiAnalysis from './components/issue-ai-analysis.vue';
 import IssueDescriptionAnalysis from './components/issue-description-analysis.vue';
+import PageHint from '@/components/PageHint/index.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -859,13 +877,25 @@ async function confirmBatchStatus() {
   }
 }
 
+// 生成 / 导出 / 导入都是要跑一段时间的操作，原先没有 loading，
+// 界面看起来像假死，用户会重复点按钮
+const generating = ref(false);
+const exporting = ref(false);
+const importing = ref(false);
+
 async function handleGenerate() {
+  if (generating.value) return;
   try {
     await ElMessageBox.confirm(
       '将从测评记录中自动生成不符合项问题，是否继续？',
       '生成问题',
       { type: 'info' }
     );
+  } catch {
+    return;
+  }
+  generating.value = true;
+  try {
     const res = await window.api.issue.generateFromRecords(projectId.value);
     if (res.success && res.data) {
       ElMessage.success(`成功生成 ${res.data.count} 条问题`);
@@ -875,9 +905,9 @@ async function handleGenerate() {
       ElMessage.error(res.error?.message || '生成失败');
     }
   } catch (error: any) {
-    if (error !== 'cancel' && error?.message) {
-      ElMessage.error(error?.message || '生成失败');
-    }
+    ElMessage.error(error?.message || '生成失败');
+  } finally {
+    generating.value = false;
   }
 }
 
@@ -886,11 +916,17 @@ async function handleExport() {
     ElMessage.warning('没有可导出的问题');
     return;
   }
-  const res = await window.api.issue.exportExcel(projectId.value);
-  if (res.success && res.data) {
-    ElMessage.success('导出成功');
-  } else if (res.error?.message !== '用户取消') {
-    ElMessage.error(res.error?.message || '导出失败');
+  if (exporting.value) return;
+  exporting.value = true;
+  try {
+    const res = await window.api.issue.exportExcel(projectId.value);
+    if (res.success && res.data) {
+      ElMessage.success('导出成功');
+    } else if (res.error?.message !== '用户取消') {
+      ElMessage.error(res.error?.message || '导出失败');
+    }
+  } finally {
+    exporting.value = false;
   }
 }
 
@@ -913,16 +949,22 @@ async function handleImport() {
   });
   if (!res.success || res.data?.canceled || !res.data?.filePaths || res.data.filePaths.length === 0) return;
 
-  const importRes = await window.api.issue.importExcel(projectId.value, res.data.filePaths[0]);
-  if (importRes.success && importRes.data) {
-    const msg = importRes.data.errors?.length
-      ? `成功导入 ${importRes.data.count} 条，${importRes.data.errors.length} 条失败`
-      : `成功导入 ${importRes.data.count} 条问题`;
-    ElMessage.success(msg);
-    loadIssues();
-    loadSummary();
-  } else {
-    ElMessage.error(importRes.error?.message || '导入失败');
+  if (importing.value) return;
+  importing.value = true;
+  try {
+    const importRes = await window.api.issue.importExcel(projectId.value, res.data.filePaths[0]);
+    if (importRes.success && importRes.data) {
+      const msg = importRes.data.errors?.length
+        ? `成功导入 ${importRes.data.count} 条，${importRes.data.errors.length} 条失败`
+        : `成功导入 ${importRes.data.count} 条问题`;
+      ElMessage.success(msg);
+      loadIssues();
+      loadSummary();
+    } else {
+      ElMessage.error(importRes.error?.message || '导入失败');
+    }
+  } finally {
+    importing.value = false;
   }
 }
 
@@ -1023,7 +1065,8 @@ onMounted(() => {
 }
 
 .page-container {
-  height: calc(100vh - var(--titlebar-height, 40px));
+  // 页面顶部有项目上下文条（约 56px），此前漏减导致底部被裁掉一截
+  height: calc(100vh - var(--titlebar-height, 40px) - var(--header-height, 56px));
   display: flex;
   flex-direction: column;
   background: var(--color-bg-page);
@@ -1064,7 +1107,7 @@ onMounted(() => {
       align-items: center;
       gap: 6px;
       padding: 6px 14px;
-      border-radius: 999px;
+      border-radius: var(--radius-full);
       background: var(--color-bg-page);
       color: var(--color-text-tertiary);
       font-size: 13px;
@@ -1103,52 +1146,10 @@ onMounted(() => {
   margin-bottom: 6px;
 }
 
+/* 统计卡结构统一由 global.scss 的 .stat-card 提供，此处只保留本页配色 */
 .stat-card {
   flex: 1;
-  display: flex;
-  align-items: center;
-  padding: 12px 20px;
-  background: var(--color-bg-card);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border-default);
-  box-shadow: var(--shadow-sm);
-  transition: box-shadow 0.2s, transform 0.15s;
-
-  &:hover {
-    box-shadow: var(--shadow-md);
-    transform: translateY(-1px);
-  }
-
-  .stat-icon {
-    width: 40px;
-    height: 40px;
-    border-radius: var(--radius-md);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-right: 12px;
-    flex-shrink: 0;
-  }
-
-  .stat-info {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .stat-value {
-    font-size: 20px;
-    font-weight: 700;
-    line-height: 1.2;
-    color: var(--color-text-primary);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .stat-label {
-    font-size: 12px;
-    color: var(--color-text-tertiary);
-    font-weight: 500;
-  }
+  min-width: 0;
 }
 
 .stat-high .stat-icon {
@@ -1182,36 +1183,8 @@ onMounted(() => {
   }
 }
 
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 20px;
-  background: var(--color-bg-card);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  margin-bottom: 10px;
-}
-
-.page-header-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--color-text-primary);
-}
-
-.page-header-desc {
-  font-size: 12px;
-  color: var(--color-text-tertiary);
-  margin-top: 2px;
-}
-
-.page-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
+/* 页面标题栏统一使用 global.scss 的 .page-header（此前此处自带一份卡片版，
+   与其余五个页面的裸标题版并存，字号/间距各不相同） */
 
 :deep(.el-button) {
   font-size: 12px;
@@ -1270,6 +1243,11 @@ onMounted(() => {
   font-size: 12px;
   color: #909399;
   margin-left: 8px;
+}
+
+:deep(.dropdown-item-icon) {
+  margin-right: 6px;
+  vertical-align: -2px;
 }
 
 .issue-description-cell {

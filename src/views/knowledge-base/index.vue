@@ -465,7 +465,7 @@
         <el-form-item label="文档文件" required>
           <div class="upload-file-zone" @click="selectDocumentFile">
             <input v-model="uploadForm.filePath" type="text" placeholder="点击选择文件" readonly />
-            <span v-if="uploadForm.fileName" class="file-name">{{ uploadForm.fileName }}</span>
+            <span v-if="uploadForm.fileName" class="file-name" :title="uploadForm.fileName">{{ uploadForm.fileName }}</span>
           </div>
         </el-form-item>
         <el-form-item label="文档标题" required>
@@ -1737,7 +1737,7 @@ $info-light: var(--color-primary-light);
 
 .kb-card {
   background: $bg-surface;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: 0 1px 3px rgba(0,0,0,0.04);
   overflow: hidden;
 }
@@ -1800,7 +1800,7 @@ $info-light: var(--color-primary-light);
     padding: 0 5px;
     background: $bg-hover;
     color: $text-tertiary;
-    border-radius: 9999px;
+    border-radius: var(--radius-full);
     font-size: 11px;
     font-weight: 600;
     line-height: 1;
@@ -1817,7 +1817,7 @@ $info-light: var(--color-primary-light);
   height: 32px;
   padding: 0 14px;
   border: 1px solid $border;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   background: $bg-surface;
   color: $text-secondary;
   font-size: 12px;
@@ -1845,7 +1845,7 @@ $info-light: var(--color-primary-light);
   gap: 8px;
   padding: 8px 12px;
   border: 1px dashed $border;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   background: $bg-page;
   cursor: pointer;
   transition: all 0.15s;
@@ -1886,7 +1886,7 @@ $info-light: var(--color-primary-light);
 
 .file-list-box {
   border: 1px solid $border;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   overflow: hidden;
 }
 
@@ -1966,7 +1966,7 @@ $info-light: var(--color-primary-light);
     height: 32px;
     padding: 0 8px 0 28px;
     border: 1px solid $border;
-    border-radius: 6px;
+    border-radius: var(--radius-base);
     font-size: 12px;
     color: $text-primary;
     background: $bg-surface;
@@ -1983,7 +1983,7 @@ $info-light: var(--color-primary-light);
   height: 32px;
   padding: 0 24px 0 8px;
   border: 1px solid $border;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   font-size: 12px;
   color: $text-secondary;
   background: $bg-surface;
@@ -2003,7 +2003,7 @@ $info-light: var(--color-primary-light);
   background: #fffbeb;
   border: 1px solid #fde68a;
   padding: 4px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   margin-left: -2px;
   line-height: 1.4;
   white-space: nowrap;
@@ -2164,7 +2164,7 @@ $info-light: var(--color-primary-light);
 
 .kb-doc-card {
   border: 1px solid $border;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 16px;
   display: flex;
   gap: 14px;
@@ -2181,7 +2181,7 @@ $info-light: var(--color-primary-light);
     width: 40px;
     height: 40px;
     flex-shrink: 0;
-    border-radius: 6px;
+    border-radius: var(--radius-base);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2256,7 +2256,7 @@ $info-light: var(--color-primary-light);
     display: inline-flex;
     align-items: center;
     padding: 1px 6px;
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
     font-size: 11px;
     font-weight: 500;
     white-space: nowrap;
@@ -2301,7 +2301,7 @@ $info-light: var(--color-primary-light);
   height: 28px;
   border: 1px solid $border;
   background: $bg-surface;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   cursor: pointer;
   font-size: 11px;
   color: $text-secondary;
@@ -2362,7 +2362,7 @@ $info-light: var(--color-primary-light);
   height: 28px;
   border: 1px solid $border;
   background: $bg-surface;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -2409,7 +2409,7 @@ $info-light: var(--color-primary-light);
 .kb-commands-table {
   overflow-x: auto;
   border: 1px solid $border;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 
   table {
     width: 100%;
@@ -2467,7 +2467,7 @@ $info-light: var(--color-primary-light);
     background: var(--color-bg-base);
     color: $text-primary;
     padding: 4px 8px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     display: inline-block;
     max-width: 100%;
     overflow: hidden;
@@ -2489,7 +2489,7 @@ $info-light: var(--color-primary-light);
     display: inline-flex;
     align-items: center;
     padding: 1px 6px;
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
     font-size: 11px;
     white-space: nowrap;
 
@@ -2515,7 +2515,7 @@ $info-light: var(--color-primary-light);
     width: 100%;
     padding: 6px 8px;
     border: 1px solid #FCD34D;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     font-size: 12px;
     outline: none;
     box-sizing: border-box;
@@ -2530,7 +2530,7 @@ $info-light: var(--color-primary-light);
     width: 100%;
     padding: 6px 8px;
     border: 1px solid #FCD34D;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     font-size: 12px;
     outline: none;
     resize: vertical;
@@ -2549,7 +2549,7 @@ $info-light: var(--color-primary-light);
     border: none;
     cursor: pointer;
     padding: 4px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     color: $text-secondary;
     display: inline-flex;
     align-items: center;
@@ -2595,7 +2595,7 @@ $info-light: var(--color-primary-light);
   display: inline-flex;
   padding: 2px 10px;
   background: $bg-hover;
-  border-radius: 9999px;
+  border-radius: var(--radius-full);
   font-size: 11px;
   color: $text-secondary;
 }
@@ -2627,7 +2627,7 @@ $info-light: var(--color-primary-light);
   code {
     background: $bg-hover;
     padding: 2px 6px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     font-family: Consolas, Monaco, monospace;
     font-size: 13px;
   }
@@ -2635,7 +2635,7 @@ $info-light: var(--color-primary-light);
   pre {
     background: $bg-hover;
     padding: 12px 16px;
-    border-radius: 6px;
+    border-radius: var(--radius-base);
     overflow-x: auto;
     margin-bottom: 12px;
 
@@ -2661,7 +2661,7 @@ $info-light: var(--color-primary-light);
   z-index: 2000;
   background: $bg-surface;
   border: 1px solid $border;
-  border-radius: 6px;
+  border-radius: var(--radius-base);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   padding: 4px 0;
   min-width: 120px;
@@ -2763,14 +2763,14 @@ $info-light: var(--color-primary-light);
 
 /* AI 智能问答 */
 .kb-btn-ai {
-  color: #7c3aed;
+  color: var(--color-ai);
   border-color: #c4b5fd;
   background: rgba(124, 58, 237, 0.06);
 
   &:hover {
     color: #fff;
-    background: #7c3aed;
-    border-color: #7c3aed;
+    background: var(--color-ai);
+    border-color: var(--color-ai);
   }
 }
 
@@ -2804,7 +2804,7 @@ $info-light: var(--color-primary-light);
   width: 24px;
   height: 24px;
   border: 3px solid var(--color-border-light, #e5e7eb);
-  border-top-color: #7c3aed;
+  border-top-color: var(--color-ai);
   border-radius: 50%;
   animation: ai-qa-spin 0.8s linear infinite;
 }
@@ -2817,7 +2817,7 @@ $info-light: var(--color-primary-light);
 
 .ai-qa-answer {
   border: 1px solid var(--color-border-light, #f0f0f3);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 14px 16px;
   background: var(--color-bg-page, #f9fafb);
   max-height: 420px;
@@ -2850,9 +2850,9 @@ $info-light: var(--color-primary-light);
 .ai-qa-doc-tag {
   font-size: 12px;
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: rgba(124, 58, 237, 0.08);
-  color: #7c3aed;
+  color: var(--color-ai);
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2875,13 +2875,13 @@ $info-light: var(--color-primary-light);
 // AI 问答深色主题覆盖
 :root.dark {
   .kb-btn-ai {
-    color: #a78bfa;
+    color: var(--color-ai-soft);
     border-color: #6d28d9;
     background: rgba(124, 58, 237, 0.12);
 
     &:hover {
       color: #fff;
-      background: #7c3aed;
+      background: var(--color-ai);
     }
   }
 
