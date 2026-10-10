@@ -35,6 +35,7 @@ import {
   extractTextFromMultipleImages,
   isOCREnabled,
   getSharedWorker,
+  withOcrLock,
 } from '../services/ocr.service';
 import { extractTextFromFile } from '../utils/text-extract';
 import { aiFetch, isValidProxyMode, parseProxyUrl, syncAiProxyFromDb } from '../services/ai-net.service';
@@ -87,6 +88,13 @@ const PROGRESS_EXPIRE_MS = 5 * 60 * 1000; // 5 分钟过期
 let batchIssueCancelRequested = false;
 let batchIssueRunning = false;
 let chatAbortController: AbortController | null = null;
+// 单条/批量 AI 分析的取消控制器。UI 关闭对话框时只藏界面，底层请求仍在云端跑，
+// 必须让用户能主动中断（选错文件 / 模型响应过慢等都该能中止）。
+let singleAnalyzeAbortController: AbortController | null = null;
+let batchScreenshotsAbortController: AbortController | null = null;
+let issueDescriptionAbortController: AbortController | null = null;
+let issueAbortController: AbortController | null = null;
+let batchIssueAbortController: AbortController | null = null;
 
 function sanitize<T>(obj: T): any {
   try {
@@ -379,12 +387,6 @@ async function desensitizeImage(imagePath: string): Promise<string> {
     const width = meta.width || 0;
     const height = meta.height || 0;
 
-    const worker = await getSharedWorker('chi_sim+eng');
-    if (!worker) {
-      log.warn(`[图片脱敏] OCR worker 不可用，发送原图`);
-      return imageBuffer.toString('base64');
-    }
-
     // 取顶部40%区域，提升清晰度后OCR识别IP地址
     const cropHeight = Math.max(1, Math.round(height * 0.4));
     const croppedBuffer = await sharp(imageBuffer)
@@ -393,7 +395,19 @@ async function desensitizeImage(imagePath: string): Promise<string> {
       .sharpen()
       .toBuffer();
 
-    const { data } = await worker.recognize(croppedBuffer);
+    // 与 ocr.service 共用同一把串行锁：tesseract Worker 是单例，
+    // 并发 recognize 会让不同图片的识别结果互相串扰
+    const data = await withOcrLock(async () => {
+      const worker = await getSharedWorker('chi_sim+eng');
+      if (!worker) return null;
+      const res = await worker.recognize(croppedBuffer);
+      return res.data;
+    });
+
+    if (!data) {
+      log.warn(`[图片脱敏] OCR worker 不可用，发送原图`);
+      return imageBuffer.toString('base64');
+    }
 
     const ipPattern = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/;
     const maskRects: { x: number; y: number; w: number; h: number }[] = [];
@@ -794,6 +808,133 @@ function normalizeConfig(raw: any): any {
 
 
 
+/**
+ * 解析云端可用的模型端点列表（供除 ai:chat 外的其它 AI 功能做故障转移）。
+ * 规则与 callWithFailover 保持一致：过滤禁用 → 激活模型优先 → 其余按 priority 升序。
+ * 本地模式或云端无可用模型时返回空数组（调用方走单端点兜底逻辑）。
+ */
+async function resolveCloudEndpoints(config: any): Promise<Array<{ id: string; name: string; model: string; apiBase: string; apiKey: string }>> {
+  const db = getDb();
+  const activeModelId = config?.activeModelId || null;
+  const cloudModels = await db.select().from(schema.aiCloudModels)
+    .where(eq(schema.aiCloudModels.configId, 'default'))
+    .orderBy(schema.aiCloudModels.priority)
+    .all();
+  const enabled = cloudModels.filter(m => m.enabled === 1);
+  if (enabled.length === 0) return [];
+
+  const order = [...enabled];
+  if (activeModelId) {
+    const idx = order.findIndex(m => m.id === activeModelId);
+    if (idx >= 0) {
+      const [active] = order.splice(idx, 1);
+      order.unshift(active);
+    }
+  }
+
+  return order
+    .map(m => {
+      const apiKey = m.apiKey ? decryptApiKey(m.apiKey) : '';
+      const apiBase = m.apiBase || '';
+      return apiKey && apiBase
+        ? { id: m.id, name: m.name || m.model, model: m.model, apiBase, apiKey }
+        : null;
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null);
+}
+
+/**
+ * 通用故障转移执行器：对候选端点逐个尝试，失败自动切换到下一个。
+ * - 本地模式：使用 config 中的 Ollama 单端点（不参与故障转移）
+ * - 云端模式：遍历 resolveCloudEndpoints 的模型列表
+ * - 云端但未配置模型：明确报错，引导用户在「云端模型列表」中添加
+ * build 回调接收每个端点的 model/apiBase/apiKey，返回请求体。
+ * externalSignal：可选的外部取消信号。传入后，请求被外部中断（用户取消）时立即中止，
+ * 不再等超时；故障转移循环也会在收到取消后立即停止，而不是尝试下一个端点。
+ */
+export async function runWithFailover(
+  config: any,
+  mode: string,
+  options: {
+    build: (ep: { model: string; apiBase: string; apiKey: string; name: string }) => {
+      body: string;
+      timeoutMs: number;
+    };
+  },
+  externalSignal?: AbortSignal,
+): Promise<{ content: string; modelName?: string }> {
+  const { build } = options;
+
+  async function attempt(ep: { model: string; apiBase: string; apiKey: string; name: string }): Promise<{ content: string; modelName?: string }> {
+    const { body, timeoutMs } = build(ep);
+    const apiUrl = ensureApiUrl(ep.apiBase, 'cloud');
+    if (!apiUrl) throw new Error(`模型 ${ep.name} API 地址无效`);
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(new Error('请求超时')), timeoutMs || 30000);
+    // 外部取消与内部超时合并：任一方触发都中止本次请求。
+    // 必须在 timer 之前监听，避免外部取消瞬间晚于响应返回造成误报。
+    const onExternalAbort = () => ac.abort(new Error('用户已取消'));
+    if (externalSignal) {
+      if (externalSignal.aborted) onExternalAbort();
+      else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+    try {
+      const response = await aiFetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ep.apiKey}` },
+        body,
+        signal: ac.signal,
+      });
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        throw new Error(`API请求失败(${response.status}): ${errorBody}`);
+      }
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content || '';
+      if (!content) throw new Error('模型返回内容为空');
+      return { content, modelName: ep.name };
+    } finally {
+      clearTimeout(timer);
+      externalSignal?.removeEventListener('abort', onExternalAbort);
+    }
+  }
+
+  // 本地模式：单端点（按所选本地引擎：Ollama / Herdsman）
+  if (mode === 'local') {
+    const ep = {
+      model: getLocalEngineModel(config),
+      apiBase: `${getLocalEngineUrl(config).replace(/\/+$/, '')}/v1`,
+      apiKey: 'ollama',
+      name: getLocalEngineModel(config) || '本地模型',
+    };
+    return attempt(ep);
+  }
+
+  // 云端模式：遍历模型列表做故障转移
+  const endpoints = await resolveCloudEndpoints(config);
+  if (endpoints.length === 0) {
+    throw new Error('尚未配置云端模型，请在 AI 设置的「云端模型列表」中添加模型');
+  }
+  let lastErr: any = null;
+  for (const ep of endpoints) {
+    // 已取消则直接中止，不再尝试下一个端点
+    if (externalSignal?.aborted) {
+      throw new Error('用户已取消');
+    }
+    try {
+      return await attempt(ep);
+    } catch (e: any) {
+      lastErr = e;
+      // 取消导致的失败不应触发故障转移：用户要停，不是求下个端点
+      if (externalSignal?.aborted) {
+        throw new Error('用户已取消');
+      }
+      log.warn(`[AI故障转移] 模型 ${ep.name} 失败: ${e.message}`);
+    }
+  }
+  throw new Error(`云端模型全部失败（共 ${endpoints.length} 个）。最近错误：${lastErr?.message || ''}`);
+}
+
 export function registerAIHandlers(): void {
   /**
    * 云端模型故障转移：按 priority 顺序依次尝试，全部失败才抛错。
@@ -965,114 +1106,6 @@ export function registerAIHandlers(): void {
     }
 
     throw new Error('未配置任何可用的 AI 模型');
-  }
-
-  /**
-   * 解析云端可用的模型端点列表（供除 ai:chat 外的其它 AI 功能做故障转移）。
-   * 规则与 callWithFailover 保持一致：过滤禁用 → 激活模型优先 → 其余按 priority 升序。
-   * 本地模式或云端无可用模型时返回空数组（调用方走单端点兜底逻辑）。
-   */
-  async function resolveCloudEndpoints(config: any): Promise<Array<{ id: string; name: string; model: string; apiBase: string; apiKey: string }>> {
-    const db = getDb();
-    const activeModelId = config?.activeModelId || null;
-    const cloudModels = await db.select().from(schema.aiCloudModels)
-      .where(eq(schema.aiCloudModels.configId, 'default'))
-      .orderBy(schema.aiCloudModels.priority)
-      .all();
-    const enabled = cloudModels.filter(m => m.enabled === 1);
-    if (enabled.length === 0) return [];
-
-    const order = [...enabled];
-    if (activeModelId) {
-      const idx = order.findIndex(m => m.id === activeModelId);
-      if (idx >= 0) {
-        const [active] = order.splice(idx, 1);
-        order.unshift(active);
-      }
-    }
-
-    return order
-      .map(m => {
-        const apiKey = m.apiKey ? decryptApiKey(m.apiKey) : '';
-        const apiBase = m.apiBase || '';
-        return apiKey && apiBase
-          ? { id: m.id, name: m.name || m.model, model: m.model, apiBase, apiKey }
-          : null;
-      })
-      .filter((x): x is NonNullable<typeof x> => x !== null);
-  }
-
-  /**
-   * 通用故障转移执行器：对候选端点逐个尝试，失败自动切换到下一个。
-   * - 本地模式：使用 config 中的 Ollama 单端点（不参与故障转移）
-   * - 云端模式：遍历 resolveCloudEndpoints 的模型列表
-   * - 云端但未配置模型：明确报错，引导用户在「云端模型列表」中添加
-   * build 回调接收每个端点的 model/apiBase/apiKey，返回请求体。
-   */
-  async function runWithFailover(
-    config: any,
-    mode: string,
-    options: {
-      build: (ep: { model: string; apiBase: string; apiKey: string; name: string }) => {
-        body: string;
-        timeoutMs: number;
-      };
-    },
-  ): Promise<{ content: string; modelName?: string }> {
-    const { build } = options;
-
-    async function attempt(ep: { model: string; apiBase: string; apiKey: string; name: string }): Promise<{ content: string; modelName?: string }> {
-      const { body, timeoutMs } = build(ep);
-      const apiUrl = ensureApiUrl(ep.apiBase, 'cloud');
-      if (!apiUrl) throw new Error(`模型 ${ep.name} API 地址无效`);
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(new Error('请求超时')), timeoutMs || 30000);
-      try {
-        const response = await aiFetch(apiUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ep.apiKey}` },
-          body,
-          signal: ac.signal,
-        });
-        if (!response.ok) {
-          const errorBody = await response.text().catch(() => '');
-          throw new Error(`API请求失败(${response.status}): ${errorBody}`);
-        }
-        const data = await response.json();
-        const content = data.choices?.[0]?.message?.content || '';
-        if (!content) throw new Error('模型返回内容为空');
-        return { content, modelName: ep.name };
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-
-    // 本地模式：单端点（按所选本地引擎：Ollama / Herdsman）
-    if (mode === 'local') {
-      const ep = {
-        model: getLocalEngineModel(config),
-        apiBase: `${getLocalEngineUrl(config).replace(/\/+$/, '')}/v1`,
-        apiKey: 'ollama',
-        name: getLocalEngineModel(config) || '本地模型',
-      };
-      return attempt(ep);
-    }
-
-    // 云端模式：遍历模型列表做故障转移
-    const endpoints = await resolveCloudEndpoints(config);
-    if (endpoints.length === 0) {
-      throw new Error('尚未配置云端模型，请在 AI 设置的「云端模型列表」中添加模型');
-    }
-    let lastErr: any = null;
-    for (const ep of endpoints) {
-      try {
-        return await attempt(ep);
-      } catch (e: any) {
-        lastErr = e;
-        log.warn(`[AI故障转移] 模型 ${ep.name} 失败: ${e.message}`);
-      }
-    }
-    throw new Error(`云端模型全部失败（共 ${endpoints.length} 个）。最近错误：${lastErr?.message || ''}`);
   }
 
   ipcMain.handle('ai:getConfig', async (event) =>
@@ -1554,6 +1587,46 @@ export function registerAIHandlers(): void {
     return sanitize({ success: true, data: { canceled: false } });
   });
 
+  // 主动中断当前正在进行的单条 AI 分析。UI 关闭对话框后调用，立即中止云端请求。
+  ipcMain.handle('ai:cancelSingleAnalysis', async () => {
+    if (singleAnalyzeAbortController) {
+      singleAnalyzeAbortController.abort();
+      singleAnalyzeAbortController = null;
+      return sanitize({ success: true, data: { canceled: true } });
+    }
+    return sanitize({ success: true, data: { canceled: false } });
+  });
+
+  // 主动中断当前正在进行的批量 AI 分析。
+  ipcMain.handle('ai:cancelBatchScreenshots', async () => {
+    if (batchScreenshotsAbortController) {
+      batchScreenshotsAbortController.abort();
+      batchScreenshotsAbortController = null;
+      return sanitize({ success: true, data: { canceled: true } });
+    }
+    return sanitize({ success: true, data: { canceled: false } });
+  });
+
+  // 主动中断当前正在进行的「问题描述」AI 分析（单条或批量内的一条）。
+  ipcMain.handle('ai:cancelIssueDescription', async () => {
+    if (issueDescriptionAbortController) {
+      issueDescriptionAbortController.abort();
+      issueDescriptionAbortController = null;
+      return sanitize({ success: true, data: { canceled: true } });
+    }
+    return sanitize({ success: true, data: { canceled: false } });
+  });
+
+  // 主动中断当前正在进行的「整改建议」单条 AI 分析。
+  ipcMain.handle('ai:cancelIssue', async () => {
+    if (issueAbortController) {
+      issueAbortController.abort();
+      issueAbortController = null;
+      return sanitize({ success: true, data: { canceled: true } });
+    }
+    return sanitize({ success: true, data: { canceled: false } });
+  });
+
   ipcMain.handle('ai:analyzeAssessment', async (_event, rawParams: any) => {
     assertTrusted(_event);
     const params = sanitize(rawParams) as {
@@ -1671,12 +1744,19 @@ export function registerAIHandlers(): void {
       const dynamicTimeout = calculateTimeout(1, screenshotCount, totalImageSizeKB, privacyMode);
 
       // 使用云端模型列表做故障转移（失败自动切换下一模型）
-      const runResult = await runWithFailover(config, mode, {
-        build: (ep) => ({
-          body: JSON.stringify({ model: ep.model, messages, temperature }),
-          timeoutMs: dynamicTimeout,
-        }),
-      });
+      const controller = new AbortController();
+      singleAnalyzeAbortController = controller;
+      let runResult: any;
+      try {
+        runResult = await runWithFailover(config, mode, {
+          build: (ep) => ({
+            body: JSON.stringify({ model: ep.model, messages, temperature }),
+            timeoutMs: dynamicTimeout,
+          }),
+        }, controller.signal);
+      } finally {
+        singleAnalyzeAbortController = null;
+      }
       const content = runResult.content;
 
       try {
@@ -1895,15 +1975,18 @@ export function registerAIHandlers(): void {
 
       // 使用云端模型列表做故障转移（失败自动切换下一模型）
       let runResult: any;
+      const controller = new AbortController();
+      batchScreenshotsAbortController = controller;
       try {
         runResult = await runWithFailover(config, mode, {
           build: (ep) => ({
             body: JSON.stringify({ model: ep.model, messages, temperature }),
             timeoutMs: dynamicTimeout,
           }),
-        });
+        }, controller.signal);
       } finally {
         stopHeartbeat();
+        batchScreenshotsAbortController = null;
       }
       const content = runResult.content;
 
@@ -1984,20 +2067,28 @@ export function registerAIHandlers(): void {
         '问题描述': issueDescription,
       });
 
-      // 使用云端模型列表做故障转移（失败自动切换下一模型）
-      const runResult = await runWithFailover(config, mode, {
-        build: (ep) => ({
-          body: JSON.stringify({
-            model: ep.model,
-            messages: [
-              { role: 'system', content: '你是一名专业的等级保护测评师，擅长撰写连贯的安全整改建议描述。请以纯文本段落形式返回整改建议，不需要JSON格式。' },
-              { role: 'user', content: systemPrompt },
-            ],
-            temperature,
+      // 使用云端模型列表做故障转移（失败自动切换下一模型）。
+      // 外层 AbortController 容许用户在单条分析中取消时立即中断底层云端请求，而不是干等超时。
+      const controller = new AbortController();
+      issueAbortController = controller;
+      let runResult: any;
+      try {
+        runResult = await runWithFailover(config, mode, {
+          build: (ep) => ({
+            body: JSON.stringify({
+              model: ep.model,
+              messages: [
+                { role: 'system', content: '你是一名专业的等级保护测评师，擅长撰写连贯的安全整改建议描述。请以纯文本段落形式返回整改建议，不需要JSON格式。' },
+                { role: 'user', content: systemPrompt },
+              ],
+              temperature,
+            }),
+            timeoutMs: 60000,
           }),
-          timeoutMs: 60000,
-        }),
-      });
+        }, controller.signal);
+      } finally {
+        issueAbortController = null;
+      }
       let content = runResult.content;
       // 移除所有前导换行符和回车符
       content = content.replace(/^[\r\n]+/, '').trim();
@@ -2077,20 +2168,28 @@ export function registerAIHandlers(): void {
         '问题描述': issueDescription,
       });
 
-      // 使用云端模型列表做故障转移（失败自动切换下一模型）
-      const runResult = await runWithFailover(config, mode, {
-        build: (ep) => ({
-          body: JSON.stringify({
-            model: ep.model,
-            messages: [
-              { role: 'system', content: '你是一名专业的等级保护测评师，擅长从问题信息中提炼核心安全问题和风险描述。' },
-              { role: 'user', content: systemPrompt },
-            ],
-            temperature,
+      // 使用云端模型列表做故障转移（失败自动切换下一模型）。
+      // 外层 AbortController 容许用户取消时立即中断底层云端请求，而不是干等超时。
+      const controller = new AbortController();
+      issueDescriptionAbortController = controller;
+      let runResult: any;
+      try {
+        runResult = await runWithFailover(config, mode, {
+          build: (ep) => ({
+            body: JSON.stringify({
+              model: ep.model,
+              messages: [
+                { role: 'system', content: '你是一名专业的等级保护测评师，擅长从问题信息中提炼核心安全问题和风险描述。' },
+                { role: 'user', content: systemPrompt },
+              ],
+              temperature,
+            }),
+            timeoutMs: 60000,
           }),
-          timeoutMs: 60000,
-        }),
-      });
+        }, controller.signal);
+      } finally {
+        issueDescriptionAbortController = null;
+      }
       let content = runResult.content;
       // 移除所有前导换行符和回车符
       content = content.replace(/^[\r\n]+/, '').trim().replace(/^["'"']|["'"']$/g, '');
@@ -2169,6 +2268,9 @@ export function registerAIHandlers(): void {
       let failCount = 0;
       batchIssueCancelRequested = false;
       batchIssueRunning = true;
+      // 批量取消控制器：把 signal 贯穿到每条 runWithFailover，用户取消时已发出那条也能立即中断。
+      const controller = new AbortController();
+      batchIssueAbortController = controller;
 
       for (let i = 0; i < params.issues.length; i++) {
         if (batchIssueCancelRequested) {
@@ -2203,7 +2305,8 @@ export function registerAIHandlers(): void {
             '问题描述': issueDescription,
           });
 
-          // 使用云端模型列表做故障转移（失败自动切换下一模型）
+          // 使用云端模型列表做故障转移（失败自动切换下一模型）。
+          // 传入 controller.signal：用户取消时正在跑的这条也能立即 abort，而不是跑完。
           const runResult = await runWithFailover(config, mode, {
             build: (ep) => ({
               body: JSON.stringify({
@@ -2216,7 +2319,7 @@ export function registerAIHandlers(): void {
               }),
               timeoutMs: 60000,
             }),
-          });
+          }, controller.signal);
           // 移除所有前导换行符和回车符
           const content = runResult.content.replace(/^[\r\n]+/, '').trim();
           results.push({ issueId: issue.issueId, suggestion: content, success: true });
@@ -2262,15 +2365,20 @@ export function registerAIHandlers(): void {
     } finally {
       batchIssueCancelRequested = false;
       batchIssueRunning = false;
+      batchIssueAbortController = null;
     }
   });
 
-  // 中止批量问题分析。只置标志位，由分析循环在每条之间检查，
-  // 已发出的单条请求仍会跑完（避免半截写入），但不会继续下一条。
+  // 中止批量问题分析。置标志位让循环停在下一处检查点，同时 abort 当前正在发出那条，
+  // 使用户取消时立即中断底层云端请求（不再等这条跑完）。
   ipcMain.handle('ai:cancelBatchIssueAnalysis', async (_event) => {
     assertTrusted(_event);
     if (!batchIssueRunning) {
       return sanitize({ success: true, data: { canceled: false } });
+    }
+    if (batchIssueAbortController) {
+      batchIssueAbortController.abort();
+      batchIssueAbortController = null;
     }
     batchIssueCancelRequested = true;
     log.info('[ai:cancelBatchIssueAnalysis] 已请求中止批量分析');

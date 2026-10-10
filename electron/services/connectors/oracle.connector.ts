@@ -1,4 +1,3 @@
-import oracledb from 'oracledb';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
 import { logger as log } from '../../utils/logger';
@@ -13,12 +12,28 @@ import {
   isTlsHandshakeError,
 } from './db.util';
 
+/**
+ * oracledb 懒加载：见 ssh.connector.ts 的同名说明。
+ * oracledb 是全部依赖里最重的一个（含原生二进制），绝大多数会话根本不采集 Oracle，
+ * 顶层静态 import 会把它在启动时无条件载进内存。
+ */
+let oracledbLib: typeof import('oracledb') | null = null;
+async function loadOracledb(): Promise<typeof import('oracledb')> {
+  if (!oracledbLib) {
+    const mod: any = await import('oracledb');
+    // CJS 互操作：见 ssh.connector.ts 的同名说明
+    oracledbLib = (mod?.default && mod.default.getConnection ? mod.default : mod) as typeof import('oracledb');
+  }
+  return oracledbLib;
+}
+
 export class OracleConnector implements IConnector {
-  private conn: oracledb.Connection | null = null;
+  private conn: import('oracledb').Connection | null = null;
   private commandTimeoutMs = 15000;
 
   async connect(profile: ConnectionProfile): Promise<void> {
     if (this.conn) return;
+    const oracledb = await loadOracledb();
     const cfg = parseExtraConfig(profile.extraConfig);
     const password = decryptSecret(profile.passwordEncrypted);
     this.commandTimeoutMs = getCommandTimeout(profile);

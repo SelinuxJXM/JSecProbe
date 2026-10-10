@@ -78,7 +78,8 @@
 
     <template #footer>
       <div class="dialog-footer">
-        <el-button @click="singleDialogVisible = false">取消</el-button>
+        <el-button @click="singleDialogVisible = false" :disabled="singleLoading">取消</el-button>
+        <el-button v-if="singleLoading" @click="cancelSingleAnalysis" :loading="singleCanceling">中止分析</el-button>
         <el-button type="primary" :disabled="singleLoading || !singleResult" @click="applySingleResult">
           确认填入整改建议
         </el-button>
@@ -199,6 +200,7 @@ import { ref, computed, onBeforeUnmount } from 'vue';
 import { ElMessage } from 'element-plus';
 import { MagicStick } from '@element-plus/icons-vue';
 import type { Issue } from '../../../../shared/types';
+import { formatDuration } from '@/utils/format';
 
 const props = defineProps<{
   getIssueDomainId: (domainName: string) => string;
@@ -229,6 +231,23 @@ const singleStepTexts = [
 ];
 
 let singleElapsedTimer: ReturnType<typeof setInterval> | null = null;
+// 单条分析的用户主动取消标记：取消不等于失败，置位后不弹错误、静默收尾
+let singleCancelRequested = false;
+const singleCanceling = ref(false);
+
+// 主动中止单条「整改建议」分析：中断主进程底层云端请求，取消不算失败。
+async function cancelSingleAnalysis() {
+  if (!window.api) return;
+  singleCanceling.value = true;
+  singleCancelRequested = true;
+  try {
+    await window.api.ai.cancelIssue();
+  } catch (err: any) {
+    console.warn('[issue-ai-analysis.cancelSingleAnalysis] 中止请求失败(可忽略):', err.message);
+  } finally {
+    singleCanceling.value = false;
+  }
+}
 
 // ==================== 批量分析状态 ====================
 const batchProgress = ref({
@@ -265,10 +284,7 @@ let batchTimerInterval: ReturnType<typeof setInterval> | null = null;
 const batchPercentDisplay = computed(() => `${batchProgress.value.percent}%`);
 
 function formatTime(seconds: number): string {
-  if (seconds < 60) return `${seconds}秒`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins}分${secs}秒`;
+  return formatDuration(seconds);
 }
 
 // ==================== 单条分析 ====================
@@ -280,7 +296,6 @@ async function analyzeIssue(issue: Issue) {
     return;
   }
 
-  console.log('[issue-ai-analysis.analyzeIssue] 开始分析, issueId:', issue.id, 'issueTitle:', issue.issueTitle);
 
   currentIssue.value = issue;
   singleDialogVisible.value = true;
@@ -323,18 +338,17 @@ async function analyzeIssue(issue: Issue) {
       projectId: props.projectId,
       itemId: (issue as any).itemId,
     };
-    console.log('[issue-ai-analysis.analyzeIssue] 调用IPC, params:', JSON.stringify(params));
 
     const res = await window.api.ai.analyzeIssue(params);
 
-    console.log('[issue-ai-analysis.analyzeIssue] IPC返回, success:', res.success, 'hasData:', !!res.data);
 
     singleStep.value = 5;
     singleLoadingText.value = singleStepTexts[4];
 
     if (res.success && res.data) {
       singleResult.value = res.data.content;
-      console.log('[issue-ai-analysis.analyzeIssue] AI返回内容长度:', res.data.content.length);
+    } else if (singleCancelRequested) {
+      // 取消不等于失败：静默复位，不弹"分析失败"
     } else {
       singleResult.value = null;
       const errMsg = res.error?.message || 'AI分析失败，请稍后重试';
@@ -343,15 +357,22 @@ async function analyzeIssue(issue: Issue) {
     }
   } catch (err: any) {
     console.error('[issue-ai-analysis.analyzeIssue] IPC调用异常:', err.message);
-    singleResult.value = null;
-    ElMessage.error('AI分析失败：' + (err.message || '未知错误'));
+    if (!singleCancelRequested) {
+      singleResult.value = null;
+      ElMessage.error('AI分析失败：' + (err.message || '未知错误'));
+    }
   } finally {
     clearInterval(stepInterval);
     if (singleElapsedTimer) {
       clearInterval(singleElapsedTimer);
       singleElapsedTimer = null;
     }
+    if (singleCancelRequested) {
+      singleDialogVisible.value = false;
+      singleResult.value = null;
+    }
     singleLoading.value = false;
+    singleCancelRequested = false;
   }
 }
 
@@ -384,7 +405,6 @@ async function batchAnalyzeIssues(issues: Issue[]) {
     return;
   }
 
-  console.log('[issue-ai-analysis.batchAnalyzeIssues] 开始批量分析, 问题总数:', issues.length);
 
   batchLoading.value = true;
   batchProgress.value = { visible: true, percent: 0, message: '准备中...', stage: 'init', current: 0, total: issues.length };
@@ -412,7 +432,6 @@ async function batchAnalyzeIssues(issues: Issue[]) {
 
   unsubscribeBatchProgress = window.api.ai.onBatchIssueProgress((data) => {
     batchProgress.value = { ...batchProgress.value, ...data };
-    console.log('[issue-ai-analysis.batchAnalyzeIssues] 进度更新:', JSON.stringify(data));
   });
 
   try {
@@ -431,11 +450,9 @@ async function batchAnalyzeIssues(issues: Issue[]) {
       // Phase 4：全局 projectId（批量时用于统一推导 standardId）
       projectId: props.projectId,
     };
-    console.log('[issue-ai-analysis.batchAnalyzeIssues] 调用IPC, 问题数:', params.issues.length);
 
     const res = await window.api.ai.batchAnalyzeIssues(params);
 
-    console.log('[issue-ai-analysis.batchAnalyzeIssues] IPC返回, success:', res.success, 'hasData:', !!res.data);
 
     if (res.success && res.data?.canceled) {
       // 用户中途中止：已完成的部分照常应用，未完成的保持原样
@@ -469,7 +486,6 @@ async function batchAnalyzeIssues(issues: Issue[]) {
           if (item) item.failed = true;
         }
       }
-      console.log('[issue-ai-analysis.batchAnalyzeIssues] 批量分析完成, 成功:', batchSuccessCount.value, '失败:', batchFailedCount.value);
       if (batchSuccessCount.value === 0 && batchFailedCount.value > 0) {
         ElMessage.error(`批量分析失败，共 ${batchFailedCount.value} 个问题未生成建议`);
       } else if (batchFailedCount.value > 0) {

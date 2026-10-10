@@ -361,6 +361,7 @@ import KnowledgePanel from './components/knowledge-panel.vue';
 import ImportExport from './components/import-export.vue';
 import AiAnalysis from './components/ai-analysis.vue';
 import PageHint from '@/components/PageHint/index.vue';
+import { useProjectNav } from '@/composables/useProjectNav';
 
 // 安全解析截图路径：数据库存储的 JSON 可能因历史脏数据损坏，解析失败时降级为空数组，避免中断整段加载逻辑
 function safeParseScreenshots(raw?: string | null): string[] {
@@ -376,6 +377,7 @@ function safeParseScreenshots(raw?: string | null): string[] {
 // ==================== 路由和基础状态 ====================
 const route = useRoute();
 const router = useRouter();
+const { goToPhase } = useProjectNav();
 
 // 返回：本页是项目子页面，退回项目列表。离开前先把当前对象的编辑落盘，
 // 否则最后一段 1.5s 防抖窗口内的修改会随路由切换一起丢掉。
@@ -794,7 +796,14 @@ async function selectGlobalDomain(domainId: string) {
   // 先把上一个对象的待保存编辑落盘：1.5 秒防抖里的 saveAllRows 读到的是
   // 切换后的 currentAsset / tableRows，不 flush 会把旧对象的填写内容丢失或串到新视图
   if (autoSave.hasUnsavedChanges?.value) {
-    await autoSave.saveAllRows();
+    const flushed = await autoSave.saveAllRows();
+    // 落库失败：脏标记仍保留（persist 里失败的行不会清脏）。此时若继续切换，
+    // 走到后面的 markClean() 会把脏标记无条件清空——改动既没进库又被抹掉，直接静默丢数据。
+    // 必须阻断切换，让用户先重试保存。
+    if (!flushed && autoSave.hasUnsavedChanges?.value) {
+      ElMessage.error('存在未保存的修改且自动保存失败，改动已保留，请重试保存后再切换');
+      return;
+    }
   }
   currentAsset.value = null;
   currentDomainId.value = domainId;
@@ -808,6 +817,8 @@ async function selectGlobalDomain(domainId: string) {
 
     const itemsRes = await window.api.assessment.getItems(projectStandardId, domainId, projectLevel, extensionTypes);
     if (!itemsRes.success || !itemsRes.data) {
+      // 表格作废：脏标记随旧行一起失效（进入此处前的编辑已在调用方 flush 过）
+      autoSave.markClean();
       tableRows.value = [];
       return;
     }
@@ -836,6 +847,8 @@ async function selectGlobalDomain(domainId: string) {
       'untested': '',
     };
 
+    // 整表重建前作废旧脏标记：新行的 key 与旧行无关，留着会拿旧 key 去写新行
+    autoSave.markClean();
     tableRows.value = items.map((item: any, index: number) => {
       const itemLabel = String.fromCharCode(97 + index) + ')';
 
@@ -889,7 +902,13 @@ async function selectGlobalDomain(domainId: string) {
 async function selectAsset(asset: any) {
   // 同上：切换测评对象前先把当前对象的编辑保存掉，避免丢失/串数据
   if (autoSave.hasUnsavedChanges?.value) {
-    await autoSave.saveAllRows();
+    const flushed = await autoSave.saveAllRows();
+    // 落库失败：脏标记仍保留。若继续切换，后面的 markClean() 会无条件清空脏标记，
+    // 改动既没进库又被抹掉——静默丢数据。阻断切换，让用户先重试保存。
+    if (!flushed && autoSave.hasUnsavedChanges?.value) {
+      ElMessage.error('存在未保存的修改且自动保存失败，改动已保留，请重试保存后再切换');
+      return;
+    }
   }
   currentAsset.value = asset;
 
@@ -904,6 +923,8 @@ async function selectAsset(asset: any) {
 
     const itemsRes = await window.api.assessment.getItems(projectStandardId, domainId, projectLevel, extensionTypes);
     if (!itemsRes.success || !itemsRes.data) {
+      // 表格作废：脏标记随旧行一起失效（进入此处前的编辑已在调用方 flush 过）
+      autoSave.markClean();
       tableRows.value = [];
       return;
     }
@@ -936,6 +957,8 @@ async function selectAsset(asset: any) {
       'test': '测试',
     };
 
+    // 同上：切换测评对象后旧脏标记必须作废
+    autoSave.markClean();
     tableRows.value = items.map((item: any, index: number) => {
       const record = recordMap.get(item.id);
       const itemLabel = String.fromCharCode(97 + index) + ')';
@@ -1247,12 +1270,8 @@ async function loadAssetTree() {
 }
 
 // 跳转到其他阶段
-function goToPhase(phase: string) {
-  const projectId = route.params.id as string;
-  if (projectId) {
-    router.push(`/projects/${projectId}/${phase}`);
-  }
-}
+// goToPhase 由 useProjectNav 提供（三处共用同一实现）。
+// goBack 仍在本页实现：离开现场核查前必须先落盘，不能简单 router.back()。
 
 // ==================== 生命周期钩子 ====================
 const handleKeyDown = (e: KeyboardEvent) => {
@@ -1370,7 +1389,9 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  autoSave.stopPeriodicSave();
+  // cleanup 而非 stopPeriodicSave：前者会先把防抖窗口内的编辑落盘再停定时器，
+  // 后者直接丢弃 —— 用户填完立刻切页（或换项目）时那一下编辑就没了
+  autoSave.cleanup();
   document.removeEventListener('keydown', handleKeyDown);
   window.removeEventListener('beforeunload', handleBeforeUnload);
   // 组件级定时器句柄（原实现挂在 window.__aiBatchPollTimer 上，多实例会互相覆盖）

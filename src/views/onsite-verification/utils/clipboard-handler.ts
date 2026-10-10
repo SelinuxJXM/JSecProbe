@@ -519,6 +519,3 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
     removeGlobalPasteHandler,
   };
 }
-
-// 导出类型
-export type ClipboardHandler = ReturnType<typeof createClipboardHandler>;

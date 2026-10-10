@@ -1,4 +1,3 @@
-import sql from 'mssql';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
 import { logger as log } from '../../utils/logger';
@@ -11,12 +10,24 @@ import {
   assertReadonlySql,
 } from './db.util';
 
+/** mssql 懒加载：见 ssh.connector.ts 的同名说明 */
+let mssqlLib: typeof import('mssql') | null = null;
+async function loadMssql(): Promise<typeof import('mssql')> {
+  if (!mssqlLib) {
+    const mod: any = await import('mssql');
+    // CJS 互操作：见 ssh.connector.ts 的同名说明
+    mssqlLib = (mod?.default && mod.default.ConnectionPool ? mod.default : mod) as typeof import('mssql');
+  }
+  return mssqlLib;
+}
+
 export class SqlServerConnector implements IConnector {
-  private pool: sql.ConnectionPool | null = null;
+  private pool: import('mssql').ConnectionPool | null = null;
   private commandTimeoutMs = 15000;
 
   async connect(profile: ConnectionProfile): Promise<void> {
     if (this.pool) return;
+    const sql = await loadMssql();
     const cfg = parseExtraConfig(profile.extraConfig);
     const password = decryptSecret(profile.passwordEncrypted);
     this.commandTimeoutMs = getCommandTimeout(profile);
@@ -30,7 +41,7 @@ export class SqlServerConnector implements IConnector {
     if (!encrypt) {
       log.warn(`[SQLServer] ${profile.host} 已显式关闭传输加密，凭据与查询结果将明文传输`);
     }
-    const config: sql.config = {
+    const config: import('mssql').config = {
       server: profile.host,
       port: profile.port || 1433,
       user: profile.username || undefined,

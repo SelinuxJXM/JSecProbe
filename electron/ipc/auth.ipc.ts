@@ -25,6 +25,41 @@ const GLOBAL_KEY = '__global__';
 const GLOBAL_MAX_ATTEMPTS = 20;
 const GLOBAL_LOCK_MINUTES = 15;
 
+/**
+ * 凭据解密的频控。
+ *
+ * `auth:decryptCredential` 必须在登录前可用（登录页回填"记住的密码"），无法加会话校验，
+ * 但它拿到任意密文都能解出明文，等于一个"万能解密口子"。
+ * 用频控兜底：正常交互下每分钟最多几次调用，被脚本化批量调用时直接拒绝。
+ * （来源合法性由 wrap 内的 requireAuth 保证，此处只防"脚本化滥用"与畸形入参。）
+ */
+const DECRYPT_RATE_WINDOW_MS = 60_000;
+const DECRYPT_RATE_LIMIT = 30;
+let decryptWindowStart = Date.now();
+let decryptCallCount = 0;
+
+/** 密文上限：凭据字段都很短，超长输入视为异常（Base64 后 8KB，明文约 6KB） */
+const MAX_ENCRYPTED_LEN = 8192;
+
+function assertDecryptAllowed(encrypted: unknown): string {
+  if (typeof encrypted !== 'string' || encrypted.length === 0) {
+    throw new Error('密文参数无效');
+  }
+  if (encrypted.length > MAX_ENCRYPTED_LEN || !/^[A-Za-z0-9+/=]+$/.test(encrypted)) {
+    throw new Error('密文格式无效');
+  }
+
+  const now = Date.now();
+  if (now - decryptWindowStart > DECRYPT_RATE_WINDOW_MS) {
+    decryptWindowStart = now;
+    decryptCallCount = 0;
+  }
+  if (++decryptCallCount > DECRYPT_RATE_LIMIT) {
+    throw new Error('凭据解密调用过于频繁，请稍后再试');
+  }
+  return encrypted;
+}
+
 function cleanupExpiredAttempts(): void {
   const now = Date.now();
   let changed = false;
@@ -254,12 +289,14 @@ export function registerAuthHandlers(): void {
   ipcMain.handle('auth:decryptCredential', wrap(async (_event, encrypted: string) => {
     const { safeStorage } = await import('electron');
     try {
-      const decrypted = await safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+      const safeCipher = assertDecryptAllowed(encrypted);
+      const decrypted = await safeStorage.decryptString(Buffer.from(safeCipher, 'base64'));
       return { success: true, decrypted };
     } catch (err: any) {
       return { success: false, error: err.message || '解密失败' };
     }
-    // 登录页回填"记住的密码"在登录前调用，必须放行会话校验（仍受 requireAuth 来源校验保护）
+    // 登录页回填"记住的密码"在登录前调用，无法加会话校验，
+    // 由 assertDecryptAllowed 的入参校验 + 频控兜底（origin 校验仍由 requireAuth 保证）
   }, { moduleName: 'auth', requireSession: false }));
 
   ipcMain.handle('auth:isEncryptionAvailable', wrap(async () => {

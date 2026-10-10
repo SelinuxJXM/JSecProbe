@@ -12,6 +12,7 @@ import {
   validateFsPath,
   assertOpenablePath,
   authorizeUserFiles,
+  validateUserSelectedDir,
 } from '../utils/path-resolver';
 import { createFullBackup, restoreFromZipBackup, restoreFromLegacyBackup, restoreFromZipBackupIncremental, previewZipBackup, listBackups, isBackupEncrypted } from '../services/backup.service';
 import { wrap } from '../utils/ipc-wrapper';
@@ -61,7 +62,9 @@ export function registerSystemHandlers(): void {
 
   ipcMain.handle('system:changeDataPath', wrap(async (_event, newPath: string) => {
     log.info(`开始更改数据存储路径，目标路径: ${newPath}`);
-    const resolvedPath = path.resolve(newPath);
+    // 先按「用户选择的目录」做白名单校验：原先完全不校验，
+    // 渲染层被挟持后可把整个数据目录迁进系统盘根/系统目录，绕过一切路径保护。
+    const resolvedPath = validateUserSelectedDir(newPath, '数据存储路径');
     log.info(`解析后的目标路径: ${resolvedPath}`);
 
     if (!fs.existsSync(resolvedPath)) {
@@ -92,7 +95,9 @@ export function registerSystemHandlers(): void {
     const oldDbPath = path.join(oldPath, 'data', 'mlps.db');
     log.info(`旧数据路径: ${oldPath}, 旧数据库: ${oldDbPath}`);
 
-    // 第一阶段：先复制到目标（不动旧目录），全部成功后才切换配置
+    // 第一阶段：先复制到目标（不动旧目录），全部成功后才切换配置。
+    // 用 fs.promises.cp 替代 cpSync：同步版在大目录迁移时会长时间独占主线程，
+    // 期间渲染进程请求全部排队、界面假死；异步版在每个文件之间让出事件循环。
     const preExistingDirs = new Set<string>(MIGRATE_DIRS.filter(d => fs.existsSync(path.join(resolvedPath, d))));
     try {
       closeDb();
@@ -101,7 +106,8 @@ export function registerSystemHandlers(): void {
         const destDir = path.join(resolvedPath, dir);
         if (fs.existsSync(srcDir)) {
           log.info(`迁移目录: ${srcDir} -> ${destDir}`);
-          fs.cpSync(srcDir, destDir, { recursive: true });
+          await fs.promises.cp(srcDir, destDir, { recursive: true });
+          log.info(`迁移目录完成: ${dir}`);
         } else if (dir === 'data') {
           fs.mkdirSync(destDir, { recursive: true });
         }
@@ -182,12 +188,18 @@ export function registerSystemHandlers(): void {
     let backupPath: string;
 
     if (customPath) {
+      // 自定义备份路径同样要走目录白名单：原先只 path.resolve 就 mkdir + 写入，
+      // 渲染层被挟持后可把整份备份（含用户口令哈希、AI Key、主机凭据）写到任意系统位置。
+      const dir = validateUserSelectedDir(path.dirname(path.resolve(customPath)), '备份目录');
       const resolvedPath = path.resolve(customPath);
-      const dir = path.dirname(resolvedPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
       backupPath = resolvedPath.endsWith('.zip') ? resolvedPath : resolvedPath + '.zip';
+      // 二次确认：拼上扩展名后仍必须落在已校验目录内，杜绝 ".zip" 前缀造成的目录切换
+      if (path.dirname(backupPath) !== dir) {
+        throw new Error('备份路径不合法');
+      }
     } else {
       const dataPath = await getAppDataPath();
       const backupDir = path.join(dataPath, 'backups');

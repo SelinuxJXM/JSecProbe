@@ -130,7 +130,7 @@
 import { ref, computed, watch, nextTick } from 'vue';
 import { ElMessage } from 'element-plus';
 import DOMPurify from 'dompurify';
-import { marked } from 'marked';
+import { renderMarkdown } from '@/utils/markdown';
 // pdf.js 的 worker 随构建产物一起打包（?url 让 Vite 产出资源并返回其 URL），
 // 这样在内网/离线环境下预览 PDF 也能正常工作，无需访问外部 CDN。
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
@@ -266,8 +266,7 @@ function renderContent() {
     loading.value = false;
     return;
   }
-  const html = marked.parse(raw, { async: false }) as string;
-  contentHtml.value = DOMPurify.sanitize(html);
+  contentHtml.value = renderMarkdown(raw);
   loading.value = false;
 }
 

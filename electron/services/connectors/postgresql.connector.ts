@@ -1,4 +1,4 @@
-import { Client } from 'pg';
+import type { Client as PgClient } from 'pg';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
 import { logger as log } from '../../utils/logger';
@@ -12,8 +12,20 @@ import {
   isTlsHandshakeError,
 } from './db.util';
 
+/** pg 懒加载：见 ssh.connector.ts 的同名说明 */
+let pgLib: typeof import('pg') | null = null;
+async function loadPg(): Promise<typeof import('pg')> {
+  if (!pgLib) {
+    const mod: any = await import('pg');
+    // CJS 互操作：见 ssh.connector.ts 的同名说明
+    pgLib = (mod?.default && mod.default.Client ? mod.default : mod) as typeof import('pg');
+  }
+  return pgLib;
+}
+
 /** 构造 pg 客户端（含 TLS 选项），失败时由调用方决定是否降级 */
-function createPgClient(profile: ConnectionProfile, cfg: ReturnType<typeof parseExtraConfig>, password: string, commandTimeoutMs: number, useTls: boolean): Client {
+async function createPgClient(profile: ConnectionProfile, cfg: ReturnType<typeof parseExtraConfig>, password: string, commandTimeoutMs: number, useTls: boolean): Promise<PgClient> {
+  const { Client } = await loadPg();
   const client = new Client({
     host: profile.host,
     port: profile.port || 5432,
@@ -35,7 +47,7 @@ function createPgClient(profile: ConnectionProfile, cfg: ReturnType<typeof parse
 }
 
 export class PostgresqlConnector implements IConnector {
-  private client: Client | null = null;
+  private client: PgClient | null = null;
   private commandTimeoutMs = 15000;
 
   async connect(profile: ConnectionProfile): Promise<void> {
@@ -44,13 +56,13 @@ export class PostgresqlConnector implements IConnector {
     const password = decryptSecret(profile.passwordEncrypted);
     this.commandTimeoutMs = getCommandTimeout(profile);
     const useTls = cfg.ssl === undefined ? true : !!cfg.ssl;
-    const client = createPgClient(profile, cfg, password, this.commandTimeoutMs, useTls);
+    const client = await createPgClient(profile, cfg, password, this.commandTimeoutMs, useTls);
     try {
       await client.connect();
     } catch (err) {
       if (useTls && isTlsHandshakeError(err)) {
         log.warn(`[PostgreSQL] ${profile.host} 不支持 TLS，已降级为明文连接（凭据与结果将以明文传输）`);
-        const fallback = createPgClient(profile, cfg, password, this.commandTimeoutMs, false);
+        const fallback = await createPgClient(profile, cfg, password, this.commandTimeoutMs, false);
         await fallback.connect();
         this.client = fallback;
         return;

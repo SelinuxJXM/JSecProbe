@@ -1,4 +1,3 @@
-import mysql from 'mysql2/promise';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
 import { logger as log } from '../../utils/logger';
@@ -13,12 +12,24 @@ import {
   isTlsHandshakeError,
 } from './db.util';
 
+/** mysql2 懒加载：见 ssh.connector.ts 的同名说明 */
+let mysql2Lib: typeof import('mysql2/promise') | null = null;
+async function loadMysql2(): Promise<typeof import('mysql2/promise')> {
+  if (!mysql2Lib) {
+    const mod: any = await import('mysql2/promise');
+    // CJS 互操作：见 ssh.connector.ts 的同名说明
+    mysql2Lib = (mod?.default && mod.default.createConnection ? mod.default : mod) as typeof import('mysql2/promise');
+  }
+  return mysql2Lib;
+}
+
 export class MySqlConnector implements IConnector {
-  private conn: mysql.Connection | null = null;
+  private conn: import('mysql2/promise').Connection | null = null;
   private commandTimeoutMs = 15000;
 
   async connect(profile: ConnectionProfile): Promise<void> {
     if (this.conn) return;
+    const mysql = await loadMysql2();
     const cfg = parseExtraConfig(profile.extraConfig);
     const password = decryptSecret(profile.passwordEncrypted);
     this.commandTimeoutMs = getCommandTimeout(profile);
@@ -35,7 +46,7 @@ export class MySqlConnector implements IConnector {
     // 服务端不支持 TLS 时自动降级并告警，避免内网老库直接连不上。
     const useTls = cfg.ssl === undefined ? true : !!cfg.ssl;
     const tlsConfig = useTls ? { ssl: { rejectUnauthorized: cfg.rejectUnauthorized === true } } : {};
-    let conn: mysql.Connection;
+    let conn: import('mysql2/promise').Connection;
     try {
       conn = await mysql.createConnection({ ...baseConfig, ...tlsConfig });
     } catch (err) {

@@ -38,23 +38,6 @@ function decryptWithPrefix(stored: string, prefix: string): string {
   }
 }
 
-/**
- * 判断一段已存储的凭据是否经过真实加密。
- * 返回 false 表示：旧版明文、或 safeStorage 不可用时的 base64「假加密」——二者均可直接还原。
- * 备份、导出、安全提示等场景应据此给出明确风险提示。
- */
-export function isSecretEncrypted(stored: string | null | undefined): boolean {
-  if (!stored) return false;
-  if (stored.startsWith(PLAIN_PREFIX)) return false;
-  if (!stored.startsWith(ENC_PREFIX) && !stored.startsWith(LEGACY_ENC_PREFIX)) return false;
-  return isEncryptionAvailable();
-}
-
-/** 当前环境是否具备真实加密能力（供 UI 提示与备份风险提示使用） */
-export function isSecretEncryptionAvailable(): boolean {
-  return isEncryptionAvailable();
-}
-
 export function encryptSecret(plain: string | null | undefined): string {
   if (!plain) return '';
   // 已加密（含历史 enc:v1: 前缀与 enc:plain: 明文标记）则原样返回，避免重复加密产生不可逆密文

@@ -258,13 +258,20 @@ async function importPresetRecordsBatch(assets: any[]): Promise<number> {
       const chunk = toInsert.slice(i, i + insertChunk);
       if (chunk.length > 0) await db.insert(schema.assessmentRecords).values(chunk);
     }
-    // 分片批量更新
+    // 分片批量更新。
+    // 原先"分片"只是把 200 条圈出来、里面仍逐条 UPDATE —— 每条各自开启并提交一次事务，
+    // 上千条测评记录就是上千次写事务，比批量插入那段慢一个数量级。
+    // drizzle 没有跨行多值的 UPDATE 语法糖，所以这里把每个分片包进一个事务：
+    // 同一个事务内的写入不再各自落盘，效果接近批量，且不用改写 SQL。
     const updateChunk = 200;
     for (let i = 0; i < toUpdate.length; i += updateChunk) {
       const chunk = toUpdate.slice(i, i + updateChunk);
-      for (const u of chunk) {
-        await db.update(schema.assessmentRecords).set(u.data).where(eq(schema.assessmentRecords.id, u.id));
-      }
+      if (chunk.length === 0) continue;
+      db.transaction((tx) => {
+        for (const u of chunk) {
+          tx.update(schema.assessmentRecords).set(u.data).where(eq(schema.assessmentRecords.id, u.id)).run();
+        }
+      });
     }
 
     log.info(`批量预置测评记录: 资产 ${assets.length} 个, 资产层面项 ${assetItems.length} + 全局项 ${globalItems.length} 个, 共 ${total} 条 (新增 ${toInsert.length}, 更新 ${toUpdate.length}), 标准 ${std.code || ctx.standardId}`);

@@ -241,6 +241,8 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue';
+import DOMPurify from 'dompurify';
+import { formatLocalDateTime } from '@/utils/format';
 import {
   Folder,
   Loading,
@@ -464,9 +466,8 @@ function statusText(status: string) {
   return map[status] || status;
 }
 
-function formatDate(date: string) {
-  if (!date) return '-';
-  return new Date(date).toLocaleString('zh-CN');
+function formatDate(date: string | number) {
+  return formatLocalDateTime(date, '-');
 }
 
 async function loadData() {
@@ -582,6 +583,13 @@ function getAlertAdvice(key: string): string {
   return found ? found.advice : '';
 }
 
+/**
+ * 把 AI 洞察文本转成高亮 HTML。
+ *
+ * 虽然这里已经手工转义了 < > &，只由本函数产出 <br>/<strong>，理论上注入不了，
+ * 但与项目其它 6 处 v-html 保持一致，统一交给 DOMPurify 兜底——
+ * 一旦后续有人往这里加"支持富文本"，转义顺序被打破也不会直接变成 XSS。
+ */
 function highlightInsight(text: string): string {
   if (!text) return '';
   let html = text
@@ -590,7 +598,7 @@ function highlightInsight(text: string): string {
     .replace(/>/g, '&gt;')
     .replace(/\n/g, '<br>');
   html = html.replace(/(项目总数|进行中|已完成|草稿|已归档|高风险|中风险|低风险|问题总数|整改|归档|趋势|停滞)/g, '<strong>$1</strong>');
-  return html;
+  return DOMPurify.sanitize(html, { ALLOWED_TAGS: ['strong', 'br'] });
 }
 
 onMounted(() => {

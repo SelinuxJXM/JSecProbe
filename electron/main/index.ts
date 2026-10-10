@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import log from 'electron-log';
 import { logger } from '../utils/logger';
 import { registerIpcHandlers } from './ipc';
-import { getSharedWorker, terminateOCRWorker } from '../services/ocr.service';
+import { terminateOCRWorker } from '../services/ocr.service';
 import { initDatabase, closeDb, walCheckpoint } from '../db';
 import { getDefaultBasePath } from './paths';
 import { AuthService } from '../services/auth.service';
@@ -27,18 +27,81 @@ function showErrorAndQuit(title: string, message: string, detail?: string) {
   app.quit();
 }
 
+/**
+ * 判断异常是否「致命」——即应用已无法继续运行，必须退出。
+ *
+ * 背景：此前 uncaughtException 一律弹窗杀死进程。而主进程里大量异常其实是环境暂态
+ * 问题（文件被占用、某个回调里的 fs 报错、IPC 通道已关闭），杀掉进程会让用户
+ * 正在填写的测评内容直接丢失，代价远大于异常本身。
+ * 现在只有明确不可恢复的情况才退出，其余仅记日志。
+ */
+function isFatalError(error: unknown): boolean {
+  const err = error as { code?: unknown; name?: unknown } | null;
+  const code = typeof err?.code === 'string' ? err.code : '';
+  const name = typeof err?.name === 'string' ? err.name : '';
+
+  // 资源耗尽：继续跑只会越错越多
+  if (name === 'OutOfMemoryError' || code === 'ERR_OUT_OF_MEMORY') return true;
+
+  // SQLite 只有「打不开/损坏/不是数据库」这类才算致命；SQLITE_BUSY 等属并发暂态
+  if (code.startsWith('SQLITE_')) {
+    return ['SQLITE_CANTOPEN', 'SQLITE_CORRUPT', 'SQLITE_NOTADB', 'SQLITE_NOMEM', 'SQLITE_IOERR'].includes(code);
+  }
+
+  // 句柄失效、IPC 通道关闭多为窗口/渲染进程已销毁的伴随现象，主进程本身仍然健康
+  if (code === 'ERR_INVALID_HANDLE' || code === 'ERR_IPC_CHANNEL_CLOSED') return false;
+
+  return false;
+}
+
+// 崩溃风暴保护：短窗口内反复抛异常说明应用真处于病态，这时才弹窗退出。
+// 单次非致命异常只记日志，绝不打扰正在填写数据的用户。
+const ERROR_BURST_LIMIT = 5;
+const ERROR_BURST_WINDOW_MS = 60_000;
+let errorBurstCount = 0;
+let errorBurstWindowStart = Date.now();
+
+/**
+ * 非致命异常的统一处理：记日志，并统计频率。
+ * 达到风暴阈值才真正退出，返回 true 表示已触发退出流程。
+ */
+function handleNonFatalError(kind: string, error: unknown): boolean {
+  const now = Date.now();
+  if (now - errorBurstWindowStart > ERROR_BURST_WINDOW_MS) {
+    errorBurstWindowStart = now;
+    errorBurstCount = 0;
+  }
+  errorBurstCount++;
+  log.error(`[${kind}] 非致命异常已记录（${errorBurstCount}/${ERROR_BURST_LIMIT}）:`, error);
+
+  if (errorBurstCount >= ERROR_BURST_LIMIT) {
+    const message = String((error as { message?: unknown })?.message ?? error ?? '未知异常');
+    showErrorAndQuit('应用异常', `短时间内反复出错（${kind}），为防止数据损坏已退出`, message);
+    return true;
+  }
+  return false;
+}
+
 // 判断未处理的 Promise 拒绝是否为网络抖动等暂态外部错误。
-// 此类错误不应杀死正在使用的应用，仅记录日志即可；未知类型的拒绝仍弹窗退出。
+// 此类错误不应杀死正在使用的应用，仅记录日志即可。
+// 注意：只认 error.code / error.name 这类结构化标识，不再对 message 做模糊关键词匹配 ——
+// 此前匹配 'network'/'certificate' 等宽泛词，容易把真实 bug 的消息一起吞掉。
 function isTransientRejection(reason: unknown): boolean {
-  const msg = String((reason as { message?: unknown })?.message ?? reason ?? '').toLowerCase();
-  const keywords = [
-    'net::', // Chromium 网络错误（如 net::ERR_CONNECTION_CLOSED）
-    'enotfound', 'econnrefused', 'econnreset', 'econnaborted', 'etimedout',
-    'eai_again', 'socket hang up', 'fetch failed', 'network',
-    'timed out', 'certificate', 'dns',
-    '超时', // 采集连接器超时（CommandTimeoutError）为中文消息，属暂态错误不应误杀应用
+  const err = reason as { code?: unknown; name?: unknown } | null;
+  const code = typeof err?.code === 'string' ? err.code.toUpperCase() : '';
+  const name = typeof err?.name === 'string' ? err.name : '';
+
+  const transientCodes = [
+    'ENOTFOUND', 'ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT',
+    'EAI_AGAIN', 'EPIPE', 'EADDRINUSE', 'ENOENT', 'EACCES', 'EBUSY',
+    'ERR_NETWORK', 'ERR_INTERNET_DISCONNECTED', 'ERR_INSUFFICIENT_RESOURCES',
   ];
-  return keywords.some((k) => msg.includes(k));
+  if (transientCodes.includes(code)) return true;
+  if (name === 'AbortError' || name === 'TimeoutError' || name === 'CommandTimeoutError') return true;
+
+  // Chromium 网络错误（net::ERR_xxx）本身不带 code，只能从 message 前缀判断
+  const msg = String((reason as { message?: unknown })?.message ?? reason ?? '');
+  return msg.includes('net::ERR_');
 }
 
 const USER_DATA_BASE = getDefaultBasePath();
@@ -94,14 +157,36 @@ function createWindow() {
   // 保持常开可确保页面切换动画始终能跑完，后台采集轮询等任务也不被降频。
   mainWindow.webContents.setBackgroundThrottling(false);
 
-  // 外链（http/https）用系统默认浏览器打开，阻止 Electron 内置窗口
+  // 外链（http/https）用系统默认浏览器打开，阻止 Electron 内置窗口。
+  // 非 http/https 一律 deny：原实现 `action: 'allow'` 会让 file:// 等 scheme 在应用窗口里
+  // 打开新的窗口/标签，且该窗口同样加载 preload，等于凭空多出一个能调 IPC 的可控页面。
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http://') || url.startsWith('https://')) {
       shell.openExternal(url);
       return { action: 'deny' };
     }
-    return { action: 'allow' };
+    log.warn('已阻止非 http(s) 的窗口打开请求:', url);
+    return { action: 'deny' };
   });
+
+  // 页面导航限制：本应用是 hash 路由的 SPA，加载完成后不应再发生任何文档级导航。
+  // 缺了这层拦截时，渲染层一个 <a href="file:///..."> 或意外跳转就能把窗口内容换成外部页面，
+  // 而该页面仍持有 preload 注入的全部 API。
+  const handleNavigation = (event: Electron.Event, url: string): void => {
+    // dev 态放行 Vite 开发服务器（HMR 整页刷新会触发一次真实导航）
+    if (process.env.NODE_ENV === 'development' && url.startsWith('http://localhost')) {
+      return;
+    }
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      event.preventDefault();
+      shell.openExternal(url);
+      return;
+    }
+    event.preventDefault();
+    log.warn('已阻止非预期的页面导航:', url);
+  };
+  mainWindow.webContents.on('will-navigate', handleNavigation);
+  mainWindow.webContents.on('will-redirect', handleNavigation);
 
   // 设置日志转发目标，将主进程日志推送到 DevTools Console
   logger.setTargetWindow(mainWindow.webContents);
@@ -112,16 +197,32 @@ function createWindow() {
     mainWindow.loadFile(join(__dirname, '../../dist-renderer/index.html'));
   }
 
-  if (app.isPackaged) {
-    mainWindow.webContents.session.webRequest.onHeadersReceived((details, cb) => {
-      cb({
-        responseHeaders: {
-          ...details.responseHeaders,
-          "Content-Security-Policy": ["default-src 'self'; img-src 'self' data: blob: file:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:*;"],
-        },
-      });
+  // CSP 无条件注入（原先只在打包态注入，dev 态等于裸奔，掩盖了 dev-only 的 XSS/注入问题）。
+  // dev 态必须额外放行 Vite：HMR 用 eval + WebSocket，样式靠内联注入。
+  const CSP_DIRECTIVES = [
+    "default-src 'self'",
+    // file: 用于预览本地截图/证据附件；blob: 用于图片预览与导出对象
+    "img-src 'self' data: blob: file:",
+    // Element Plus 主题变量 + 富文本内联样式依赖内联 <style>
+    "style-src 'self' 'unsafe-inline'",
+    "script-src 'self'" + (app.isPackaged ? '' : " 'unsafe-eval'"),
+    // 本地 Ollama / 开发服务器 / 自建 OPML 等均走 127.0.0.1 或 localhost
+    "connect-src 'self' http://127.0.0.1:* http://localhost:*" + (app.isPackaged ? '' : ' ws://localhost:* ws://127.0.0.1:*'),
+    // 禁止 <object>/<embed>/<applet> 插件与 <base> 劫持
+    "object-src 'none'",
+    "base-uri 'self'",
+    // 禁止被其它站点 iframe 嵌套（点击劫持）
+    "frame-ancestors 'none'",
+  ].join('; ');
+
+  mainWindow.webContents.session.webRequest.onHeadersReceived((details, cb) => {
+    cb({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [CSP_DIRECTIVES],
+      },
     });
-  }
+  });
 
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show();
@@ -241,9 +342,9 @@ app.whenReady().then(async () => {
     log.warn('启动时清理操作日志失败:', err);
   });
 
-  getSharedWorker('chi_sim+eng').catch((err) => {
-    log.warn('OCR Worker 预加载失败:', err);
-  });
+  // OCR Worker 改为懒加载：原实现在启动时无条件预加载（tesseract  worker 常驻几十~上百 MB
+  // 内存并拉起语言包），但多数会话根本用不到 OCR，白占启动时间与常驻内存。
+  // ocr.service / ai.ipc 在真正需要时会自行调用 getSharedWorker，首次调用多几百毫秒而已。
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -298,6 +399,11 @@ process.on('SIGTERM', async () => {
 
 process.on('uncaughtException', (error) => {
   log.error('未捕获的异常:', error);
+  if (!isFatalError(error)) {
+    // 非致命：只记日志 + 风暴计数，保住用户正在填写的数据
+    handleNonFatalError('uncaughtException', error);
+    return;
+  }
   showErrorAndQuit('应用异常', error.message || '未知异常', error.stack);
 });
 
@@ -306,6 +412,11 @@ process.on('unhandledRejection', (reason, promise) => {
   log.error('Promise:', promise);
   // 网络抖动等暂态错误：仅记录日志，不打断正在使用的应用
   if (isTransientRejection(reason)) {
+    return;
+  }
+  // 与 uncaughtException 同口径：非致命的只计数，达到风暴阈值才退出
+  if (!isFatalError(reason)) {
+    handleNonFatalError('unhandledRejection', reason);
     return;
   }
   setTimeout(() => {

@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import type Redis from 'ioredis';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
 import { logger as log } from '../../utils/logger';
@@ -13,12 +13,27 @@ import {
   isTlsHandshakeError,
 } from './db.util';
 
+/** ioredis 懒加载：见 ssh.connector.ts 的同名说明 */
+let ioredisLib: typeof import('ioredis') | null = null;
+async function loadIoredis(): Promise<typeof import('ioredis')> {
+  if (!ioredisLib) {
+    const mod: any = await import('ioredis');
+    // CJS 互操作：ioredis 的 module.exports 就是 Redis 构造器本身，
+    // 经打包互操作后可能挂在 default 上，也可能就是模块本身
+    ioredisLib = (mod?.default ?? mod) as typeof import('ioredis');
+  }
+  // 上面已保证赋值，这里断言去掉 null（TS 无法跨函数推断模块级 let 的收窄）
+  return ioredisLib as typeof import('ioredis');
+}
+
 export class RedisConnector implements IConnector {
   private client: Redis | null = null;
   private commandTimeoutMs = 15000;
 
   async connect(profile: ConnectionProfile): Promise<void> {
     if (this.client) return;
+    // ioredis 的 module.exports 本身就是 Redis 构造器，两种互操作形态都取 default 兜底
+    const RedisCtor = (await loadIoredis()) as unknown as typeof Redis;
     const cfg = parseExtraConfig(profile.extraConfig);
     const password = decryptSecret(profile.passwordEncrypted);
     this.commandTimeoutMs = getCommandTimeout(profile);
@@ -43,7 +58,7 @@ export class RedisConnector implements IConnector {
       ? { tls: { rejectUnauthorized: cfg.rejectUnauthorized === true } as any }
       : {};
 
-    const client = new Redis({ ...baseOptions, ...tlsOptions });
+    const client = new RedisCtor({ ...baseOptions, ...tlsOptions });
     try {
       await client.connect();
     } catch (err) {
@@ -52,7 +67,7 @@ export class RedisConnector implements IConnector {
           `[Redis] ${profile.host}:${port} 不支持 TLS，已降级为明文连接（AUTH 口令与查询结果将以明文传输）`
         );
         client.disconnect();
-        const plainClient = new Redis(baseOptions);
+        const plainClient = new RedisCtor(baseOptions);
         try {
           await plainClient.connect();
         } catch (plainErr) {

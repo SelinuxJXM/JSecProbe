@@ -541,7 +541,7 @@ body {
   <aside class="sidebar" id="sidebar" aria-label="目录导航">
     <div class="sidebar-header">
       <div class="sidebar-title"><a href="index.html">📄 产品白皮书</a></div>
-      <div class="sidebar-subtitle">JSecProbe V2.4.6</div>
+      <div class="sidebar-subtitle">JSecProbe V2.4.7</div>
     </div>
     <nav aria-label="目录">
       <div class="toc">
@@ -679,7 +679,7 @@ body {
   <main class="content" id="main-content">
     <article class="article">
       <h1>JSecProbe 等级保护现场测评系统</h1>
-      <p class="subtitle">产品白皮书 · 当前版本 V2.4.6 · 技术标准 GB/T 22239-2019</p>
+      <p class="subtitle">产品白皮书 · 当前版本 V2.4.7 · 技术标准 GB/T 22239-2019</p>
 
       <h2 id="intro">一、产品概述</h2>
 
@@ -1422,6 +1422,19 @@ body {
             </td>
           </tr>
           <tr>
+            <td>白皮书 V1.9</td><td>V2.4.7</td>
+            <td>
+              <ul style="margin:0 0 0 18px;padding:0;">
+                <li>修复：备份加密中途失败会残留半个 <code>.enc-tmp</code> 文件——清理时写入流仍持有句柄，Windows 下删除失败又被静默忽略，产出"列表里看得见、只有恢复时才炸"的坏备份；现改为先关流释放句柄再删除</li>
+                <li>新增：三条关键链路（自动保存 / 备份加解密 / 标准与命令库入驻）的单元测试，共 5 个文件 59 个用例</li>
+                <li>新增：持续集成工作流，自动执行类型检查、版本号一致性检查与数据库结构漂移检查</li>
+                <li>性能：内置标准库与核查命令库改为 <code>*.seed.json</code> 惰性解析，源码总量约 8.6 万行降至约 6.6 万行；七种采集连接器驱动改为动态 import 懒加载</li>
+                <li>重构（无功能变更）：自动保存核心抽为 <code>useAutoSaveCore</code>、Markdown 渲染统一入口、日期格式化与项目导航收拢、纯展示列表改用 shallowRef</li>
+                <li>附录 D 新增「白皮书变更记录」V1.9 条目</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
             <td>白皮书 V1.8</td><td>V2.4.6</td>
             <td>
               <ul style="margin:0 0 0 18px;padding:0;">
@@ -1528,7 +1541,7 @@ body {
 
       <hr>
       <p style="text-align:center;color:var(--gray-500);font-size:14px;padding:20px 0;">
-        <em>本文档最后更新：2026 年 9 月（V1.8，对应 V2.4.6）</em><br>
+        <em>本文档最后更新：2026 年 10 月（V1.9，对应 V2.4.7）</em><br>
         <strong>JSecProbe - 让等保测评更高效、更规范、更智能</strong>
       </p>
     </article>

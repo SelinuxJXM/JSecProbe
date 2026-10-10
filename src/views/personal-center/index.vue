@@ -101,6 +101,7 @@ import { reactive, ref } from 'vue';
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus';
 import { Lock } from '@element-plus/icons-vue';
 import { useUserStore } from '@/stores/user';
+import { formatLocalDateTime } from '@/utils/format';
 
 const userStore = useUserStore();
 const formRef = ref<FormInstance>();
@@ -142,12 +143,7 @@ function formatRole(role?: string) {
 }
 
 function formatDateTime(date?: string) {
-  if (!date) return '-';
-  try {
-    return new Date(date).toLocaleString('zh-CN');
-  } catch {
-    return date;
-  }
+  return formatLocalDateTime(date, '-');
 }
 
 async function handleSubmit() {

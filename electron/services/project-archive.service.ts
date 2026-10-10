@@ -452,7 +452,7 @@ export async function exportProjectArchive(options: ExportArchiveOptions): Promi
     // ignoreBase: 不加会把暂存目录名（.archive_<uuid>）也打进包，manifest.json 就不在根上了
     await compressing.zip.compressDir(stagingDir, destPath, { ignoreBase: true });
     if (password) {
-      sealZipFile(destPath, destPath, password);
+      await sealZipFile(destPath, destPath, password);
     }
 
     const size = fs.statSync(destPath).size;
@@ -491,7 +491,7 @@ interface OpenedArchive {
 
 async function openArchiveForRead(archivePath: string, password?: string): Promise<OpenedArchive> {
   const dataPath = await getAppDataPath();
-  const opened = openBackupZip(archivePath, password, path.join(dataPath, 'temp', '.archive_decrypt'));
+  const opened = await openBackupZip(archivePath, password, path.join(dataPath, 'temp', '.archive_decrypt'));
   return { zipPath: opened.zipPath, cleanup: opened.cleanup };
 }
 

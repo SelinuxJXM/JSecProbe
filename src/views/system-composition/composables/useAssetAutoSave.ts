@@ -1,7 +1,7 @@
-import { ref, type Ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { type Ref } from 'vue';
 import type { Asset } from '@shared/types';
 import { formatSaveTime } from '@/utils/format-save-time';
+import { useAutoSaveCore } from '@/composables/useAutoSaveCore';
 
 interface AssetAutoSaveOptions {
   assetList: Ref<Asset[]>;
@@ -22,8 +22,6 @@ interface AssetAutoSaveOptions {
   periodicInterval?: number;
 }
 
-type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'unsaved';
-
 export function useAssetAutoSave(options: AssetAutoSaveOptions) {
   const {
     assetList,
@@ -41,17 +39,6 @@ export function useAssetAutoSave(options: AssetAutoSaveOptions) {
     periodicInterval = 45000,
   } = options;
 
-  const saveStatus = ref<SaveStatus>('idle');
-  const hasUnsavedChanges = ref(false);
-  const lastSavedTime = ref<Date | null>(null);
-
-  let autoSaveTimer: number | null = null;
-  let periodicSaveTimer: number | null = null;
-  // 并发互斥：防抖触发 / 周期触发 / 手动保存三条路径可能同时进入 saveAllChanges。
-  // 不加锁时，await loadAssets() 返回前 temp_ 临时行仍在列表中且 modifiedRows 未清，
-  // 第二次进入会对同一临时行重复 asset.create，产生重复资产。
-  let saveInProgress = false;
-
   /**
    * 只回写服务端维护的时间戳类字段。
    * 名称/用途/备注等用户正在输入的字段以浏览器里的值为准 ——
@@ -62,30 +49,18 @@ export function useAssetAutoSave(options: AssetAutoSaveOptions) {
     if (saved.updatedAt) (row as any).updatedAt = saved.updatedAt;
   }
 
-  async function saveAllChanges(): Promise<boolean> {
-    if (saveInProgress) {
-      return false;
-    }
-    if (modifiedRows.size === 0 && deletedIds.size === 0) {
-      return false;
-    }
-
-    saveInProgress = true;
+  /** 资产台账的落库实现：定时器/互斥/状态机由 useAutoSaveCore 统一负责 */
+  async function persist(): Promise<boolean> {
     const projectId = route.params.id as string;
-    saveStatus.value = 'saving';
     // 快照：保存过程中用户可能继续改动，结束时不该把新改动标记抹掉
     const dirtySnapshot = [...modifiedRows];
     const succeeded = new Set<string>();
     let needsReload = false;
-    let created = 0;
-    let updated = 0;
-    let deleted = 0;
     let failed = 0;
     try {
       for (const id of deletedIds) {
         const res = await window.api.asset.remove(id);
-        if (res.success) deleted++;
-        else failed++;
+        if (!res.success) failed++;
       }
       deletedIds.clear();
 
@@ -120,7 +95,6 @@ export function useAssetAutoSave(options: AssetAutoSaveOptions) {
             failed++;
             continue;
           }
-          created++;
           succeeded.add(key);
           if (res.data?.id) {
             // 临时行 → 真实行
@@ -149,7 +123,6 @@ export function useAssetAutoSave(options: AssetAutoSaveOptions) {
             failed++;
             continue;
           }
-          updated++;
           succeeded.add(key);
           patchSavedMeta(row, res.data);
         }
@@ -160,15 +133,6 @@ export function useAssetAutoSave(options: AssetAutoSaveOptions) {
         modifiedRows.delete(id);
       }
 
-      if (modifiedRows.size === 0 && deletedIds.size === 0) {
-        saveStatus.value = 'saved';
-        hasUnsavedChanges.value = false;
-      } else {
-        saveStatus.value = failed > 0 ? 'error' : 'unsaved';
-        hasUnsavedChanges.value = true;
-      }
-      lastSavedTime.value = new Date();
-
       if (needsReload) {
         await loadAssets();
       } else {
@@ -176,92 +140,39 @@ export function useAssetAutoSave(options: AssetAutoSaveOptions) {
       }
       return failed === 0;
     } catch (error) {
-      console.error('保存失败:', error);
-      saveStatus.value = 'error';
-      return false;
-    } finally {
-      saveInProgress = false;
-    }
-  }
-
-  /**
-   * 触发防抖保存。
-   * @param delay 不传用默认延迟（文本输入）；勾选项/下拉这类离散操作传短延迟。
-   */
-  function debounceAutoSave(delay?: number) {
-    hasUnsavedChanges.value = true;
-    saveStatus.value = 'unsaved';
-    if (autoSaveTimer) {
-      clearTimeout(autoSaveTimer);
-    }
-    autoSaveTimer = window.setTimeout(() => {
-      saveAllChanges();
-    }, delay ?? debounceDelay);
-  }
-
-  function startPeriodicSave() {
-    stopPeriodicSave();
-    periodicSaveTimer = window.setInterval(() => {
-      if (hasUnsavedChanges.value) {
-        saveAllChanges();
-      }
-    }, periodicInterval);
-  }
-
-  function stopPeriodicSave() {
-    if (periodicSaveTimer) {
-      clearInterval(periodicSaveTimer);
-      periodicSaveTimer = null;
-    }
-  }
-
-  async function triggerManualSave(): Promise<boolean> {
-    if (saveInProgress) {
-      ElMessage.info('正在保存中，请稍候');
+      console.error('[资产台账] 保存失败:', error);
       return false;
     }
-    const success = await saveAllChanges();
-    if (success) {
-      ElMessage.success('保存成功');
-    } else {
-      ElMessage.error('保存失败，请重试');
-    }
-    return success;
   }
+
+  const core = useAutoSaveCore({
+    hasDirty: () => modifiedRows.size > 0 || deletedIds.size > 0,
+    persist,
+    debounceDelay,
+    periodicInterval,
+    busyMessageType: 'info',
+  });
 
   /** 列表被整表重建后调用：脏标记随数据一起失效 */
   function markClean() {
     modifiedRows.clear();
     deletedIds.clear();
-    hasUnsavedChanges.value = false;
-    saveStatus.value = lastSavedTime.value ? 'saved' : 'idle';
+    core.saveStatus.value = core.lastSavedTime.value ? 'saved' : 'idle';
   }
 
-  // formatSaveTime 已提升到 @/utils/format-save-time（三个自动保存 composable 共用同一份）
-
   function cleanup() {
-    if (autoSaveTimer) {
-      clearTimeout(autoSaveTimer);
-      autoSaveTimer = null;
-    }
-    stopPeriodicSave();
-    // 卸载/离开前把待保存的资产编辑落盘，不再静默丢弃
-    if (hasUnsavedChanges.value && !saveInProgress) {
-      saveAllChanges().catch(() => {
-        console.warn('[资产台账] 离开页面时自动保存失败');
-      });
-    }
+    core.cleanup('资产台账');
   }
 
   return {
-    saveStatus,
-    hasUnsavedChanges,
-    lastSavedTime,
-    saveAllChanges,
-    debounceAutoSave,
-    startPeriodicSave,
-    stopPeriodicSave,
-    triggerManualSave,
+    saveStatus: core.saveStatus,
+    hasUnsavedChanges: core.hasUnsavedChanges,
+    lastSavedTime: core.lastSavedTime,
+    saveAllChanges: core.runSave,
+    debounceAutoSave: core.scheduleSave,
+    startPeriodicSave: core.startPeriodicSave,
+    stopPeriodicSave: core.stopPeriodicSave,
+    triggerManualSave: core.triggerManualSave,
     markClean,
     formatSaveTime,
     cleanup,

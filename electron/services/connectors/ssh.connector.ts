@@ -1,4 +1,4 @@
-import { Client, type ClientChannel, type ConnectConfig } from 'ssh2';
+import type { Client as SshClient, ClientChannel, ConnectConfig } from 'ssh2';
 import * as fs from 'fs';
 import log from 'electron-log';
 import type { ConnectionProfile } from '../../../shared/types';
@@ -7,8 +7,27 @@ import { getCommandTimeout, parseExtraConfig } from './db.util';
 import { normalizePolicy, verifyHostKey } from './known-hosts';
 import { CommandTimeoutError, type IConnector, type ExecResult } from './connector';
 
+/**
+ * ssh2 懒加载。
+ *
+ * 采集连接器原本在模块顶层静态 import 各自的驱动，主进程一启动就把
+ * ssh2 / mssql / pg / mysql2 / ioredis / oracledb / winrm-client 全部载入内存，
+ * 而绝大多数会话根本不采集（oracledb 尤其重）。改为真正用到时才 require，
+ * 冷启动内存与耗时都降下来，且某个驱动在目标机器上装不起来时不再拖垮启动。
+ */
+let ssh2Lib: typeof import('ssh2') | null = null;
+async function loadSsh2(): Promise<typeof import('ssh2')> {
+  if (!ssh2Lib) {
+    // CJS 依赖经打包互操作后可能挂在 default 上，也可能是裸命名空间，
+    // 两种形态都要能取到，否则发布包里会出现 "Client is not a constructor"
+    const mod: any = await import('ssh2');
+    ssh2Lib = (mod?.default && mod.default.Client ? mod.default : mod) as typeof import('ssh2');
+  }
+  return ssh2Lib;
+}
+
 export class SshConnector implements IConnector {
-  private client: Client | null = null;
+  private client: SshClient | null = null;
   private commandTimeoutMs = 15000;
 
   async connect(profile: ConnectionProfile): Promise<void> {
@@ -42,6 +61,7 @@ export class SshConnector implements IConnector {
       }
     }) as ConnectConfig['hostVerifier'];
     this.commandTimeoutMs = getCommandTimeout(profile);
+    const { Client } = await loadSsh2();
     await new Promise<void>((resolve, reject) => {
       const client = new Client();
       let settled = false;

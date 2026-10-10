@@ -104,16 +104,59 @@ function getBackupRootPath(): Promise<string> {
 
 const BACKUP_RETENTION_COUNT = 10;
 
-async function cleanupOldBackups(): Promise<void> {
+/**
+ * 备份总容量上限（默认 5 GB）。
+ * 备份里含全量截图/证据目录，单份动辄几百 MB，只按「份数」限制时
+ * 10 份就足以占满小容量磁盘。这里再叠一层容量轮转兜底。
+ */
+const BACKUP_MAX_TOTAL_BYTES = 5 * 1024 * 1024 * 1024;
+
+/** 容量轮转时至少保留的份数，避免极端情况下把备份清光 */
+const BACKUP_MIN_KEEP = 3;
+
+/**
+ * 按份数 + 总容量双重策略清理旧备份。
+ * @param backupDir 备份所在目录（自定义备份目录同样适用，只清理本程序生成的 backup_*.zip）
+ */
+async function cleanupOldBackups(backupDir: string): Promise<void> {
   try {
-    const backupDir = await getBackupRootPath();
     if (!fs.existsSync(backupDir)) return;
     const backups = fs.readdirSync(backupDir)
       .filter((f) => f.startsWith('backup_') && f.endsWith('.zip'))
-      .map((f) => ({ f, mtime: fs.statSync(path.join(backupDir, f)).mtimeMs }))
+      .map((f) => {
+        const st = fs.statSync(path.join(backupDir, f));
+        return { f, mtime: st.mtimeMs, size: st.size };
+      })
+      // 新的在前
       .sort((a, b) => b.mtime - a.mtime);
+
+    const doomed = new Set<string>();
+
+    // ① 份数上限
     for (const item of backups.slice(BACKUP_RETENTION_COUNT)) {
-      try { fs.unlinkSync(path.join(backupDir, item.f)); } catch { /* 忽略单文件删除失败 */ }
+      doomed.add(item.f);
+    }
+
+    // ② 容量上限：从最旧的开始淘汰，但至少留 BACKUP_MIN_KEEP 份
+    let total = backups.reduce((sum, b) => sum + b.size, 0);
+    if (total > BACKUP_MAX_TOTAL_BYTES) {
+      for (let i = backups.length - 1; i >= BACKUP_MIN_KEEP; i--) {
+        if (total <= BACKUP_MAX_TOTAL_BYTES) break;
+        const item = backups[i];
+        if (doomed.has(item.f)) continue;
+        doomed.add(item.f);
+        total -= item.size;
+      }
+      log.info(
+        `[备份] 目录 ${backupDir} 备份总量超上限，触发容量轮转，清理后约 ${(total / 1024 / 1024 / 1024).toFixed(2)} GB`
+      );
+    }
+
+    for (const name of doomed) {
+      try { fs.unlinkSync(path.join(backupDir, name)); } catch { /* 忽略单文件删除失败 */ }
+    }
+    if (doomed.size > 0) {
+      log.info(`[备份] 已清理 ${doomed.size} 份旧备份`);
     }
   } catch (e) {
     log.warn('清理旧备份失败:', e);
@@ -272,7 +315,7 @@ export async function createFullBackup(customPath?: string, password?: string): 
     // 加密（可选）：对已生成的 ZIP 整体做信封加密，保持 .zip 扩展名与既有流程不变。
     // 采用「先写临时文件再原子替换」，加密中途失败不会留下半个损坏的备份。
     if (password) {
-      sealZipFile(backupFilePath, backupFilePath, password);
+      await sealZipFile(backupFilePath, backupFilePath, password);
       log.info('[备份] 备份已加密（AES-256-GCM）');
     }
 
@@ -289,9 +332,11 @@ export async function createFullBackup(customPath?: string, password?: string): 
     const backupRoot = path.resolve(await getBackupRootPath());
     const resolvedBackupFile = path.resolve(backupFilePath);
     if (resolvedBackupFile.startsWith(backupRoot + path.sep)) {
-      await cleanupOldBackups();
+      await cleanupOldBackups(backupRoot);
     } else {
-      log.info(`[备份] 目标不在默认备份目录，跳过保留策略清理: ${resolvedBackupFile}`);
+      // 自定义目录同样轮转，只清理该目录下本程序生成的 backup_*.zip。
+      // 原实现直接跳过，用户每次手动备份到固定目录都会无限堆积。
+      await cleanupOldBackups(path.dirname(resolvedBackupFile));
     }
 
     return { success: true, path: backupFilePath, size: totalSize };
@@ -307,7 +352,7 @@ export async function createFullBackup(customPath?: string, password?: string): 
  */
 async function openBackupForRead(backupPath: string, password?: string): Promise<OpenedBackupZip> {
   const dataPath = await getAppDataPath();
-  return openBackupZip(backupPath, password, path.join(dataPath, '.backup_decrypt'));
+  return await openBackupZip(backupPath, password, path.join(dataPath, '.backup_decrypt'));
 }
 
 /** 备份是否已加密（供 UI 决定是否需要弹出口令输入） */

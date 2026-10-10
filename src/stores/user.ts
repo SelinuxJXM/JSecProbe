@@ -5,7 +5,10 @@ import router from '@/router';
 
 export const useUserStore = defineStore('user', () => {
   const user = ref<User | null>(null);
-  const token = ref<string>('');
+  // 登录态的唯一真相源放在 store 里：初值直接从 localStorage 承接，
+  // 这样路由守卫只需认 store，不必再去读一遍 localStorage（此前两处各读各的，
+  // 一旦某处漏同步就会「守卫放行、store 认为未登录」）。
+  const token = ref<string>(localStorage.getItem('token') || '');
   const isLoggedIn = computed(() => !!token.value && !!user.value);
 
   async function login(username: string, password: string) {

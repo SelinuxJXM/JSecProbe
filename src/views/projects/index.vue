@@ -292,6 +292,7 @@ import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useAppStore } from '@/stores/app';
+import { formatDateTime } from '@/utils/format';
 import { useProjectAutoSave } from './composables/useProjectAutoSave';
 import ProjectExportDialog from './components/ProjectExportDialog.vue';
 import ProjectImportDialog from './components/ProjectImportDialog.vue';
@@ -583,10 +584,7 @@ function getProgressClass(progress: number) {
 }
 
 function formatDate(date: string) {
-  if (!date) return '-';
-  const d = new Date(date);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return formatDateTime(date, '-');
 }
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;

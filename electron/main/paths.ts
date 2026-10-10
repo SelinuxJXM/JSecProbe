@@ -138,30 +138,6 @@ export function setAppDataPath(newPath: string): void {
   log.info(`数据存储路径已更改为: ${resolvedPath}`);
 }
 
-export function getDefaultUserDataPath(): string {
-  return getDefaultBasePath();
-}
-
 export function getDbPath(): string {
   return join(getAppDataPathSync(), 'data', 'mlps.db');
-}
-
-export function getLogPath(): string {
-  return join(appDataPath, 'logs');
-}
-
-export function getBackupPath(): string {
-  return join(appDataPath, 'backup');
-}
-
-export function getAttachmentsPath(): string {
-  return join(appDataPath, 'attachments');
-}
-
-export function getStandardsPath(): string {
-  return join(appDataPath, 'standards');
-}
-
-export function getTemplatesPath(): string {
-  return join(appDataPath, 'templates');
 }

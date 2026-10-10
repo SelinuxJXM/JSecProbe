@@ -1,6 +1,6 @@
-import { ref, type Ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { type Ref } from 'vue';
 import { formatSaveTime } from '@/utils/format-save-time';
+import { useAutoSaveCore } from '@/composables/useAutoSaveCore';
 
 interface ProjectRow {
   id: number;
@@ -45,8 +45,6 @@ interface ProjectAutoSaveOptions {
   periodicInterval?: number;
 }
 
-type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'unsaved';
-
 export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
   const {
     projectList,
@@ -62,16 +60,6 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
     periodicInterval = 45000,
   } = options;
 
-  const saveStatus = ref<SaveStatus>('idle');
-  const hasUnsavedChanges = ref(false);
-  const lastSavedTime = ref<Date | null>(null);
-
-  let autoSaveTimer: number | null = null;
-  let periodicSaveTimer: number | null = null;
-  // 并发互斥：防抖触发 / 周期触发 / 手动保存三条路径可能同时进入 saveAllChanges。
-  // 不加锁时，(tmp 行) 会被两条路径同时 create，产生重复项目。
-  let saveInProgress = false;
-
   /**
    * 只回写用户不会正在输入的字段。
    *
@@ -84,28 +72,17 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
     if (typeof saved.progress === 'number') row.progress = saved.progress;
   }
 
-  async function saveAllChanges(): Promise<boolean> {
-    if (saveInProgress) {
-      return false;
-    }
-    if (editedRows.value.length === 0 && deletedIds.value.length === 0) {
-      return false;
-    }
-
-    saveInProgress = true;
-    saveStatus.value = 'saving';
+  /** 本项目列表的落库实现：定时器/互斥/状态机由 useAutoSaveCore 统一负责 */
+  async function persist(): Promise<boolean> {
     // 快照：保存过程中用户可能继续改动，结束时不该把新改动标记抹掉
     const dirtySnapshot = [...editedRows.value];
     const succeeded = new Set<string>();
     let needsReload = false;
-    let created = 0,
-      updated = 0,
-      deleted = 0;
     let failed = 0;
     try {
       for (const id of deletedIds.value) {
         const res = await window.api.project.remove(id);
-        if (res.success) deleted++;
+        if (!res.success) failed++;
       }
       deletedIds.value = [];
 
@@ -138,7 +115,6 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
             failed++;
             continue;
           }
-          created++;
           succeeded.add(key);
           if (res.data?.id) {
             // 临时行 → 真实行；页面侧同步替换 id 与编辑态
@@ -167,7 +143,6 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
             failed++;
             continue;
           }
-          updated++;
           succeeded.add(key);
           patchSavedMeta(row, res.data);
         }
@@ -175,16 +150,6 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
 
       // 只清掉本次成功落库的行，失败的行留着等下一次触发重试（周期保存兜底）
       editedRows.value = editedRows.value.filter(id => !succeeded.has(id));
-
-      if (editedRows.value.length === 0 && deletedIds.value.length === 0) {
-        saveStatus.value = 'saved';
-        hasUnsavedChanges.value = false;
-      } else {
-        // 还有没成功的：保持「未保存」，让用户看得见
-        saveStatus.value = failed > 0 ? 'error' : 'unsaved';
-        hasUnsavedChanges.value = true;
-      }
-      lastSavedTime.value = new Date();
 
       // 常规保存不再热加载整张表 —— 之前每次保存都会把表格 DOM 连同编辑态一起重建，
       // 用户填到一半被迫重新点编辑。只在确实拿不到新 id 时才重载。
@@ -195,99 +160,39 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
       }
       return failed === 0;
     } catch (error) {
-      console.error('保存失败:', error);
-      saveStatus.value = 'error';
-      return false;
-    } finally {
-      saveInProgress = false;
-    }
-  }
-
-  /**
-   * 触发防抖保存。
-   * @param delay 不传用默认延迟（文本输入）；离散操作传 quickDelay。
-   */
-  function debounceAutoSave(delay?: number) {
-    hasUnsavedChanges.value = true;
-    saveStatus.value = 'unsaved';
-    if (autoSaveTimer) {
-      clearTimeout(autoSaveTimer);
-    }
-    autoSaveTimer = window.setTimeout(() => {
-      saveAllChanges();
-    }, delay ?? debounceDelay);
-  }
-
-  function startPeriodicSave() {
-    stopPeriodicSave();
-    periodicSaveTimer = window.setInterval(() => {
-      if (hasUnsavedChanges.value) {
-        saveAllChanges();
-      }
-    }, periodicInterval);
-  }
-
-  function stopPeriodicSave() {
-    if (periodicSaveTimer) {
-      clearInterval(periodicSaveTimer);
-      periodicSaveTimer = null;
-    }
-  }
-
-  async function triggerManualSave(): Promise<boolean> {
-    if (saveInProgress) {
-      ElMessage.info('正在保存中，请稍候');
+      console.error('[项目列表] 保存失败:', error);
       return false;
     }
-    const success = await saveAllChanges();
-    if (success) {
-      ElMessage.success('保存成功');
-    } else {
-      ElMessage.error('保存失败，请重试');
-    }
-    return success;
   }
+
+  const core = useAutoSaveCore({
+    hasDirty: () => editedRows.value.length > 0 || deletedIds.value.length > 0,
+    persist,
+    debounceDelay,
+    periodicInterval,
+    busyMessageType: 'info',
+  });
 
   /** 列表被整表重建后调用：脏标记随数据一起失效 */
   function markClean() {
     editedRows.value = [];
     deletedIds.value = [];
-    hasUnsavedChanges.value = false;
-    saveStatus.value = lastSavedTime.value ? 'saved' : 'idle';
+    core.saveStatus.value = core.lastSavedTime.value ? 'saved' : 'idle';
   }
 
-  // formatSaveTime 已提升到 @/utils/format-save-time（三个自动保存 composable 共用同一份）
-
-  /**
-   * 组件卸载时的收尾。
-   *
-   * 原先只 clearTimeout —— 防抖窗口内的改动被直接丢弃，用户改完切页就白改了。
-   * 现在先尝试把待保存的改动落盘；此处不 await（卸载钩子无法等待），
-   * IPC 本身在主进程执行，不依赖组件实例存活。
-   */
   function cleanup() {
-    if (autoSaveTimer) {
-      clearTimeout(autoSaveTimer);
-      autoSaveTimer = null;
-    }
-    stopPeriodicSave();
-    if (hasUnsavedChanges.value && !saveInProgress) {
-      saveAllChanges().catch(() => {
-        // 卸载阶段保存失败不打扰用户，仅记录；改动标记仍保留在 editedRows 中
-        console.warn('[项目列表] 离开页面时自动保存失败');
-      });
-    }
+    core.cleanup('项目列表');
   }
 
   return {
-    saveStatus,
-    hasUnsavedChanges,
-    lastSavedTime,
-    saveAllChanges,
-    debounceAutoSave,
-    startPeriodicSave,
-    stopPeriodicSave,
-    triggerManualSave,
+    saveStatus: core.saveStatus,
+    hasUnsavedChanges: core.hasUnsavedChanges,
+    lastSavedTime: core.lastSavedTime,
+    saveAllChanges: core.runSave,
+    debounceAutoSave: core.scheduleSave,
+    startPeriodicSave: core.startPeriodicSave,
+    stopPeriodicSave: core.stopPeriodicSave,
+    triggerManualSave: core.triggerManualSave,
     markClean,
     formatSaveTime,
     cleanup,

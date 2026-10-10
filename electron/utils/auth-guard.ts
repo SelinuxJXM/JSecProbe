@@ -1,4 +1,6 @@
 import { app, type IpcMainInvokeEvent } from "electron";
+import { join, sep } from "path";
+import { pathToFileURL } from "url";
 import { AuthService } from "../services/auth.service";
 import { logger } from "./logger";
 
@@ -21,6 +23,29 @@ import { logger } from "./logger";
  * 校验调用方是否为受信来源（渲染进程 frame）
  * 拒绝非受信来源（如被注入的恶意网页）调用任意 IPC 通道
  */
+/**
+ * 受信渲染进程来源白名单。
+ *
+ * 原实现把「任意 `file://`」都判为受信：本机任何一个 HTML（邮件附件、下载目录里的网页、
+ * 其它软件丢进来的 .html）只要被设法载进窗口，就能调用全部 IPC 通道。改为只认
+ * 本应用自己的渲染产物目录（打包态）与本地开发服务器（dev 态）。
+ *
+ * 计算失败时降级为旧的宽松判定并告警——宁可放宽一次，也不能把正常用户挡在门外。
+ */
+function trustedRendererPrefixes(): string[] {
+  const isDev = !app.isPackaged || process.env.NODE_ENV === "development";
+  if (isDev) {
+    return ["http://localhost", "http://127.0.0.1"];
+  }
+  try {
+    const rendererDir = join(app.getAppPath(), "dist-renderer");
+    return [pathToFileURL(rendererDir + sep).href, "app://"];
+  } catch (error) {
+    logger.warn("[auth-guard] 无法定位渲染产物目录，回退到宽松来源判定", { error: String(error) });
+    return ["file://", "app://"];
+  }
+}
+
 export function requireAuth(event: IpcMainInvokeEvent): void {
   const frame = event.senderFrame;
   if (!frame) {
@@ -30,13 +55,18 @@ export function requireAuth(event: IpcMainInvokeEvent): void {
   // dev 态判定与 main/index.ts 的窗口加载逻辑保持一致（NODE_ENV），不能只依赖
   // app.isPackaged：IDE（本身是 Electron 应用）可能向子进程注入
   // ELECTRON_FORCE_IS_PACKAGED=true，导致 dev 模式被误判为打包态而拒绝 localhost 来源
-  const isDev = !app.isPackaged || process.env.NODE_ENV === "development";
-  const isTrusted = isDev
-    ? url.startsWith("http://localhost") || url.startsWith("file://")
-    : url.startsWith("file://") || url.startsWith("app://");
+  const prefixes = trustedRendererPrefixes();
+  const isTrusted = prefixes.some((prefix) => url.startsWith(prefix));
 
-  if (!isTrusted) {
-    logger.error("[auth-guard] 拒绝非受信来源的 IPC 调用", { url, isPackaged: app.isPackaged });
+  // 空 URL（尚未完成导航的 frame）：保持放行，避免误伤 preload 的首批调用
+  const isEmpty = url === "" || url === "about:blank";
+
+  if (!isTrusted && !isEmpty) {
+    logger.error("[auth-guard] 拒绝非受信来源的 IPC 调用", {
+      url,
+      isPackaged: app.isPackaged,
+      prefixes,
+    });
     throw new Error("未授权：调用来源不受信任");
   }
 }
@@ -90,11 +120,6 @@ export async function requireRole(
     });
     throw new Error("权限不足：当前用户无权执行该操作");
   }
-}
-
-/** 便捷方法：强制当前会话用户为管理员 */
-export function requireAdmin(event: IpcMainInvokeEvent, token?: string): Promise<void> {
-  return requireRole(event, ["admin"], token);
 }
 
 /**

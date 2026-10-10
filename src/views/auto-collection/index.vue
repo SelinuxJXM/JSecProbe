@@ -395,23 +395,22 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, shallowRef, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Cpu, InfoFilled } from '@element-plus/icons-vue';
 import type { ConnectionProfileInput } from '../../../shared/types';
+import { formatDateTime } from '@/utils/format';
+import { fetchProjectOptions } from '@/utils/project-options';
 
 // ============ 所属项目 ============
 const projects = ref<any[]>([]);
 const selectedProjectId = ref<string>(localStorage.getItem('currentProjectId') || '');
 
 async function loadProjects() {
-  const res = await window.api.project.list({ page: 1, pageSize: 200 });
-  if (res.success) {
-    projects.value = res.data?.list || [];
-    // 默认项目已被删除时清空，避免残留无效 ID
-    if (selectedProjectId.value && !projects.value.some((p) => p.id === selectedProjectId.value)) {
-      selectedProjectId.value = '';
-    }
+  projects.value = await fetchProjectOptions(200);
+  // 默认项目已被删除时清空，避免残留无效 ID
+  if (selectedProjectId.value && !projects.value.some((p) => p.id === selectedProjectId.value)) {
+    selectedProjectId.value = '';
   }
 }
 
@@ -711,7 +710,10 @@ async function handleDeleteProfile() {
 }
 
 // ============ 资产关联（连接配置可关联资产） ============
-const assets = ref<any[]>([]);
+// shallowRef：一次最多拉 999 条，且只会整体替换（loadAssets / 清空），
+// 从不在行内改字段——没必要为每条资产建深层响应式代理。
+// 依赖它的 currentAsset 只做 find，整体替换即触发更新，语义不变。
+const assets = shallowRef<any[]>([]);
 
 const currentAsset = computed(() => {
   const assetId = currentProfile.value?.assetId;
@@ -826,7 +828,8 @@ const starting = ref(false);
 const canceling = ref(false);
 const tasks = ref<any[]>([]);
 const activeTaskId = ref('');
-const results = ref<any[]>([]);
+// 采集结果一次可能上千条（每资产一条），只整体替换、纯展示，用 shallowRef 省掉逐条代理开销。
+const results = shallowRef<any[]>([]);
 const activeTab = ref('progress');
 
 // ============ 本地采集助手（手动投放兜底方案） ============
@@ -1215,10 +1218,7 @@ async function handleDeleteDocument(id: string) {
 }
 
 function formatTime(iso: string): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return formatDateTime(iso);
 }
 
 // ============ 生命周期 ============

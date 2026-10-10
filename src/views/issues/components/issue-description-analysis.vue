@@ -77,7 +77,8 @@
 
     <template #footer>
       <div class="dialog-footer">
-        <el-button @click="singleDialogVisible = false">取消</el-button>
+        <el-button @click="singleDialogVisible = false" :disabled="singleLoading">取消</el-button>
+        <el-button v-if="singleLoading" @click="cancelSingleIssueDescription" :loading="singleCanceling">中止分析</el-button>
         <el-button type="primary" :disabled="singleLoading || !singleResult" @click="applySingleResult">
           确认填入问题描述
         </el-button>
@@ -174,8 +175,20 @@
     </div>
     <template #footer>
       <div class="dialog-footer">
-        <el-button v-if="batchProgress.stage === 'error'" type="primary" @click="batchProgress.visible = false">关闭</el-button>
-        <el-button v-if="batchProgress.stage === 'done'" type="success" @click="batchProgress.visible = false">完成</el-button>
+        <template v-if="batchProgress.stage === 'done' || batchProgress.stage === 'canceled' || batchProgress.stage === 'error'">
+          <el-button
+            :type="batchProgress.stage === 'done' ? 'success' : 'primary'"
+            @click="batchProgress.visible = false"
+          >
+            {{ batchProgress.stage === 'canceled' ? '已中止，关闭' : batchProgress.stage === 'done' ? '完成' : '关闭' }}
+          </el-button>
+        </template>
+        <template v-else>
+          <el-button @click="batchProgress.visible = false; batchMinimized = true">最小化</el-button>
+          <el-button type="danger" plain :loading="batchCanceling" @click="cancelBatchAnalysis">
+            {{ batchCanceling ? '正在中止...' : '中止分析' }}
+          </el-button>
+        </template>
       </div>
     </template>
   </el-dialog>
@@ -186,6 +199,7 @@ import { ref, computed, onBeforeUnmount } from 'vue';
 import type { Issue } from '../../../../shared/types';
 import { ElMessage } from 'element-plus';
 import { EditPen } from '@element-plus/icons-vue';
+import { formatDuration } from '@/utils/format';
 
 const props = defineProps<{
   getIssueDomainId: (domainName: string) => string;
@@ -214,6 +228,26 @@ const singleStepTexts = [
   '正在生成问题描述...',
 ];
 
+// 单条分析的用户主动取消标记：取消不等于失败，置位后不弹错误、静默收尾
+let singleCancelRequested = false;
+const singleCanceling = ref(false);
+
+// 主动中止单条「问题描述」分析：中断主进程底层云端请求，取消不算失败。
+// 注：单条与批量共用 issueDescriptionAbortController，二者本不会并发，
+// 单条取消只会停掉当前在跑的那条请求，不会误伤无法同时进行的其它任务。
+async function cancelSingleIssueDescription() {
+  if (!window.api) return;
+  singleCanceling.value = true;
+  singleCancelRequested = true;
+  try {
+    await window.api.ai.cancelIssueDescription();
+  } catch (err: any) {
+    console.warn('[issue-description-analysis.cancelSingleIssueDescription] 中止请求失败(可忽略):', err.message);
+  } finally {
+    singleCanceling.value = false;
+  }
+}
+
 // ==================== 批量分析状态 ====================
 const batchProgress = ref({
   visible: false,
@@ -224,6 +258,7 @@ const batchProgress = ref({
   total: 0,
 });
 const batchMinimized = ref(false);
+const batchCanceling = ref(false);
 const batchElapsedTime = ref(0);
 const batchEstimatedRemaining = ref(0);
 const batchSuccessCount = ref(0);
@@ -240,17 +275,13 @@ let batchTimerInterval: ReturnType<typeof setInterval> | null = null;
 const batchPercentDisplay = computed(() => `${batchProgress.value.percent}%`);
 
 function formatTime(seconds: number): string {
-  if (seconds < 60) return `${seconds}秒`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins}分${secs}秒`;
+  return formatDuration(seconds);
 }
 
 // ==================== 单条分析 ====================
 async function analyzeIssueDescription(issue: Issue) {
   if (!window.api) return;
 
-  console.log('[issue-description-analysis.analyzeIssueDescription] 开始分析, issueId:', issue.id, 'issueTitle:', issue.issueTitle);
 
   currentIssue.value = issue;
   singleDialogVisible.value = true;
@@ -280,19 +311,17 @@ async function analyzeIssueDescription(issue: Issue) {
       projectId: props.projectId,
       itemId: (issue as any).itemId,
     };
-    console.log('[issue-description-analysis.analyzeIssueDescription] 调用IPC, params:', JSON.stringify(params));
 
     const res = await window.api.ai.analyzeIssueDescription(params);
 
-    console.log('[issue-description-analysis.analyzeIssueDescription] IPC返回, success:', res.success, 'hasData:', !!res.data);
 
     singleStep.value = 5;
     singleLoadingText.value = singleStepTexts[4];
 
     if (res.success && res.data) {
       singleResult.value = res.data.content;
-      console.log('[issue-description-analysis.analyzeIssueDescription] AI返回内容长度:', res.data.content.length);
-      console.log('[issue-description-analysis.analyzeIssueDescription] AI返回内容:', res.data.content);
+    } else if (singleCancelRequested) {
+      // 取消不等于失败：静默复位，不弹"分析失败"
     } else {
       singleResult.value = null;
       console.error('[issue-description-analysis.analyzeIssueDescription] AI分析失败:', res.error);
@@ -300,10 +329,17 @@ async function analyzeIssueDescription(issue: Issue) {
     }
   } catch (err: any) {
     console.error('[issue-description-analysis.analyzeIssueDescription] IPC调用异常:', err.message);
-    singleResult.value = null;
+    if (!singleCancelRequested) {
+      singleResult.value = null;
+    }
   } finally {
     clearInterval(stepInterval);
+    if (singleCancelRequested) {
+      singleDialogVisible.value = false;
+      singleResult.value = null;
+    }
     singleLoading.value = false;
+    singleCancelRequested = false;
   }
 }
 
@@ -317,15 +353,28 @@ function applySingleResult() {
 // 批量分析取消标志：组件卸载后置为 true，避免卸载后继续调用 AI 接口与更新已卸载组件状态
 let batchCancelled = false;
 
+/**
+ * 主动中止批量分析：中断主进程底层云端请求 + 置本地取消标志停掉前端循环。
+ * 取消不等于失败，不弹失败提示，静默收尾。
+ */
+async function cancelBatchAnalysis() {
+  if (!window.api || !batchProgress.value.visible || batchProgress.value.stage === 'done' || batchProgress.value.stage === 'error' || batchProgress.value.stage === 'canceled') return;
+  batchCanceling.value = true;
+  batchCancelled = true; // 立即停掉前端循环，不再发下一条
+  try {
+    await window.api.ai.cancelIssueDescription();
+    ElMessage.info('正在中止分析...');
+  } catch (err: any) {
+    console.warn('[issue-description-analysis.cancelBatchAnalysis] 中止请求失败(可忽略):', err.message);
+  } finally {
+    batchCanceling.value = false;
+  }
+}
+
 async function batchAnalyzeIssueDescriptions(issues: Issue[]) {
   if (!window.api || issues.length === 0) return;
   batchCancelled = false;
 
-  console.log('[issue-description-analysis.batchAnalyzeIssueDescriptions] 开始批量分析, 问题总数:', issues.length);
-  console.log('[issue-description-analysis.batchAnalyzeIssueDescriptions] 问题列表:', JSON.stringify(issues.map(i => ({
-    issueId: i.id,
-    issueTitle: i.issueTitle,
-  }))));
 
   batchProgress.value = { visible: true, percent: 0, message: '准备中...', stage: 'init', current: 0, total: issues.length };
   batchMinimized.value = false;
@@ -365,7 +414,6 @@ async function batchAnalyzeIssueDescriptions(issues: Issue[]) {
           current: i + 1,
         };
         
-        console.log(`[issue-description-analysis.batchAnalyzeIssueDescriptions] [${i + 1}/${issues.length}] 开始分析: ${issue.issueTitle}`);
         
         const res = await window.api.ai.analyzeIssueDescription({
           issueId: issue.id,
@@ -383,7 +431,6 @@ async function batchAnalyzeIssueDescriptions(issues: Issue[]) {
         if (res.success && res.data) {
           results.push({ issueId: issue.id, description: res.data.content, success: true });
           batchSuccessCount.value++;
-          console.log(`[issue-description-analysis.batchAnalyzeIssueDescriptions] [${i + 1}/${issues.length}] 分析成功, 返回内容长度: ${res.data.content.length}`);
         } else {
           results.push({ issueId: issue.id, description: '', success: false });
           batchFailedCount.value++;
@@ -400,24 +447,34 @@ async function batchAnalyzeIssueDescriptions(issues: Issue[]) {
       }
     }
 
-    batchProgress.value = { ...batchProgress.value, percent: 100, message: '分析完成', stage: 'done', current: issues.length };
+    const success = results.filter(r => r.success).length;
+    if (batchCancelled) {
+      batchProgress.value = { ...batchProgress.value, percent: 100, message: `已中止，完成 ${success}/${issues.length}`, stage: 'canceled', current: results.length };
+    } else {
+      batchProgress.value = { ...batchProgress.value, percent: 100, message: '分析完成', stage: 'done', current: issues.length };
+    }
     
-    console.log(`[issue-description-analysis.batchAnalyzeIssueDescriptions] 批量分析完成, 成功: ${batchSuccessCount.value}, 失败: ${batchFailedCount.value}`);
     
-    // 逐个回填结果
+    // 逐个回填结果（取消后已完成的部分照常回填，未完成的保持原样）
     for (const result of results) {
       if (result.success && result.description) {
         emit('applyDescription', result.issueId, result.description);
       }
     }
   } catch (err: any) {
-    console.error('[issue-description-analysis.batchAnalyzeIssueDescriptions] 批量分析异常:', err.message);
-    batchProgress.value = { ...batchProgress.value, stage: 'error', message: '分析过程中发生错误' };
+    // 取消不等于失败：batchCancelled 为真时是用户主动中止，不弹错误
+    if (!batchCancelled) {
+      console.error('[issue-description-analysis.batchAnalyzeIssueDescriptions] 批量分析异常:', err.message);
+      batchProgress.value = { ...batchProgress.value, stage: 'error', message: '分析过程中发生错误' };
+    } else {
+      batchProgress.value = { ...batchProgress.value, stage: 'canceled', message: '已中止分析', percent: 100 };
+    }
   } finally {
     if (batchTimerInterval) {
       clearInterval(batchTimerInterval);
       batchTimerInterval = null;
     }
+    batchCanceling.value = false;
   }
 }
 

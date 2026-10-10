@@ -47,6 +47,11 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
   const batchAiMinimized = ref(false);
   const aiDialogMinimized = ref(false);
 
+  // 用户主动取消标记：关闭/最小化对话框后置位，底层请求被中断。
+  // 用它区分"取消"与"失败"——取消不是错误，不弹失败提示、不往记录里填脏结果。
+  const singleCancelled = ref(false);
+  const batchCancelled = ref(false);
+
   // AI使用合规确认
   const aiConsentGiven = ref(false);
   const showAiConsentDialog = ref(false);
@@ -68,6 +73,38 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
       clearTimeout(autoSaveTimer);
       autoSaveTimer = null;
     }
+  }
+
+  /**
+   * 主动取消单条 AI 分析：中断底层云端请求，关闭对话框，不把取消当失败提示。
+   */
+  async function cancelSingleAnalysis(): Promise<void> {
+    if (singleCancelled.value) return;
+    singleCancelled.value = true;
+    try {
+      await window.api.ai.cancelSingleAnalysis();
+    } catch (e) {
+      console.warn('[aiAnalyze] 取消请求失败(可忽略):', e);
+    }
+    aiDialogVisible.value = false;
+    aiDialogMinimized.value = false;
+    aiLoading.value = false;
+  }
+
+  /**
+   * 主动取消批量 AI 分析：中断底层云端请求，关闭进度弹窗。
+   */
+  async function cancelBatchAnalysis(): Promise<void> {
+    if (batchCancelled.value) return;
+    batchCancelled.value = true;
+    try {
+      await window.api.ai.cancelBatchScreenshots();
+    } catch (e) {
+      console.warn('[batchAiAnalyze] 取消请求失败(可忽略):', e);
+    }
+    batchAiProgress.value.visible = false;
+    batchAiMinimized.value = false;
+    batchAiLoading.value = false;
   }
 
   // ==================== 计算属性 ====================
@@ -149,6 +186,8 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
     aiLoading.value = true;
     aiStep.value = 1;
     aiLoadingText.value = '正在准备分析数据...';
+    // 新一轮分析开始时重置取消标记（同一行可能被反复分析）
+    singleCancelled.value = false;
 
     try {
       // 分离图片文件和其他文件
@@ -199,13 +238,24 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
       let res;
       try {
         const timeoutMs = 120000;
+        // 超时定时器必须在 Promise.race 结束后清除：批量分析每行一个，
+        // 不清的话跑完 100 行就会有 100 个 120s 的定时器挂着，
+        // 期间无法 GC 且会在下一次 tick 集中触发已无意义的 reject。
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error('AI分析超时，请检查网络连接或稍后重试')), timeoutMs);
+          timeoutHandle = setTimeout(
+            () => reject(new Error('AI分析超时，请检查网络连接或稍后重试')),
+            timeoutMs
+          );
         });
-        res = await Promise.race([
-          window.api.ai.analyzeAssessment(params),
-          timeoutPromise,
-        ]);
+        try {
+          res = await Promise.race([
+            window.api.ai.analyzeAssessment(params),
+            timeoutPromise,
+          ]);
+        } finally {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+        }
       } catch (ipcError: any) {
         console.error('[aiAnalyze] IPC调用失败:', ipcError.message, ipcError.stack);
         throw ipcError;
@@ -223,7 +273,6 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
       if (res.success && res.data) {
         try {
           const content = res.data.content;
-          console.log('[aiAnalyze] AI返回内容长度:', content.length);
 
           // 尝试多种方式提取JSON
           let analysis: any = null;
@@ -305,12 +354,21 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
           aiLoading.value = false;
         }
       } else {
-        aiLoading.value = false;
-        ElMessage.error(res.error?.message || 'AI分析失败');
+        // 用户取消：主进程 abort 后返回成功:fase，这里不弹失败，静默结束
+        if (singleCancelled.value) {
+          aiLoading.value = false;
+          aiDialogVisible.value = false;
+        } else {
+          aiLoading.value = false;
+          ElMessage.error(res.error?.message || 'AI分析失败');
+        }
       }
     } catch (error: any) {
       aiLoading.value = false;
-      ElMessage.error('AI分析失败：' + (error.message || error));
+      // 取消不等于失败：中断后不把「用户已取消」当错误弹出来
+      if (!singleCancelled.value) {
+        ElMessage.error('AI分析失败：' + (error.message || error));
+      }
     }
   }
 
@@ -492,6 +550,7 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
     }
 
     batchAiLoading.value = true;
+    batchCancelled.value = false;
     batchAiProgress.value = { visible: true, percent: 0, message: '准备中...', stage: 'init', current: 0, total: tableRows.value.length, text: '准备中...' };
 
     // 注册进度监听器，实时更新批量分析进度
@@ -627,12 +686,20 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
           batchAiProgress.value = { ...batchAiProgress.value, stage: 'error', message: '解析失败' };
         }
       } else {
-        ElMessage.error(res.error?.message || 'AI分析失败');
-        batchAiProgress.value = { ...batchAiProgress.value, stage: 'error', message: res.error?.message || '分析失败' };
+        if (batchCancelled.value) {
+          batchAiProgress.value.visible = false;
+          batchAiMinimized.value = false;
+        } else {
+          ElMessage.error(res.error?.message || 'AI分析失败');
+          batchAiProgress.value = { ...batchAiProgress.value, stage: 'error', message: res.error?.message || '分析失败' };
+        }
       }
     } catch (error: any) {
-      ElMessage.error('AI分析失败：' + (error.message || error));
-      batchAiProgress.value = { ...batchAiProgress.value, stage: 'error', message: error.message || '分析失败' };
+      // 取消不等于失败：中断后不把「用户已取消」当错误弹出来
+      if (!batchCancelled.value) {
+        ElMessage.error('AI分析失败：' + (error.message || error));
+        batchAiProgress.value = { ...batchAiProgress.value, stage: 'error', message: error.message || '分析失败' };
+      }
     } finally {
       if (unsubscribeProgress) {
         unsubscribeProgress();
@@ -676,6 +743,8 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
     aiAnalyze,
     executeAiAnalyze,
     applyAiResult,
+    cancelSingleAnalysis,
+    cancelBatchAnalysis,
     handleBatchUpload,
     removeBatchFile,
     clearBatchFiles,

@@ -96,6 +96,26 @@ function isImageFile(filePath: string): boolean {
   return ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff'].includes(ext);
 }
 
+/**
+ * OCR 串行锁。
+ *
+ * tesseract Worker 是**单例**：两个调用方同时 `worker.recognize()` 会让后一次覆盖前一次的
+ * 识别上下文（实测表现为「A 图的文字出现在 B 图的结果里」）。批量分析截图与单张 OCR
+ * 很可能同时进行，必须把「取 Worker → recognize」整段串行化。
+ *
+ * 用 Promise 链实现：前序无论成功失败都要推进队列，否则一次失败会永久卡死后续识别。
+ */
+let ocrQueue: Promise<unknown> = Promise.resolve();
+
+export function withOcrLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = ocrQueue.then(fn, fn);
+  ocrQueue = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
 export async function getSharedWorker(language: string = 'chi_sim+eng'): Promise<Worker | null> {
   return await (async () => {
     // 已有 Worker 且语言匹配，直接返回
@@ -204,12 +224,7 @@ export async function extractTextFromImage(
 
     log.info(`[OCR] 开始识别: ${imagePath}`);
 
-    const worker = await getSharedWorker(language);
-    if (!worker) {
-      log.warn('[OCR] Worker 不可用');
-      return { text: '', confidence: 0, words: [] };
-    }
-
+    // 预处理（sharp）较重且与 Worker 无关，放在锁外并行；只串行化 Worker 相关部分
     let imageBuffer: Buffer;
     if (preprocess) {
       imageBuffer = await preprocessImage(imagePath);
@@ -217,7 +232,17 @@ export async function extractTextFromImage(
       imageBuffer = await readFile(imagePath);
     }
 
-    const { data } = await worker.recognize(imageBuffer);
+    const data = await withOcrLock(async () => {
+      const worker = await getSharedWorker(language);
+      if (!worker) return null;
+      const res = await worker.recognize(imageBuffer);
+      return res.data;
+    });
+
+    if (!data) {
+      log.warn('[OCR] Worker 不可用');
+      return { text: '', confidence: 0, words: [] };
+    }
 
     const result: OCRResult = {
       text: data.text || '',

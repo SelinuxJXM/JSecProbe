@@ -172,16 +172,8 @@ export function registerIssueHandlers(): void {
           sortAssetRows.forEach((a: any) => { assetNameMap[a.id] = a; });
         }
       } else {
-        // 默认排序：先获取所有符合条件的数据，在应用层按安全域和资产类型排序，再分页
-        const allList = await db.select().from(schema.issues).where(whereClause);
-
-        // 获取资产信息用于排序
-        const allAssetIds = [...new Set(allList.map((i: any) => i.assetId).filter(Boolean))];
-        if (allAssetIds.length > 0) {
-          const assetRows = await db.select().from(schema.assets).where(inArray(schema.assets.id, allAssetIds));
-          assetRows.forEach((a: any) => { assetNameMap[a.id] = a; });
-        }
-
+        // 默认排序：此前是把整张符合条件的 issues 表 SELECT 进内存、JS 排序后再切片，
+        // 一次请求可能拉全表。现在把排序下推成 SQL 的 CASE 表达式，直接 limit/offset 分页。
         // 改造：按项目 standardId 动态加载域顺序，fallback 国标十域
         const { domainOrder: DOMAIN_ORDER } = await loadProjectDomainInfo(projectId);
 
@@ -198,29 +190,38 @@ export function registerIssueHandlers(): void {
           'data_category',      // 数据分类
         ];
 
-        // 按安全域排序，安全计算环境按资产类型排序
-        allList.sort((a: any, b: any) => {
-          const domainIdxA = DOMAIN_ORDER.indexOf(a.securityDomain);
-          const domainIdxB = DOMAIN_ORDER.indexOf(b.securityDomain);
-          if (domainIdxA !== domainIdxB) return (domainIdxA === -1 ? 999 : domainIdxA) - (domainIdxB === -1 ? 999 : domainIdxB);
+        // 域值/类型值一律走参数绑定，不拼进 SQL 字符串
+        const domainCase = sql.join(
+          DOMAIN_ORDER.map((d, i) => sql`WHEN ${d} THEN ${i}`),
+          sql` `
+        );
+        const domainOrderExpr = sql`CASE ${schema.issues.securityDomain} ${domainCase} ELSE ${DOMAIN_ORDER.length} END`;
 
-          // 同属安全计算环境时，按资产类型排序
-          if (a.securityDomain === 'secure_computing' && b.securityDomain === 'secure_computing') {
-            const assetA = assetNameMap[a.assetId];
-            const assetB = assetNameMap[b.assetId];
-            const typeA = assetA?.category || '';
-            const typeB = assetB?.category || '';
-            const typeIdxA = ASSET_TYPE_ORDER.indexOf(typeA);
-            const typeIdxB = ASSET_TYPE_ORDER.indexOf(typeB);
-            if (typeIdxA !== typeIdxB) return (typeIdxA === -1 ? 999 : typeIdxA) - (typeIdxB === -1 ? 999 : typeIdxB);
+        const typeCase = sql.join(
+          ASSET_TYPE_ORDER.map((t, i) => sql`WHEN ${t} THEN ${i}`),
+          sql` `
+        );
+        // 只有安全计算环境内部才按资产类型细分，其余层面该列恒为 0
+        const assetTypeOrderExpr = sql`CASE WHEN ${schema.issues.securityDomain} = 'secure_computing' THEN (CASE ${schema.assets.category} ${typeCase} ELSE ${ASSET_TYPE_ORDER.length} END) ELSE 0 END`;
+
+        const rows = await db
+          .select({
+            issue: schema.issues,
+            assetName: schema.assets.name,
+          })
+          .from(schema.issues)
+          .leftJoin(schema.assets, eq(schema.assets.id, schema.issues.assetId))
+          .where(whereClause)
+          .orderBy(domainOrderExpr, assetTypeOrderExpr)
+          .limit(pageSize)
+          .offset((page - 1) * pageSize);
+
+        for (const r of rows) {
+          if (r.issue.assetId && r.assetName) {
+            assetNameMap[r.issue.assetId] = { name: r.assetName };
           }
-
-          return 0;
-        });
-
-        // 分页
-        const startIndex = (page - 1) * pageSize;
-        list = allList.slice(startIndex, startIndex + pageSize);
+        }
+        list = rows.map(r => r.issue);
       }
 
       // 添加资产名称到结果（assetNameMap 已在上方按路径预取，含完整资产对象，直接取 name）

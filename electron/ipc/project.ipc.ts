@@ -163,12 +163,24 @@ async function calcProjectProgress(projectId: string): Promise<number> {
   }
 }
 
+let lastAssetCountFixAt = 0;
+const ASSET_COUNT_FIX_INTERVAL_MS = 60_000;
+
 /**
- * 校准全部项目的 assetCount 冗余字段。
+ * 校准项目的 assetCount 冗余字段。
  * 该字段此前仅在备份恢复时写入，日常增删资产从不更新，导致列表/仪表盘统计漂移。
- * 采用单条 UPDATE 子查询按 assets 表实际计数回写，项目列表每次加载时调用一次。
+ *
+ * 两处优化：
+ * 1. 只更新「与实际计数不一致」的行 —— 原写法无条件 UPDATE 全表，
+ *    即便一个数字都没变也要重写所有项目行并维护索引。
+ * 2. 60 秒节流 —— 项目列表会被搜索、翻页、切页签反复触发，没必要每次都比对。
+ *
+ * @param force 传 true 跳过节流（资产增删后希望立即生效时使用）
  */
-export async function recalculateProjectAssetCounts(): Promise<void> {
+export async function recalculateProjectAssetCounts(force = false): Promise<void> {
+  const now = Date.now();
+  if (!force && now - lastAssetCountFixAt < ASSET_COUNT_FIX_INTERVAL_MS) return;
+  lastAssetCountFixAt = now;
   try {
     const db = getDb();
     await db.run(sql`
@@ -177,6 +189,11 @@ export async function recalculateProjectAssetCounts(): Promise<void> {
         SELECT COUNT(*) FROM assets
         WHERE assets.project_id = projects.id AND assets.is_assessment_target = 1
       )
+      WHERE asset_count IS NULL
+         OR asset_count <> (
+           SELECT COUNT(*) FROM assets
+           WHERE assets.project_id = projects.id AND assets.is_assessment_target = 1
+         )
     `);
   } catch (error) {
     log.warn('校准项目资产数失败:', error);
@@ -221,20 +238,15 @@ export function registerProjectHandlers(): void {
         .limit(pageSize)
         .offset((page - 1) * pageSize);
 
+      // calcProjectProgress 会写库并返回新的进度值，直接用返回值覆盖即可。
+      // 原实现算完又整页重查一次同样的分页查询，白跑一趟。
+      const progressMap = new Map<string, number>();
       for (const project of list) {
-        await calcProjectProgress(project.id);
+        progressMap.set(project.id, await calcProjectProgress(project.id));
       }
 
-      const updatedList = await db
-        .select()
-        .from(schema.projects)
-        .where(whereClause)
-        .orderBy(desc(schema.projects.createdAt))
-        .limit(pageSize)
-        .offset((page - 1) * pageSize);
-
       return {
-        list: updatedList.map((p) => ({
+        list: list.map((p) => ({
           id: p.id,
           name: p.name,
           projectNo: p.projectNo || undefined,
@@ -253,7 +265,7 @@ export function registerProjectHandlers(): void {
           description: p.description || undefined,
           assetCount: p.assetCount,
           complianceRate: p.complianceRate || undefined,
-          progress: p.progress || 0,
+          progress: progressMap.get(p.id) ?? p.progress ?? 0,
           createdAt: p.createdAt,
           updatedAt: p.updatedAt,
         })),

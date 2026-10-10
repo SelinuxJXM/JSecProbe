@@ -128,24 +128,3 @@ export function verifyHostKey(
 
   return { ok: true };
 }
-
-/** 列出已登记的主机指纹（供设置界面/排障使用） */
-export function listKnownHosts(): Array<{ host: string; fingerprint: string; addedAt: string }> {
-  const store = readStore();
-  return Object.entries(store).map(([host, v]) => ({
-    host,
-    fingerprint: v.fingerprint,
-    addedAt: v.addedAt,
-  }));
-}
-
-/** 删除某主机的登记指纹 */
-export function forgetHost(host: string, port: number): void {
-  const store = readStore();
-  const storeKey = hostKeyOf(host, port);
-  if (store[storeKey]) {
-    delete store[storeKey];
-    writeStore(store);
-    log.info(`[SSH] 已删除主机指纹记录: ${storeKey}`);
-  }
-}

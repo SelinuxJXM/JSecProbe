@@ -1,4 +1,13 @@
-import { Shell, Command } from 'winrm-client';
+/** winrm-client 懒加载：见 ssh.connector.ts 的同名说明 */
+let winrmLib: typeof import('winrm-client') | null = null;
+async function loadWinrm(): Promise<typeof import('winrm-client')> {
+  if (!winrmLib) {
+    const mod: any = await import('winrm-client');
+    // CJS 互操作：见 ssh.connector.ts 的同名说明
+    winrmLib = (mod?.default && mod.default.Shell ? mod.default : mod) as typeof import('winrm-client');
+  }
+  return winrmLib;
+}
 import log from 'electron-log';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
@@ -101,6 +110,7 @@ export class WinRmConnector implements IConnector {
 
   private async execWinRm(command: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     const params = this.conn!;
+    const { Shell, Command } = await loadWinrm();
     let shellId: string | null = null;
     try {
       shellId = await Shell.doCreateShell(params);

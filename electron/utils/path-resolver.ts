@@ -28,20 +28,6 @@ export async function toAbsolutePath(relativePath: string): Promise<string> {
 }
 
 /**
- * 批量转换绝对路径数组为相对路径数组
- */
-export async function toRelativePaths(absolutePaths: string[]): Promise<string[]> {
-  return Promise.all(absolutePaths.map(p => toRelativePath(p)));
-}
-
-/**
- * 批量转换相对路径数组为绝对路径数组
- */
-export async function toAbsolutePaths(relativePaths: string[]): Promise<string[]> {
-  return Promise.all(relativePaths.map(p => toAbsolutePath(p)));
-}
-
-/**
  * 同步解析路径：如果是相对路径则转为绝对路径，否则直接返回
  */
 export function resolvePathSync(inputPath: string): string {
@@ -71,13 +57,6 @@ export async function resolvePath(inputPath: string): Promise<string> {
   const normalized = inputPath.replace(/\//g, path.sep);
   const fullPath = path.join(appDataPath, normalized);
   return fullPath;
-}
-
-/**
- * 批量解析路径数组
- */
-export async function resolvePaths(inputPaths: string[]): Promise<string[]> {
-  return Promise.all(inputPaths.map(p => resolvePath(p)));
 }
 
 /**

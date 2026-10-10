@@ -111,13 +111,11 @@ async function loadScreenshotDataUrl(filePath: string) {
   screenshotLoadingLocks.add(filePath);
 
   try {
-    console.log('[loadScreenshotDataUrl] 开始加载:', filePath);
     const res = await window.api.screenshot.getBase64({ filePath });
     if (res.success && res.data && res.data.base64) {
       const dataUrl = `data:${res.data.mimeType || 'image/png'};base64,${res.data.base64}`;
       props.row.screenshotUrls = Object.assign({}, props.row.screenshotUrls, { [filePath]: dataUrl });
       emit('update:row', { ...props.row });
-      console.log('[loadScreenshotDataUrl] 加载成功:', filePath.substring(0, 50) + '...');
     } else {
       console.warn('[loadScreenshotDataUrl] getBase64 返回空结果:', filePath, 'success:', res.success, 'hasData:', !!res.data, 'error:', res.error?.message);
       props.row.screenshotUrls = Object.assign({}, props.row.screenshotUrls, { [filePath]: 'error' });

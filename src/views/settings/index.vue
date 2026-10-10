@@ -471,6 +471,7 @@
 import { ref, reactive, onMounted, onUnmounted, watch, computed } from 'vue';
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus';
 import DOMPurify from 'dompurify';
+import { formatDateTime } from '@/utils/format';
 import { Download, Upload, InfoFilled, Plus, Refresh } from '@element-plus/icons-vue';
 import { useUserStore } from '@/stores/user';
 import { applyPrimaryColor, getSavedPrimaryColor, clearPrimaryColor, reapplyPrimaryColor, DEFAULT_PRIMARY_COLOR } from '@/utils/theme';
@@ -1070,10 +1071,7 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(k, i)).toFixed(i === 0 ? 0 : 2)} ${sizes[i]}`;
 }
 function formatDate(ms: number): string {
-  if (!ms) return '';
-  const d = new Date(ms);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return formatDateTime(ms);
 }
 
 async function runScreenshotCleanup(dryRun: boolean) {

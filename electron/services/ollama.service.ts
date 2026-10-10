@@ -29,7 +29,6 @@ const MIN_DISK_SPACE_GB = 5;
 let ollamaProcess: ReturnType<typeof spawn> | null = null;
 let startInProgress = false;
 const OLLAMA_API_TAGS = '/api/tags';
-const OLLAMA_API_SHOW = '/api/show';
 const OLLAMA_API_PULL = '/api/pull';
 const OLLAMA_API_DELETE = '/api/delete';
 
@@ -67,14 +66,6 @@ interface OllamaTagResponse {
     digest: string;
     modified_at: string;
   }>;
-}
-
-interface OllamaShowResponse {
-  details?: {
-    parameter_size?: string;
-    quantization_level?: string;
-    family?: string;
-  };
 }
 
 const ALLOWED_PROTOCOLS = ['http:', 'https:'];
@@ -232,29 +223,6 @@ export async function listModels(url: string = OLLAMA_DEFAULT_URL): Promise<Olla
     digest: m.digest,
     modifiedAt: m.modified_at,
   }));
-}
-
-export async function getModelInfo(modelName: string, url: string = OLLAMA_DEFAULT_URL): Promise<OllamaModel | null> {
-  try {
-    const data: OllamaShowResponse = await fetchOllama(url, OLLAMA_API_SHOW, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: modelName }),
-    });
-    return {
-      name: modelName,
-      size: 0,
-      digest: '',
-      modifiedAt: '',
-      details: {
-        parameterSize: data.details?.parameter_size,
-        quantization: data.details?.quantization_level,
-        family: data.details?.family,
-      },
-    };
-  } catch {
-    return null;
-  }
 }
 
 export async function pullModel(

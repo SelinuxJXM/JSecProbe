@@ -1406,6 +1406,28 @@ export function registerAssessmentHandlers(): void {
       }
       const domainsToImport = DOMAIN_SHEETS.filter(d => involvedDomainKeys.has(d.domain));
 
+      // 预取该项目已有的测评记录并建内存索引。
+      // 原实现在最内层循环里对每条记录 findFirst 一次（N+1 查询）：
+      // 300 个测评项 × 50 个资产就是上万次单条查询，导入慢到分钟级。
+      // 这里一次性读入后做哈希查找，查询次数从 O(记录数) 降到 1。
+      const existingRecordRows = await db
+        .select({
+          id: schema.assessmentRecords.id,
+          itemId: schema.assessmentRecords.itemId,
+          assetId: schema.assessmentRecords.assetId,
+        })
+        .from(schema.assessmentRecords)
+        .where(eq(schema.assessmentRecords.projectId, projectId));
+      // key = itemId || (assetId ?? '')：assetId 为 NULL 与空串在原判重逻辑里同义
+      const existingRecordIndex = new Map<string, string>();
+      for (const r of existingRecordRows) {
+        existingRecordIndex.set(`${r.itemId}||${r.assetId || ''}`, r.id);
+      }
+
+      // 本轮要写入的记录：先在内存里收集好，循环结束后用一个事务批量落库
+      const pendingInsert: any[] = [];
+      const pendingUpdate: Array<{ id: string; data: any }> = [];
+
       for (const { domain: domainKey } of domainsToImport) {
         const extOrConditions = [eq(schema.assessmentItems.extensionType, 'general')];
         for (const ext of projectExtCodes) extOrConditions.push(eq(schema.assessmentItems.extensionType, ext));
@@ -1448,19 +1470,6 @@ export function registerAssessmentHandlers(): void {
               if (!data) continue;
               if (!data.resultRecord && data.result === 'untested') continue;
 
-              const existingConditions = [
-                eq(schema.assessmentRecords.projectId, projectId),
-                eq(schema.assessmentRecords.itemId, item.id),
-              ];
-              if (data.assetId) {
-                existingConditions.push(eq(schema.assessmentRecords.assetId, data.assetId));
-              } else {
-                existingConditions.push(sql`${schema.assessmentRecords.assetId} IS NULL`);
-              }
-              const existing = await db.query.assessmentRecords.findFirst({
-                where: and(...existingConditions),
-              });
-
               const recordData: any = {
                 projectId,
                 assetId: data.assetId,
@@ -1475,21 +1484,31 @@ export function registerAssessmentHandlers(): void {
                 updatedAt: now,
               };
 
-              if (existing) {
-                await db.update(schema.assessmentRecords)
-                  .set(recordData)
-                  .where(eq(schema.assessmentRecords.id, existing.id));
+              // 内存判重（替代原先每条一次的 findFirst）
+              const existingId = existingRecordIndex.get(`${item.id}||${data.assetId || ''}`);
+              if (existingId) {
+                pendingUpdate.push({ id: existingId, data: recordData });
               } else {
-                await db.insert(schema.assessmentRecords).values({
-                  id: randomUUID(),
-                  ...recordData,
-                  createdAt: now,
-                });
+                pendingInsert.push({ id: randomUUID(), ...recordData, createdAt: now });
               }
               totalCount++;
             }
           }
         }
+      }
+
+      // 统一在一个事务里批量落库：
+      // 原先每条记录各自提交，上万次独立事务的开销极大，且中途失败会留下「导入了一半」的脏状态。
+      if (pendingInsert.length > 0 || pendingUpdate.length > 0) {
+        db.transaction((tx: any) => {
+          for (const row of pendingInsert) {
+            tx.insert(schema.assessmentRecords).values(row).run();
+          }
+          for (const { id, data } of pendingUpdate) {
+            tx.update(schema.assessmentRecords).set(data).where(eq(schema.assessmentRecords.id, id)).run();
+          }
+        });
+        log.info(`[导入评估记录] 事务提交完成：新增 ${pendingInsert.length} 条，更新 ${pendingUpdate.length} 条`);
       }
 
       return { count: totalCount };

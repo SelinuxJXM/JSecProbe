@@ -205,7 +205,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, shallowRef, computed } from 'vue';
 import { ElMessage } from 'element-plus';
 import FilePreviewDialog from './file-preview-dialog.vue';
 
@@ -261,8 +261,10 @@ const emit = defineEmits<{
 // 响应式数据
 const knowledgeTab = ref<'command' | 'guide'>('command');
 const knowledgeSearch = ref('');
-const commandList = ref<CommandItem[]>([]);
-const documentList = ref<DocumentItem[]>([]);
+// 两个列表都是「拉回来整表替换 + 只读展示」（搜索走 computed 过滤，不改原对象），
+// 用 shallowRef 省掉每条命令/文档建深层代理的开销。
+const commandList = shallowRef<CommandItem[]>([]);
+const documentList = shallowRef<DocumentItem[]>([]);
 const previewDialogRef = ref<InstanceType<typeof FilePreviewDialog>>();
 const matchedIndustry = ref<string>('');
 

@@ -421,7 +421,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted, computed } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   Plus,
@@ -450,18 +450,17 @@ import ReportConfigDialog from './report-config-dialog.vue';
 import IssueAiAnalysis from './components/issue-ai-analysis.vue';
 import IssueDescriptionAnalysis from './components/issue-description-analysis.vue';
 import PageHint from '@/components/PageHint/index.vue';
+import { useProjectNav } from '@/composables/useProjectNav';
 
 const route = useRoute();
-const router = useRouter();
 const projectId = computed(() => route.params.id as string);
+const { goToPhase, goBack } = useProjectNav(projectId);
 const project = ref<any>(null);
 const reportDialogRef = ref<InstanceType<typeof ReportConfigDialog> | null>(null);
 const issueAiAnalysisRef = ref<InstanceType<typeof IssueAiAnalysis> | null>(null);
 const issueDescriptionAnalysisRef = ref<InstanceType<typeof IssueDescriptionAnalysis> | null>(null);
 
-function goBack() {
-  router.back();
-}
+// goToPhase / goBack 由 useProjectNav 提供（问题管理 / 现场核查 / 系统构成三处共用同一实现）
 
 async function loadProject() {
   const pid = projectId.value;
@@ -477,12 +476,6 @@ async function loadProject() {
   }
 }
 
-function goToPhase(phase: string) {
-  const pid = projectId.value;
-  if (pid) {
-    router.push(`/projects/${pid}/${phase}`);
-  }
-}
 
 const loading = ref(false);
 const saving = ref(false);
@@ -990,8 +983,10 @@ function handleAiBatchCommand(command: string) {
   }
   
   const scopeText = selectedRows.value.length > 0 ? `选中的 ${selectedRows.value.length} 个` : '全部';
-  console.log(`[handleAiBatchCommand] 分析范围: ${scopeText}`);
-  
+
+  // 批量操作耗时较长，先把范围显式告知用户，避免"点错范围却已经跑了一半"
+  ElMessage.info(`开始分析${scopeText}问题（共 ${targetIssues.length} 个）`);
+
   if (command === 'describe') {
     issueDescriptionAnalysisRef.value?.batchAnalyzeIssueDescriptions(targetIssues);
   } else if (command === 'suggestion') {
@@ -1001,8 +996,6 @@ function handleAiBatchCommand(command: string) {
 
 async function handleApplySuggestion(issueId: string, suggestion: string) {
   if (!window.api) return;
-  console.log('[handleApplySuggestion] issueId:', issueId, 'suggestion长度:', suggestion.length);
-  console.log('[handleApplySuggestion] suggestion前50字符:', JSON.stringify(suggestion.substring(0, 50)));
   try {
     const res = await window.api.issue.update(issueId, { rectificationSuggestion: suggestion });
     if (res.success) {

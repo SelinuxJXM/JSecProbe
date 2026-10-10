@@ -31,6 +31,9 @@ export default defineConfig({
                 'dompurify',
                 'sharp','ssh2',
                 'mysql2',
+                // 采集连接器已改为动态 import（懒加载），这里必须显式外置子路径，
+                // 否则 rollup 会把 mysql2/promise 打进主进程包里，懒加载就白做了
+                'mysql2/promise',
                 'pg',
                 'pg-native',
                 'mssql',

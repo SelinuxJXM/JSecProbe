@@ -615,11 +615,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
+import { ref, shallowRef, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import DOMPurify from 'dompurify';
+import { renderMarkdown } from '@/utils/markdown';
 import type { KnowledgeCategory, KnowledgeDocument, KnowledgeCommand } from '../../../shared/types';
 import { useProjectStore } from '@/stores/project';
+import { useAppStore } from '@/stores/app';
 import FilePreviewDialog from '../onsite-verification/components/file-preview-dialog.vue';
 import RecursiveCategoryTree from './components/RecursiveCategoryTree.vue';
 import SkeletonLoader from '@/components/SkeletonLoader/index.vue';
@@ -634,13 +635,39 @@ const expandAll = ref(false);
 
 const selectedCategoryId = ref('');
 const allCategories = ref<KnowledgeCategory[]>([]);
-const documentList = ref<KnowledgeDocument[]>([]);
+// 文档列表整体替换、只读展示，用 shallowRef 免去逐条深层代理；
+// 命令列表保持 ref —— 它有行内 v-model 编辑（cmd.name / cmd.command 等），改了就不刷新了。
+const documentList = shallowRef<KnowledgeDocument[]>([]);
 const commandList = ref<KnowledgeCommand[]>([]);
 
 const docViewerVisible = ref(false);
 const viewingDoc = ref<KnowledgeDocument | null>(null);
 const filePreviewRef = ref<InstanceType<typeof FilePreviewDialog>>();
 const projectStore = useProjectStore();
+const appStore = useAppStore();
+
+/**
+ * 同步项目上下文。
+ *
+ * 此前 projectStore.get() 全项目零调用，currentProject 恒为 null，
+ * 于是「引用文档到项目」永远弹「请先在项目管理中选择一个项目」——功能是死的。
+ * 这里从全局当前项目 id 拉取并随切换同步。
+ */
+async function syncCurrentProject() {
+  const pid = appStore.currentProjectId;
+  if (!pid) return;
+  if (projectStore.currentProject?.id === pid) return;
+  try {
+    await projectStore.get(pid);
+  } catch (e) {
+    console.warn('[knowledge-base] 加载当前项目失败:', e);
+  }
+}
+
+// 项目在别处被切换时同步过来，避免引用到旧项目
+watch(() => appStore.currentProjectId, () => {
+  syncCurrentProject();
+});
 
 const showCategoryDialog = ref(false);
 const showUploadDialog = ref(false);
@@ -823,25 +850,6 @@ function formatDate(date?: string) {
   const d = new Date(date);
   const pad = (n: number) => n.toString().padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-function renderMarkdown(text: string): string {
-  if (!text) return '';
-  let html = text;
-  html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
-  html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-  html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
-  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
-  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
-  html = html.replace(/`(.*?)`/g, '<code>$1</code>');
-  html = html.replace(/^- (.*$)/gim, '<li>$1</li>');
-  html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
-  html = html.replace(/^(\d+)\. (.*$)/gim, '<li>$2</li>');
-  html = html.replace(/\n\n/g, '</p><p>');
-  html = html.replace(/\n/g, '<br>');
-  html = '<p>' + html + '</p>';
-  return DOMPurify.sanitize(html);
 }
 
 function toggleNode(id: string) {
@@ -1695,6 +1703,7 @@ async function handleBatchImportGuide() {
 }
 
 onMounted(() => {
+  syncCurrentProject();
   loadCategories();
   loadDocuments();
   loadCommandIndustries();

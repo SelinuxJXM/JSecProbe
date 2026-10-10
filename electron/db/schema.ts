@@ -214,19 +214,6 @@ export const knowledgeDocuments = sqliteTable('knowledge_documents', {
   updatedAt: text('updated_at').notNull(),
 });
 
-export const reportTemplates = sqliteTable('report_templates', {
-  id: text('id').primaryKey(),
-  name: text('name').notNull(),
-  category: text('category'),
-  description: text('description'),
-  content: text('content').notNull(),
-  variables: text('variables'),
-  isDefault: integer('is_default').notNull().default(0),
-  createdBy: text('created_by'),
-  createdAt: text('created_at').notNull(),
-  updatedAt: text('updated_at').notNull(),
-});
-
 export const aiConfigs = sqliteTable('ai_configs', {
   id: text('id').primaryKey().default('default'),
   provider: text('provider').default('openai'),

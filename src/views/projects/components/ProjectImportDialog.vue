@@ -101,6 +101,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { formatDateTime } from '@/utils/format';
 
 interface PreviewProject {
   id: string;
@@ -161,8 +162,9 @@ const conflictCount = computed(
 );
 
 function formatTime(iso: string): string {
-  if (!iso) return '';
-  return iso.replace('T', ' ').slice(0, 16);
+  // 原先是 `iso.replace('T',' ').slice(0,16)`：直接切字符串，不做时区转换，
+  // 与列表页（走 formatDateTime）显示同一条数据会差 8 小时。统一走日期解析。
+  return formatDateTime(iso);
 }
 
 function close() {

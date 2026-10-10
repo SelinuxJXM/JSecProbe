@@ -40,7 +40,10 @@
           <button v-if="aiLoading" class="ai-minimize-btn" @click="aiDialogVisible = false; aiDialogMinimized = true" title="最小化">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
           </button>
-          <button v-if="!aiLoading" class="ai-close-btn" @click="aiDialogVisible = false" title="关闭">
+          <button v-if="aiLoading" class="ai-cancel-btn" @click="cancelSingleAnalysis" title="取消并停止分析">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <button v-else class="ai-close-btn" @click="aiDialogVisible = false" title="关闭">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
@@ -119,7 +122,7 @@
 
     <template #footer>
       <div class="dialog-footer">
-        <el-button @click="aiDialogVisible = false">取消</el-button>
+        <el-button @click="cancelSingleAnalysis">取消</el-button>
         <el-button type="primary" :disabled="aiLoading || !aiAnalysisResult" @click="applyAiResult">
           确认并填入记录表
         </el-button>
@@ -156,6 +159,9 @@
         <div class="ai-progress-header-actions">
           <button v-if="batchAiProgress.percent < 100 && batchAiProgress.stage !== 'error'" class="ai-minimize-btn" @click="batchAiProgress.visible = false; batchAiMinimized = true" title="最小化">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+          <button v-if="batchAiProgress.percent < 100 && batchAiProgress.stage !== 'error'" class="ai-cancel-btn" @click="cancelBatchAnalysis" title="取消并停止批量分析">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
           <button v-if="batchAiProgress.stage === 'error' || batchAiProgress.stage === 'done'" class="ai-close-btn" @click="batchAiProgress.visible = false" title="关闭">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -282,6 +288,8 @@ const {
   batchAiAnalyze,
   getFileType,
   confirmAiConsent,
+  cancelSingleAnalysis,
+  cancelBatchAnalysis,
   cleanup,
 } = useAiAnalysis({
   tableRows: computed(() => props.tableRows),
@@ -625,7 +633,8 @@ onBeforeUnmount(() => {
   }
   
   .ai-minimize-btn,
-  .ai-close-btn {
+  .ai-close-btn,
+  .ai-cancel-btn {
     width: 28px;
     height: 28px;
     border: none;
@@ -644,7 +653,8 @@ onBeforeUnmount(() => {
     }
   }
   
-  .ai-close-btn:hover {
+  .ai-close-btn:hover,
+  .ai-cancel-btn:hover {
     background: var(--color-danger-light);
     color: #DC2626;
   }
@@ -957,13 +967,20 @@ onBeforeUnmount(() => {
 
   .ai-progress-header {
     .ai-minimize-btn,
-    .ai-close-btn {
+    .ai-close-btn,
+    .ai-cancel-btn {
       color: var(--color-text-tertiary);
 
       &:hover {
         background: var(--color-bg-hover);
         color: var(--color-text-primary);
       }
+    }
+
+    .ai-close-btn:hover,
+    .ai-cancel-btn:hover {
+      background: var(--color-danger-light);
+      color: #DC2626;
     }
   }
 

@@ -807,19 +807,8 @@
 <script setup lang="ts">
 import { ref, reactive, computed, nextTick, onMounted, onUnmounted, onDeactivated, onActivated, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import DOMPurify from 'dompurify';
-import { marked } from 'marked';
-
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-});
-
-function renderMarkdown(content: string): string {
-  if (!content) return '';
-  const html = marked.parse(content) as string;
-  return DOMPurify.sanitize(html);
-}
+import { renderMarkdown } from '@/utils/markdown';
+import { fetchProjectOptions } from '@/utils/project-options';
 import {
   Setting,
   Delete,
@@ -1338,18 +1327,12 @@ function formatModelSize(bytes: number): string {
 
 // 加载项目列表
 async function loadProjects() {
-  if (!window.api) return;
   projectsLoading.value = true;
   try {
-    const res = await window.api.project.list({ page: 1, pageSize: 100 });
-    if (res.success && res.data) {
-      projectList.value = res.data.list || [];
-      if (projectList.value.length > 0 && !selectedProjectId.value) {
-        selectedProjectId.value = projectList.value[0].id;
-      }
+    projectList.value = await fetchProjectOptions(100);
+    if (projectList.value.length > 0 && !selectedProjectId.value) {
+      selectedProjectId.value = projectList.value[0].id;
     }
-  } catch (e) {
-    console.error('加载项目列表失败:', e);
   } finally {
     projectsLoading.value = false;
   }

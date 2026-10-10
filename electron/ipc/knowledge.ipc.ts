@@ -13,6 +13,57 @@ import { readExcelSheets, readExcelAsObjects } from '../utils/excel-reader';
 const MAX_EXCEL_SIZE = 50 * 1024 * 1024;
 const MAX_EXCEL_ROWS = 10000;
 
+/** knowledge_commands 的单行插入结构 */
+type KnowledgeCommandInsert = typeof schema.knowledgeCommands.$inferInsert;
+
+/** 带原始行号，便于某行失败时报出准确位置 */
+interface PendingCommand {
+  rowIndex: number;
+  values: KnowledgeCommandInsert;
+}
+
+// SQLite 单条 INSERT 的变量数有上限，分片写入；200 行 × 13 列远在限制之内。
+const COMMAND_INSERT_BATCH = 200;
+
+/**
+ * 分片批量写入知识库命令，返回成功条数；失败的行追加到 errors。
+ *
+ * 原先是逐行 `await db.insert(...)`：每行一条独立 INSERT、各自开一次事务，
+ * 内置库 319 条命令、Excel 上限 10000 行时，开销几乎全在事务提交上。
+ * 改为每片一条多值 INSERT 后快一个数量级。
+ *
+ * 保留原来的容错语义：某一片整体失败（例如其中一行触发了约束）时降级为逐条写入，
+ * 只有真正有问题的行被跳过，不会拖垮整批。
+ */
+function insertKnowledgeCommands(
+  db: ReturnType<typeof getDb>,
+  rows: PendingCommand[],
+  errors: string[],
+): number {
+  let ok = 0;
+  for (let i = 0; i < rows.length; i += COMMAND_INSERT_BATCH) {
+    const chunk = rows.slice(i, i + COMMAND_INSERT_BATCH);
+    if (chunk.length === 0) continue;
+    try {
+      db.transaction((tx) => {
+        tx.insert(schema.knowledgeCommands).values(chunk.map((r) => r.values)).run();
+      });
+      ok += chunk.length;
+    } catch {
+      // 整片失败才逐条重试：正常路径不会走到这里，走到了也要保证坏行可跳过
+      for (const r of chunk) {
+        try {
+          db.insert(schema.knowledgeCommands).values(r.values).run();
+          ok++;
+        } catch (e: any) {
+          errors.push(`第 ${r.rowIndex} 行导入失败: ${e?.message || '未知错误'}`);
+        }
+      }
+    }
+  }
+  return ok;
+}
+
 export function registerKnowledgeHandlers(): void {
   ipcMain.handle('knowledge:listCategories', wrap(async () => {
       const db = getDb();
@@ -431,33 +482,40 @@ export function registerKnowledgeHandlers(): void {
         }
 
         const db = getDb();
+        const now = new Date().toISOString();
 
-        for (const row of rows) {
+        // 先把每行规范化成待插记录（校验与字段兜底逻辑不变），再分片批量写入。
+        // 原实现是逐行 await insert：每行都是一条独立 INSERT、各自开一次事务，
+        // 上千行的 Excel 会把时间全耗在事务开销上；批量后每片只需一次语句。
+        const pending: Array<{ rowIndex: number; values: KnowledgeCommandInsert }> = [];
+        rows.forEach((row, idx) => {
           try {
-            const id = randomUUID();
-            const now = new Date().toISOString();
             const industry = row['行业'] || row['industry'] || row['适用行业'] || '';
-            await db.insert(schema.knowledgeCommands).values({
-              id,
-              name: row['名称'] || row['name'] || '',
-              target: row['目标'] || row['target'] || row['名称'] || row['name'] || '',
-              command: row['命令'] || row['command'] || '',
-              description: row['描述'] || row['description'] || '',
-              os: row['操作系统'] || row['os'] || '',
-              brand: row['品牌'] || row['brand'] || '',
-              deviceType: row['设备类型'] || row['deviceType'] || '',
-              category: row['分类'] || row['category'] || '',
-              subCategory: row['子分类'] || row['subCategory'] || '',
-              industry: typeof industry === 'string' ? industry : '',
-              isFavorite: 0,
-              createdAt: now,
-              updatedAt: now,
+            pending.push({
+              rowIndex: idx + 1,
+              values: {
+                id: randomUUID(),
+                name: row['名称'] || row['name'] || '',
+                target: row['目标'] || row['target'] || row['名称'] || row['name'] || '',
+                command: row['命令'] || row['command'] || '',
+                description: row['描述'] || row['description'] || '',
+                os: row['操作系统'] || row['os'] || '',
+                brand: row['品牌'] || row['brand'] || '',
+                deviceType: row['设备类型'] || row['deviceType'] || '',
+                category: row['分类'] || row['category'] || '',
+                subCategory: row['子分类'] || row['subCategory'] || '',
+                industry: typeof industry === 'string' ? industry : '',
+                isFavorite: 0,
+                createdAt: now,
+                updatedAt: now,
+              },
             });
-            imported++;
           } catch (err: any) {
-            errors.push(`第 ${imported + errors.length + 1} 行导入失败: ${err.message}`);
+            errors.push(`第 ${idx + 1} 行解析失败: ${err.message}`);
           }
-        }
+        });
+
+        imported = insertKnowledgeCommands(db, pending, errors);
 
         return { imported, errors };
       } catch (err: any) {
@@ -589,17 +647,19 @@ export function registerKnowledgeHandlers(): void {
       let skipped = 0;
 
       if (data.commands && Array.isArray(data.commands)) {
-        for (const cmd of data.commands) {
+        // 同为分片批量写入（见 insertKnowledgeCommands 注释）：内置库 319 条命令，
+        // 逐条 INSERT 时每条都要开一次事务，导入一份完整知识库要几百次提交。
+        const pending: PendingCommand[] = [];
+        data.commands.forEach((cmd: any, idx: number) => {
           // 兼容性：旧版本导出 JSON 可能缺 industry、缺失必选字段；缺必填则跳过，不中断整批
-          if (!cmd || typeof cmd !== 'object') { skipped++; continue; }
+          if (!cmd || typeof cmd !== 'object') { skipped++; return; }
           const name = typeof cmd.name === 'string' ? cmd.name.trim() : '';
           const command = typeof cmd.command === 'string' ? cmd.command : '';
-          if (!name || !command) { skipped++; continue; }
-          const id = randomUUID();
-          const industry = typeof cmd.industry === 'string' ? cmd.industry : '';
-          try {
-            await db.insert(schema.knowledgeCommands).values({
-              id,
+          if (!name || !command) { skipped++; return; }
+          pending.push({
+            rowIndex: idx + 1,
+            values: {
+              id: randomUUID(),
               name,
               target: typeof cmd.target === 'string' ? cmd.target : '',
               command,
@@ -609,16 +669,19 @@ export function registerKnowledgeHandlers(): void {
               deviceType: typeof cmd.deviceType === 'string' ? cmd.deviceType : '',
               category: typeof cmd.category === 'string' ? cmd.category : '',
               subCategory: typeof cmd.subCategory === 'string' ? cmd.subCategory : '',
-              industry,
+              industry: typeof cmd.industry === 'string' ? cmd.industry : '',
               isFavorite: Number(cmd.isFavorite) === 1 ? 1 : 0,
               createdAt: now,
               updatedAt: now,
-            });
-            count++;
-          } catch (e) {
-            skipped++;
-          }
-        }
+            },
+          });
+        });
+
+        const importErrors: string[] = [];
+        const inserted = insertKnowledgeCommands(db, pending, importErrors);
+        count = inserted;
+        // 写入阶段失败的行同样计入 skipped，保持「成功 / 跳过」二分的返回语义
+        skipped += pending.length - inserted;
       }
       return { count, skipped };
     }));

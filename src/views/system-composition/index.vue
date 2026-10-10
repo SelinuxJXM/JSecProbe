@@ -520,9 +520,11 @@ import type { Asset, AssetCategory, AssetListResult } from '@shared/types';
 import { ASSET_CATEGORIES } from '@shared/asset-categories';
 import { useAssetAutoSave } from './composables/useAssetAutoSave';
 import PageHint from '@/components/PageHint/index.vue';
+import { useProjectNav } from '@/composables/useProjectNav';
 
 const route = useRoute();
 const router = useRouter();
+const { goToPhase, goBack } = useProjectNav();
 
 // 状态
 const loading = ref(false);
@@ -910,16 +912,7 @@ function handlePaste(event: ClipboardEvent, row: Asset, field: string) {
   }
 }
 
-function goToPhase(phase: string) {
-  const projectId = route.params.id as string;
-  if (projectId) {
-    router.push(`/projects/${projectId}/${phase}`);
-  }
-}
-
-function goBack() {
-  router.back();
-}
+// goToPhase / goBack 由 useProjectNav 提供（问题管理 / 现场核查 / 系统构成三处共用同一实现）
 
 // 加载项目信息
 async function loadProject() {

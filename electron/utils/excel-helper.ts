@@ -38,39 +38,6 @@ export const BORDER_MUTED = {
   bottom: { style: 'thin' as const, color: { argb: PROBE_THEME.borderMuted } },
   right: { style: 'thin' as const, color: { argb: PROBE_THEME.borderMuted } },
 };
-export const BORDER_MEDIUM = {
-  top: { style: 'medium' as const, color: { argb: PROBE_THEME.borderStrong } },
-  left: { style: 'medium' as const, color: { argb: PROBE_THEME.borderStrong } },
-  bottom: { style: 'medium' as const, color: { argb: PROBE_THEME.borderStrong } },
-  right: { style: 'medium' as const, color: { argb: PROBE_THEME.borderStrong } },
-};
-
-// 列索引 → Excel 字母（0-based）
-export function colLetter(n: number): string {
-  let s = '';
-  let x = Math.max(0, Math.floor(Number(n) || 0));
-  while (x >= 0) { s = String.fromCharCode(65 + (x % 26)) + s; x = Math.floor(x / 26) - 1; }
-  return s;
-}
-
-// 对一行的指定列范围统一应用边框
-export function applyRowBorder(row: ExcelJS.Row, fromCol: number, toCol: number, border = BORDER_THIN) {
-  for (let c = fromCol; c <= toCol; c++) {
-    const cell = row.getCell(c);
-    cell.border = border;
-  }
-}
-
-// 单元格快速样式（对已有 styleCell 做高阶包装，保留原函数签名兼容）
-export function titleCell(cell: ExcelJS.Cell, fontSize = 20, color = PROBE_THEME.brandDark) {
-  cell.font = { bold: true, size: fontSize, color: { argb: color }, name: '微软雅黑' };
-  cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
-}
-
-export function subtitleCell(cell: ExcelJS.Cell, fontSize = 11) {
-  cell.font = { size: fontSize, color: { argb: PROBE_THEME.textSecondary }, name: '微软雅黑' };
-  cell.alignment = { vertical: 'middle', wrapText: true };
-}
 
 // 标准标题横幅：合并 [row,fromCol]-[row,toCol]，写标题文字 + 副标题（并入同一单元格，去掉独立副行）
 export function addTitleBanner(
@@ -188,16 +155,6 @@ export function stripeRow(
   }
   if (opts.rowHeight) row.height = opts.rowHeight;
   return odd;
-}
-
-// 必填标识：在表头某格右侧/下方拼入红色星
-export function markRequiredHeaderCell(cell: ExcelJS.Cell, baseText: string) {
-  cell.value = {
-    richText: [
-      { text: baseText, font: { bold: true, size: 11, color: { argb: PROBE_THEME.white }, name: '微软雅黑' } },
-      { text: ' *', font: { bold: true, size: 12, color: { argb: 'FFFFB0A0' }, name: '微软雅黑' } },
-    ],
-  };
 }
 
 // 画一个"信息卡片"行：浅蓝背景 + 左侧色条（用于 info sheet 的数值行强调）

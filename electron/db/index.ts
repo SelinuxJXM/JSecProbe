@@ -6,8 +6,8 @@ import log from 'electron-log';
 import bcrypt from 'bcryptjs';
 import * as schema from './schema';
 import { runMigrations } from './migrator';
-import { getDbPath, getAppDataPath } from '../main/paths';
-import { eq, count, is, Table, getTableName, getTableColumns } from 'drizzle-orm';
+import { getDbPath, getAppDataPath, getAppDataPathSync } from '../main/paths';
+import { eq, count, is, inArray, Table, getTableName, getTableColumns } from 'drizzle-orm';
 
 let db: BetterSQLite3Database<typeof schema> | null = null;
 let sqliteInstance: Database.Database | null = null;
@@ -128,7 +128,9 @@ export async function initDatabase(): Promise<void> {
     createIndexes(sqlite);
     detectSchemaDrift(sqlite);
     // 孤儿检测放在迁移/补列之后，避免把"表刚建好还没灌数据"误判为孤儿
-    detectOrphanData(sqlite);
+    if (orphanCheckDue()) {
+      detectOrphanData(sqlite);
+    }
     await initDefaultData();
     await initStandardLibrary();
     await initKnowledgeBase();
@@ -664,6 +666,35 @@ function detectSchemaDrift(sqlite: Database.Database): void {
  * 其中 `connection_profiles` 存有 `password_encrypted`，残留即凭据泄露面，
  * 因此对指向已删除资产的孤儿连接配置做**主动清理**，其余表仅告警（数据宝贵，不自动删）。
  */
+/** 孤儿检测最小间隔：默认 7 天 */
+const ORPHAN_CHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * 判断本次启动是否需要跑孤儿检测。
+ *
+ * detectOrphanData 会执行 5 条 `NOT IN (SELECT id FROM ...)` 全表扫描，
+ * 其中 assessment_records 往往是库里最大的表 —— 每次启动都跑一遍纯属浪费，
+ * 而孤儿本身是低频问题（只在删除资产/项目未级联时才会产生）。
+ * 改为「距上次检测超过 7 天才跑」，用一个小标记文件记录时间戳。
+ */
+function orphanCheckDue(): boolean {
+  try {
+    const marker = join(getAppDataPathSync(), '.orphan-check-at');
+    if (fs.existsSync(marker)) {
+      const last = Number(fs.readFileSync(marker, 'utf-8').trim()) || 0;
+      if (Date.now() - last < ORPHAN_CHECK_INTERVAL_MS) {
+        return false;
+      }
+    }
+    fs.writeFileSync(marker, String(Date.now()), 'utf-8');
+    return true;
+  } catch (e) {
+    // 标记文件读写失败不能挡住启动：宁可多做一次检测
+    log.warn('孤儿检测节流标记读写失败，本次仍执行检测:', e);
+    return true;
+  }
+}
+
 function detectOrphanData(sqlite: Database.Database): void {
   try {
     const tables = new Set(
@@ -817,18 +848,28 @@ function ensureCollectionTables(sqlite: Database.Database): void {
 function createIndexes(sqlite: Database.Database): void {
   try {
     sqlite.exec(`
+      -- 冗余索引清理（幂等）：历史上 createIndexes 与 0002 迁移各建了一套「列相同、名字不同」
+      -- 的索引，assessment_records / issues 上因此堆了多个 project_id 前缀索引 ——
+      -- 每次写入都要维护多个索引（写放大），库也白白膨胀。
+      -- 保留项足以覆盖查询：
+      --   assets(project_id)            → asset_project_idx
+      --   assessment_items(standard_id) → item_standard_domain_idx 的前缀
+      --   assessment_records(project_id)→ record_project_idx；(project_id,item_id) → record_project_item_idx
+      --   issues(project_id)            → issue_project_idx；再分别有 status / risk_level 复合索引
+      DROP INDEX IF EXISTS idx_assets_project_id;
+      DROP INDEX IF EXISTS idx_assessment_items_standard_domain;
+      DROP INDEX IF EXISTS idx_assessment_records_project_id;
+      DROP INDEX IF EXISTS idx_issues_project_id;
+      DROP INDEX IF EXISTS idx_issues_project_risk;
+      DROP INDEX IF EXISTS idx_issues_project_status;
+
       CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
       CREATE INDEX IF NOT EXISTS idx_projects_status_created ON projects(status, created_at);
-      CREATE INDEX IF NOT EXISTS idx_assets_project_id ON assets(project_id);
-      CREATE INDEX IF NOT EXISTS idx_assessment_items_standard_domain ON assessment_items(standard_id, domain);
       CREATE INDEX IF NOT EXISTS idx_assessment_items_level ON assessment_items(min_level);
       CREATE INDEX IF NOT EXISTS idx_assessment_items_extension ON assessment_items(extension_type);
-      CREATE INDEX IF NOT EXISTS idx_assessment_records_project_id ON assessment_records(project_id);
+      -- item_id 单列查询（按测评项聚合记录）用不上 (project_id, item_id) 复合索引的前缀，必须保留
       CREATE INDEX IF NOT EXISTS idx_assessment_records_item_id ON assessment_records(item_id);
       CREATE INDEX IF NOT EXISTS idx_assessment_records_result ON assessment_records(result);
-      CREATE INDEX IF NOT EXISTS idx_issues_project_id ON issues(project_id);
-      CREATE INDEX IF NOT EXISTS idx_issues_project_risk ON issues(project_id, risk_level);
-      CREATE INDEX IF NOT EXISTS idx_issues_project_status ON issues(project_id, status);
       CREATE INDEX IF NOT EXISTS idx_issues_project_domain ON issues(project_id, security_domain);
       CREATE INDEX IF NOT EXISTS idx_issues_asset_id ON issues(asset_id);
       CREATE INDEX IF NOT EXISTS idx_issues_item_id ON issues(item_id);
@@ -848,7 +889,7 @@ function createIndexes(sqlite: Database.Database): void {
       -- **已执行过 0002 的存量库**同样能拿到（迁移器按 created_at 跳过已应用的迁移）。
       CREATE INDEX IF NOT EXISTS asset_project_idx ON assets(project_id);
       CREATE INDEX IF NOT EXISTS asset_project_category_idx ON assets(project_id, category);
-      CREATE INDEX IF NOT EXISTS item_standard_idx ON assessment_items(standard_id);
+      -- item_standard_idx 是 item_standard_domain_idx 的前缀，纯冗余，已在上文 DROP
       CREATE INDEX IF NOT EXISTS item_standard_domain_idx ON assessment_items(standard_id, domain);
       CREATE INDEX IF NOT EXISTS record_project_idx ON assessment_records(project_id);
       CREATE INDEX IF NOT EXISTS record_project_item_idx ON assessment_records(project_id, item_id);
@@ -858,6 +899,11 @@ function createIndexes(sqlite: Database.Database): void {
       CREATE INDEX IF NOT EXISTS issue_project_idx ON issues(project_id);
       CREATE INDEX IF NOT EXISTS issue_project_status_idx ON issues(project_id, status);
       CREATE INDEX IF NOT EXISTS issue_project_risk_idx ON issues(project_id, risk_level);
+      -- 此前完全无索引的关联/过滤字段：资产拓扑按端点查、采集任务按状态轮询、采集结果按命令回溯
+      CREATE INDEX IF NOT EXISTS idx_asset_connections_asset ON asset_connections(asset_id);
+      CREATE INDEX IF NOT EXISTS idx_asset_connections_connection ON asset_connections(connection_id);
+      CREATE INDEX IF NOT EXISTS idx_collection_tasks_status ON collection_tasks(status);
+      CREATE INDEX IF NOT EXISTS idx_collection_results_command ON collection_results(command_id);
     `);
   } catch (err) {
     log.warn('创建索引失败:', err);
@@ -1020,6 +1066,34 @@ async function initStandardLibrary(): Promise<void> {
   //    绝不重复插入、绝不覆盖、也绝不删除用户的测评记录或既有测评项；
   //  - 仅对「本次新入驻」的标准写入其测评项。
   const STANDARD_DATA_VERSION = 9;
+
+  // 短路：seed 数据 468KB / 811 条测评项，原实现每次启动都先全量构造再按 code 判重，
+  // 绝大多数启动其实是「全都在」的空跑（启动耗时 + 堆峰值都耗在这）。
+  // 这里用轻量常量先做一次存在性比对：数据版本一致且内置标准都在，直接跳过加载。
+  let seedAlreadyInstalled = false;
+  try {
+    const { BUILTIN_STANDARD_CODES } = await import('./seeds/standards');
+    const setting = await dbInstance
+      .select({ standardDataVersion: schema.systemSettings.standardDataVersion })
+      .from(schema.systemSettings)
+      .where(eq(schema.systemSettings.id, 'default'))
+      .limit(1);
+    if (setting[0]?.standardDataVersion === STANDARD_DATA_VERSION) {
+      const existing = await dbInstance
+        .select({ code: schema.standards.code })
+        .from(schema.standards)
+        .where(inArray(schema.standards.code, [...BUILTIN_STANDARD_CODES]));
+      const present = new Set(existing.map(r => r.code));
+      seedAlreadyInstalled = BUILTIN_STANDARD_CODES.every(c => present.has(c));
+      if (seedAlreadyInstalled) {
+        log.info(`内置标准已全部入驻且数据版本一致(v${STANDARD_DATA_VERSION})，跳过 seed 加载`);
+      }
+    }
+  } catch (e) {
+    log.warn('检查内置标准入驻状态失败，回退为完整加载:', e);
+  }
+
+  if (!seedAlreadyInstalled) {
   try {
     const { getStandardSeeds } = await import('./seeds/standards');
     const seed = getStandardSeeds();
@@ -1172,8 +1246,8 @@ async function initStandardLibrary(): Promise<void> {
   } catch (e) {
     log.error('内置标准入驻失败:', e);
   } finally {
-    // seed 数据（约 548KB 源码 / 数千条测评项）只在入驻时用一次，
-    // 用后释放引用，让大数组可被 GC 回收，避免常驻堆内存（P2-18）。
+    // seed 数据（468KB JSON / 811 条测评项）只在入驻时用一次，
+    // 用后释放引用，让解析出的对象可被 GC 回收，避免常驻堆内存（P2-18）。
     try {
       const mod = await import('./seeds/standards');
       mod.releaseStandardSeeds?.();
@@ -1181,6 +1255,7 @@ async function initStandardLibrary(): Promise<void> {
       // 释放失败不影响功能，仅需保证不抛到启动流程
     }
   }
+  } // end if (!seedAlreadyInstalled)
 
   // 版本号更新（同步 system_settings.standardDataVersion，便于后续升级识别）
   try {
@@ -1218,17 +1293,26 @@ async function initKnowledgeBase(): Promise<void> {
     log.info('初始化知识库：导入种子数据...');
     log.info('初始化知识库:', seed.categories.length + '个分类，' + seed.documents.length + '篇文档');
 
-    if (seed.categories.length > 0) {
-      await dbInstance.insert(schema.knowledgeCategories).values(seed.categories as Array<typeof schema.knowledgeCategories.$inferInsert>);
-    }
-
-    if (seed.documents.length > 0) {
-      const batchSize = 20;
-      for (let i = 0; i < seed.documents.length; i += batchSize) {
-        const batch = seed.documents.slice(i, i + batchSize);
-        await dbInstance.insert(schema.knowledgeDocuments).values(batch as Array<typeof schema.knowledgeDocuments.$inferInsert>);
+    // 分类与文档要么都进库、要么都不进：
+    // 此前两者分开提交，文档写一半失败会留下「有分类、没文档」的半残知识库，
+    // 而下次启动按 count>0 判重直接跳过，永远自愈不了。与 initCommandLibrary 对齐改用事务。
+    dbInstance.transaction((tx) => {
+      if (seed.categories.length > 0) {
+        tx.insert(schema.knowledgeCategories)
+          .values(seed.categories as Array<typeof schema.knowledgeCategories.$inferInsert>)
+          .run();
       }
-    }
+
+      if (seed.documents.length > 0) {
+        const batchSize = 20;
+        for (let i = 0; i < seed.documents.length; i += batchSize) {
+          const batch = seed.documents.slice(i, i + batchSize);
+          tx.insert(schema.knowledgeDocuments)
+            .values(batch as Array<typeof schema.knowledgeDocuments.$inferInsert>)
+            .run();
+        }
+      }
+    });
 
     log.info('知识库初始化完成');
   } catch (error) {
