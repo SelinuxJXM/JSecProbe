@@ -1,5 +1,5 @@
 /**
- * runWithFailover 取消语义测试
+ * AI 请求编排测试：取消语义 + 本地引擎端点解析
  *
  * 为什么值得测：为「AI 分析可取消」给 runWithFailover 新增了第 4 个参数 externalSignal。
  * 取消要同时满足两点才算正确：
@@ -54,7 +54,7 @@ vi.mock('../../electron/db', () => ({
   getDb: state.getDbMock,
 }));
 
-import { runWithFailover } from '../../electron/ipc/ai.ipc';
+import { runWithFailover, resolveLocalChatUrl } from '../../electron/ipc/ai.ipc';
 
 /** 最近一次传给 aiFetch 的 options（含 signal），供断言 abort 是否穿透到请求 */
 let opts: { signal?: AbortSignal } | undefined;
@@ -172,4 +172,73 @@ describe('runWithFailover 取消语义', () => {
     const result = await runWithFailover(config, 'local', { build: buildEndpoint });
     expect(result).toEqual({ content: '正常回复', modelName: 'qwen2.5' });
   });
+});
+
+describe('本地引擎对话端点解析（resolveLocalChatUrl）', () => {
+  // 回归背景：本地分支曾直拼 `{base}/v1` 就 POST，Ollama 对 /v1 只回 `404 page not found`，
+  // 于是「本地 AI 已配置」但每条消息都失败。端点必须以 /chat/completions 结尾。
+  it('默认 Ollama 地址 → 补全为 /v1/chat/completions（不是裸 /v1）', () => {
+    expect(resolveLocalChatUrl({ ollamaUrl: 'http://localhost:11434' })).toBe(
+      'http://localhost:11434/v1/chat/completions',
+    );
+  });
+
+  it('未配置地址时回落到默认地址，同样补全路径', () => {
+    expect(resolveLocalChatUrl({})).toBe('http://localhost:11434/v1/chat/completions');
+  });
+
+  it('尾部斜杠、已带 /v1、已填完整端点均归一（幂等，不产生 /v1/v1）', () => {
+    expect(resolveLocalChatUrl({ ollamaUrl: 'http://localhost:11434/' })).toBe(
+      'http://localhost:11434/v1/chat/completions',
+    );
+    expect(resolveLocalChatUrl({ ollamaUrl: 'http://localhost:11434/v1' })).toBe(
+      'http://localhost:11434/v1/chat/completions',
+    );
+    expect(resolveLocalChatUrl({ ollamaUrl: 'http://localhost:11434/v1/chat/completions' })).toBe(
+      'http://localhost:11434/v1/chat/completions',
+    );
+  });
+
+  it('自定义内网地址与端口原样保留', () => {
+    expect(resolveLocalChatUrl({ ollamaUrl: 'http://192.168.1.9:11434' })).toBe(
+      'http://192.168.1.9:11434/v1/chat/completions',
+    );
+  });
+});
+
+/**
+ * 真机端到端：只在本地跑着 Ollama 时执行（CI 无 Ollama 自动跳过）。
+ * 单测只能证明 URL 字符串对，这条用真实模型跑通一次，才能证明「本地聊天确实能对话」——
+ * 这正是 404 那个 bug 的用户可见面。
+ */
+const probe = await (async () => {
+  try {
+    const res = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return { up: false, model: '' };
+    const data: any = await res.json();
+    const first = String((data?.models || [])[0]?.name || '');
+    return { up: Boolean(first), model: first };
+  } catch {
+    return { up: false, model: '' };
+  }
+})();
+
+describe.skipIf(!probe.up)('本地聊天端到端（真实 Ollama）', () => {
+  it('按 resolveLocalChatUrl 得到的端点发真实请求：200 且返回非空内容', async () => {
+    const url = resolveLocalChatUrl({ ollamaUrl: 'http://localhost:11434', ollamaModel: probe.model });
+    expect(url).toBe('http://localhost:11434/v1/chat/completions');
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ollama' },
+      body: JSON.stringify({
+        model: probe.model,
+        messages: [{ role: 'user', content: 'say hi' }],
+        temperature: 0.7,
+      }),
+    });
+    expect(res.ok).toBe(true);
+    const data: any = await res.json();
+    expect(String(data?.choices?.[0]?.message?.content || '').trim()).not.toBe('');
+  }, 120000);
 });

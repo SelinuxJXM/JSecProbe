@@ -39,6 +39,7 @@ import {
 } from '../services/ocr.service';
 import { extractTextFromFile } from '../utils/text-extract';
 import { aiFetch, isValidProxyMode, parseProxyUrl, syncAiProxyFromDb } from '../services/ai-net.service';
+import { ensureApiUrl } from '../services/ai-url';
 import { encryptSecret, decryptSecret } from '../services/credential.util';
 import {
   BUILTIN_PROMPTS,
@@ -449,66 +450,8 @@ async function desensitizeImage(imagePath: string): Promise<string> {
   }
 }
 
-/**
- * SSRF 防护：判定 hostname 是否属于禁止访问的地址。
- *
- * 说明边界：仅能拦截**字面量 IP 与已知内网域名后缀**。域名解析到内网地址的情况
- * （如 ai.internal.corp → 10.0.0.5）在发起请求前无法静态判定，不在本函数覆盖范围内。
- *
- * 内网部署场景（自建大模型服务）可通过环境变量 `JSECPROBE_ALLOW_PRIVATE_API=1` 显式豁免，
- * 豁免会在日志中留痕。
- */
-const AI_ALLOW_PRIVATE_API = process.env.JSECPROBE_ALLOW_PRIVATE_API === '1';
-
-/** 把 IPv4 字面量转成的整数，便于做网段包含判断；非 IPv4 返回 null */
-function ipv4ToInt(hostname: string): number | null {
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
-  if (!m) return null;
-  const octets = m.slice(1).map(Number);
-  if (octets.some(o => o > 255)) return null;
-  return ((octets[0] << 24) >>> 0) + (octets[1] << 16) + (octets[2] << 8) + octets[3];
-}
-
-function isBlockedIp(hostname: string): boolean {
-  const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, ''); // IPv6 字面量去方括号
-  if (!host) return false;
-
-  // 云元数据端点（AWS/GCP/Azure/阿里云等）
-  if (host === '169.254.169.254' || host === '169.254.170.2' || host === '100.100.100.200') return true;
-  // 本机与内网常见域名
-  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host === 'metadata.google.internal') return true;
-
-  // IPv6 回环 / 唯一本地 / 链路本地
-  if (host === '::1' || host === '::' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:')) return true;
-
-  const ip = ipv4ToInt(host);
-  if (ip !== null) {
-    const inRange = (base: number, bits: number) => {
-      const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-      return ((ip & mask) >>> 0) === ((base & mask) >>> 0);
-    };
-    // 0.0.0.0/8（本网络）
-    if (inRange(0x00000000, 8)) return true;
-    // 127.0.0.0/8（回环）
-    if (inRange(0x7f000000, 8)) return true;
-    // 10.0.0.0/8（私有 A 类）
-    if (inRange(0x0a000000, 8)) return true;
-    // 172.16.0.0/12（私有 B 类）
-    if (inRange(0xac100000, 12)) return true;
-    // 192.168.0.0/16（私有 C 类）
-    if (inRange(0xc0a80000, 16)) return true;
-    // 169.254.0.0/16（链路本地 / 元数据）
-    if (inRange(0xa9fe0000, 16)) return true;
-    // 192.0.0.0/24（IETF 协议分配，含 192.0.0.170 NAT64）
-    if (inRange(0xc0000000, 24)) return true;
-    // 198.18.0.0/15（网络设备基准测试，常被用于探测）
-    if (inRange(0xc6120000, 15)) return true;
-    // 100.64.0.0/10（运营商级 NAT）
-    if (inRange(0x64400000, 10)) return true;
-  }
-
-  return false;
-}
+// SSRF 防护与 AI 请求地址补全已统一收进 electron/services/ai-url.ts
+// —— 全项目唯一入口，任何地方都不再各自手拼 URL（两边规则不一致正是「已配置却请求失败」的根源）。
 
 /** 云端 AI 请求默认超时（毫秒）。无超时时云端挂起会让 ai:chat 永久悬挂。 */
 const AI_FETCH_TIMEOUT_MS = 120_000;
@@ -592,50 +535,6 @@ async function buildChatMessageContent(msg: { role: string; content: string; att
   return userContent;
 }
 
-function ensureApiUrl(baseUrl: string | null | undefined, mode?: string): string {
-  const raw = (baseUrl || '').trim().replace(/\/+$/, '');
-  if (!raw) return '';
-
-  // 协议校验：仅允许 http/https，阻止 file://、ftp:// 等
-  if (!/^https?:\/\//i.test(raw)) {
-    throw new Error('API地址必须以 http:// 或 https:// 开头');
-  }
-
-  // 云端模式下校验 IP 黑名单，阻止 SSRF 探测云元数据/链路本地地址
-  // 本地模式（Ollama）不校验，因为用户可能在任意内网地址部署 Ollama
-  if (mode !== 'local') {
-    let hostname = '';
-    try {
-      hostname = new URL(raw).hostname;
-    } catch {
-      throw new Error('API地址格式无效');
-    }
-    if (isBlockedIp(hostname)) {
-      if (AI_ALLOW_PRIVATE_API) {
-        // 内网部署场景的显式豁免：记录留痕，便于事后审计
-        log.warn(`[SSRF] 已按 JSECPROBE_ALLOW_PRIVATE_API=1 放行内网地址: ${hostname}`);
-      } else {
-        throw new Error(
-          `API地址被禁止访问: ${hostname}。` +
-          `云端模型不允许指向内网/回环/链路本地地址（内网部署的自建服务请设置环境变量 JSECPROBE_ALLOW_PRIVATE_API=1 显式放行）`
-        );
-      }
-    }
-  }
-
-  const queryIndex = raw.indexOf('?');
-  const base = queryIndex >= 0 ? raw.substring(0, queryIndex) : raw;
-
-  if (base.endsWith('/chat/completions')) {
-    return raw;
-  }
-  // 匹配任意版本段（/v1、/v4 等），如 /openai/v4 → /openai/v4/chat/completions
-  if (/\/v\d+(\/|$)/.test(base)) {
-    return `${base}/chat/completions`;
-  }
-  return `${base}/v1/chat/completions`;
-}
-
 function getApiKeyForMode(config: any): string {
   if (config.mode === 'local') {
     // 本地模式固定使用 'ollama' 作为 API key：
@@ -652,9 +551,23 @@ function resolveLocalEngine(config: any): 'ollama' | 'herdsman' {
 }
 
 function getLocalEngineUrl(config: any): string {
-  return resolveLocalEngine(config) === 'herdsman'
+  const raw = resolveLocalEngine(config) === 'herdsman'
     ? (config.herdsmanUrl || HERDSMAN_DEFAULT_URL)
     : (config.ollamaUrl || 'http://localhost:11434');
+  return normalizeLocalBase(raw);
+}
+
+/**
+ * 归一本地引擎基础地址：剥掉用户可能多填的 /chat/completions、版本段（/v1 等）与尾部斜杠。
+ * 后续统一补 `/v1/chat/completions`；不做这一步，用户把地址填成 `http://host:11434/v1`
+ * 会拼出 `/v1/v1/chat/completions` —— 又是一次「已配置但请求失败」。
+ */
+function normalizeLocalBase(url: string): string {
+  let base = (url || '').trim();
+  base = base.replace(/\/+$/, '');
+  base = base.replace(/\/chat\/completions$/i, '').replace(/\/+$/, '');
+  base = base.replace(/\/v\d+$/i, '').replace(/\/+$/, '');
+  return base;
 }
 
 function getLocalEngineModel(config: any): string {
@@ -669,6 +582,15 @@ function getEffectiveApiBase(config: any, mode?: string): string {
     return `${getLocalEngineUrl(config).replace(/\/+$/, '')}/v1`;
   }
   return config.apiBase || '';
+}
+
+/**
+ * 本地引擎的对话端点（OpenAI 兼容，必须以 /chat/completions 结尾）。
+ * 独立导出便于测试锁定：本地分支曾漏补这一段，直接把 `{base}/v1` 当端点 POST，
+ * Ollama 对它只返回 Go 默认的 `404 page not found`（表现为「本地已配置」但对话必失败）。
+ */
+export function resolveLocalChatUrl(config: any, mode = 'local'): string {
+  return ensureApiUrl(getEffectiveApiBase(config, mode), mode);
 }
 
 function shouldValidateApiKey(config: any): boolean {
@@ -1038,7 +960,8 @@ export function registerAIHandlers(): void {
     // 本地模式或没有云端模型时，回退到原有逻辑
     if (mode === 'local' && config) {
       const model = getLocalEngineModel(config);
-      const apiUrl = `${getLocalEngineUrl(config).replace(/\/+$/, '')}/v1`;
+      // 必须经 resolveLocalChatUrl 补全 /chat/completions（此前直拼 `{base}/v1` 导致 Ollama 回 404）
+      const apiUrl = resolveLocalChatUrl(config, mode);
       const apiKey = 'ollama';
 
       try {

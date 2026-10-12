@@ -5,6 +5,7 @@ import * as schema from '../db/schema';
 import { eq, sql, and, or, lte, inArray, count, asc } from 'drizzle-orm';
 import log from 'electron-log';
 import { decryptSecret } from './credential.util';
+import { ensureApiUrl } from './ai-url';
 
 /**
  * HTML 转义：报告 HTML 由模板字符串手工拼接，项目名/单位名/问题描述等
@@ -1811,8 +1812,10 @@ export class ReportService {
 
     let apiBase = apiBaseRaw || 'https://api.openai.com/v1';
     if (!apiBase.startsWith('http')) apiBase = 'https://' + apiBase;
-    if (!apiBase.endsWith('/')) apiBase += '/';
-    const url = apiBase + 'chat/completions';
+    // 与 ai.ipc.ts 共用同一套补全规则：地址不含版本段时补 /v1/chat/completions。
+    // 此前这里只补 `chat/completions`，而保存配置时会把用户填的 /v1 剥掉，
+    // 于是请求打到 `${host}/chat/completions` —— 一个不存在的端点（报告生成静默回退内置模板）。
+    const url = ensureApiUrl(apiBase, 'cloud');
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000);

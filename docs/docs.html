@@ -541,7 +541,7 @@ body {
   <aside class="sidebar" id="sidebar" aria-label="目录导航">
     <div class="sidebar-header">
       <div class="sidebar-title"><a href="index.html">📄 产品白皮书</a></div>
-      <div class="sidebar-subtitle">JSecProbe V2.4.7</div>
+      <div class="sidebar-subtitle">JSecProbe V2.4.8</div>
     </div>
     <nav aria-label="目录">
       <div class="toc">
@@ -679,7 +679,7 @@ body {
   <main class="content" id="main-content">
     <article class="article">
       <h1>JSecProbe 等级保护现场测评系统</h1>
-      <p class="subtitle">产品白皮书 · 当前版本 V2.4.7 · 技术标准 GB/T 22239-2019</p>
+      <p class="subtitle">产品白皮书 · 当前版本 V2.4.8 · 技术标准 GB/T 22239-2019</p>
 
       <h2 id="intro">一、产品概述</h2>
 
@@ -1422,6 +1422,18 @@ body {
             </td>
           </tr>
           <tr>
+            <td>白皮书 V1.10</td><td>V2.4.8</td>
+            <td>
+              <ul style="margin:0 0 0 18px;padding:0;">
+                <li>修复：本地 AI（Ollama）对话必定失败并提示「本地引擎请求失败(404)」——聊天入口把地址拼成 <code>{base}/v1</code> 就直接请求，缺少 <code>/chat/completions</code>；其余 AI 功能（分析 / 结论 / 评估）与报告生成的地址一直是正确的，因此只有「AI 智能辅助」这一个入口受影响，长期未被发现。现统一由 <code>electron/services/ai-url.ts</code> 补全端点</li>
+                <li>修复：报告生成的云端 AI 调用只补 <code>chat/completions</code>、不补版本段，实际请求到不存在的端点，失败后静默回退内置模板（表现为「AI 报告没起作用但不报错」）</li>
+                <li>加固：本地引擎地址归一，用户把地址填成含 <code>/v1</code>、<code>/chat/completions</code> 或带尾部斜杠时不再拼出重复路径</li>
+                <li>新增：本地聊天真机端到端用例（本机运行 Ollama 时自动执行，持续集成环境自动跳过）</li>
+                <li>附录 D 新增「白皮书变更记录」V1.10 条目</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
             <td>白皮书 V1.9</td><td>V2.4.7</td>
             <td>
               <ul style="margin:0 0 0 18px;padding:0;">
@@ -1541,7 +1553,7 @@ body {
 
       <hr>
       <p style="text-align:center;color:var(--gray-500);font-size:14px;padding:20px 0;">
-        <em>本文档最后更新：2026 年 10 月（V1.9，对应 V2.4.7）</em><br>
+        <em>本文档最后更新：2026 年 10 月（V1.10，对应 V2.4.8）</em><br>
         <strong>JSecProbe - 让等保测评更高效、更规范、更智能</strong>
       </p>
     </article>
