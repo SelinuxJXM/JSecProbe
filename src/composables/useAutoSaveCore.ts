@@ -172,12 +172,18 @@ export function useAutoSaveCore(options: AutoSaveCoreOptions) {
       autoSaveTimer = null;
     }
     stopPeriodicSave();
-    if (hasDirty() && !saveInProgress) {
-      runSave().catch(() => {
-        // 卸载阶段失败不打扰用户；脏标记仍在，回到页面由周期保存重试
-        console.warn(`[${contextLabel}] 离开页面时自动保存失败`);
-      });
+    if (!hasDirty()) return;
+    if (saveInProgress) {
+      // 正在保存：本轮的脏行快照可能早于最后一次改动（例如刚上传的证据路径），
+      // 置位让本轮结束后补跑一次。原实现在这里直接跳过，而组件卸载后
+      // dirtyMap 与周期定时器一起消失，这段改动就永久丢了。
+      saveQueued = true;
+      return;
     }
+    runSave().catch(() => {
+      // 卸载阶段失败不打扰用户；脏标记仍在，回到页面由周期保存重试
+      console.warn(`[${contextLabel}] 离开页面时自动保存失败`);
+    });
   }
 
   return {

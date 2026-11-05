@@ -215,25 +215,31 @@ describe('cleanup：卸载收尾', () => {
     expect(persist).toHaveBeenCalledTimes(1);
   });
 
-  it('正在保存中时 cleanup 不重复发起落库', async () => {
+  it('正在保存中时 cleanup 不重入，但本轮结束后会补跑一次（卸载期间的新改动不丢）', async () => {
     const dirty = ref(true);
     let resolveFirst!: (value: boolean) => void;
     let calls = 0;
     const persist = vi.fn(async () => {
       calls++;
       if (calls === 1) return await new Promise<boolean>(resolve => (resolveFirst = resolve));
+      // 补跑那一轮才把脏数据真正落库
+      dirty.value = false;
       return true;
     });
     const core = useAutoSaveCore({ hasDirty: () => dirty.value, persist });
 
     const inflight = core.runSave();
-    core.cleanup();
+    core.cleanup(); // 组件此时卸载，旧实现在这里直接跳过，脏标记随实例一起消失
     await flushMicrotasks();
 
-    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist).toHaveBeenCalledTimes(1); // 不重入
 
     resolveFirst(true);
     await inflight;
+    await flushMicrotasks();
+
+    expect(persist).toHaveBeenCalledTimes(2); // 靠排队补跑把改动写进库
+    expect(dirty.value).toBe(false);
   });
 });
 

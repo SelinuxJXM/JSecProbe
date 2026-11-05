@@ -145,11 +145,15 @@ export function useAutoSave(options: AutoSaveOptions) {
     busyMessageType: 'warning',
   });
 
-  /** 标脏并启动防抖。版本号自增，用于识别「保存期间的新改动」。 */
-  function debounceAutoSave(row: TableRow) {
+  /**
+   * 标脏并启动防抖。版本号自增，用于识别「保存期间的新改动」。
+   * @param delay 可选自定义防抖窗口：文本输入用默认 1.5s，证据上传/删除这类
+   *              离散且不可恢复的操作传短延迟，尽快把路径引用落库。
+   */
+  function debounceAutoSave(row: TableRow, delay?: number) {
     const key = keyOf(row);
     dirtyMap.set(key, (dirtyMap.get(key) || 0) + 1);
-    core.scheduleSave();
+    core.scheduleSave(delay);
   }
 
   /** 整张表被重建后调用：脏标记随数据一起失效，避免拿旧 key 去写新行 */

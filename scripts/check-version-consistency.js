@@ -47,6 +47,7 @@ const ALLOWED_STALE_VERSIONS = new Set([
   '2.4.5',
   '2.4.6',
   '2.4.7',
+  '2.4.8',
 ]);
 
 /**

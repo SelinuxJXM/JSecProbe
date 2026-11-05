@@ -541,7 +541,7 @@ body {
   <aside class="sidebar" id="sidebar" aria-label="目录导航">
     <div class="sidebar-header">
       <div class="sidebar-title"><a href="index.html">📄 产品白皮书</a></div>
-      <div class="sidebar-subtitle">JSecProbe V2.4.8</div>
+      <div class="sidebar-subtitle">JSecProbe V2.4.9</div>
     </div>
     <nav aria-label="目录">
       <div class="toc">
@@ -679,7 +679,7 @@ body {
   <main class="content" id="main-content">
     <article class="article">
       <h1>JSecProbe 等级保护现场测评系统</h1>
-      <p class="subtitle">产品白皮书 · 当前版本 V2.4.8 · 技术标准 GB/T 22239-2019</p>
+      <p class="subtitle">产品白皮书 · 当前版本 V2.4.9 · 技术标准 GB/T 22239-2019</p>
 
       <h2 id="intro">一、产品概述</h2>
 
@@ -1422,6 +1422,19 @@ body {
             </td>
           </tr>
           <tr>
+            <td>白皮书 V1.11</td><td>V2.4.9</td>
+            <td>
+              <ul style="margin:0 0 0 18px;padding:0;">
+                <li>修复：在「全局层面 / 关键证据点」上传的截图与附件，切换测评对象或页面再返回后消失——重建表格时项目级记录（<code>asset_id</code> 为空）的 <code>screenshot_paths</code> 被硬编码成空数组，随后自动保存又把空清单写回数据库，引用被抹掉；若再执行「孤儿文件清理」就会把磁盘原件一并删除。现全局视图与资产视图统一从记录读回证据清单</li>
+                <li>修复：证据上传与文本编辑共用 1.5 秒防抖，上传后立刻切页可能尚未落库；现证据类改动使用 300 毫秒短窗口，且父组件改用子组件回传的新行数据标脏</li>
+                <li>修复：离开页面时若恰好有一次自动保存正在进行，最后一次保存会被直接跳过、脏标记随组件销毁；现改为排队补跑</li>
+                <li>加固：设置页「孤儿文件清理」新增 24 小时宽限，刚上传或引用暂时丢失的证据不会被立即删除</li>
+                <li>新增：证据清单读回的共用函数与 7 条回归用例，覆盖项目级 / 资产级一致性及卸载竞态；测试基线 6 个文件 70 个用例</li>
+                <li>附录 D 新增「白皮书变更记录」V1.11 条目</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
             <td>白皮书 V1.10</td><td>V2.4.8</td>
             <td>
               <ul style="margin:0 0 0 18px;padding:0;">
@@ -1553,7 +1566,7 @@ body {
 
       <hr>
       <p style="text-align:center;color:var(--gray-500);font-size:14px;padding:20px 0;">
-        <em>本文档最后更新：2026 年 10 月（V1.10，对应 V2.4.8）</em><br>
+        <em>本文档最后更新：2026 年 11 月（V1.11，对应 V2.4.9）</em><br>
         <strong>JSecProbe - 让等保测评更高效、更规范、更智能</strong>
       </p>
     </article>

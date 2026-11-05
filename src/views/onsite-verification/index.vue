@@ -283,7 +283,7 @@
                     :row="row"
                     :project-id="route.params.id as string"
                     @update:row="handleRowUpdate"
-                    @auto-save="autoSave.debounceAutoSave(row)"
+                    @auto-save="handleScreenshotAutoSave($event)"
                   />
                 </td>
                 <td class="cell-actions">
@@ -362,17 +362,7 @@ import ImportExport from './components/import-export.vue';
 import AiAnalysis from './components/ai-analysis.vue';
 import PageHint from '@/components/PageHint/index.vue';
 import { useProjectNav } from '@/composables/useProjectNav';
-
-// 安全解析截图路径：数据库存储的 JSON 可能因历史脏数据损坏，解析失败时降级为空数组，避免中断整段加载逻辑
-function safeParseScreenshots(raw?: string | null): string[] {
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
+import { screenshotsFromRecord } from './utils/screenshots';
 
 // ==================== 路由和基础状态 ====================
 const route = useRoute();
@@ -877,7 +867,11 @@ async function selectGlobalDomain(domainId: string) {
         compliance: complianceValue,
         conclusion: conclusionText,
         evidence: saved?.evidence ?? '',
-        screenshots: [],
+        // 项目级记录里同样存着证据文件路径，必须像资产视图那样读回来。
+        // 此前硬编码空数组：全局层面上传的文件一离开再回来就"消失"，
+        // 而随后任何一次自动保存又会把 screenshot_paths 写成 [] —— 引用被抹掉，
+        // 设置页的孤儿文件清理还会据此把磁盘上的原件删掉，变成不可逆丢失。
+        screenshots: screenshotsFromRecord(saved),
       };
     });
 
@@ -999,7 +993,7 @@ async function selectAsset(asset: any) {
         compliance: initialCompliance,
         conclusion: initialConclusion,
         evidence: evidenceText,
-        screenshots: record?.screenshotPaths ? safeParseScreenshots(record.screenshotPaths) : [],
+        screenshots: screenshotsFromRecord(record),
       };
     });
 
@@ -1090,6 +1084,20 @@ function handleRowUpdate(updatedRow: any) {
     tableRows.value[index] = updatedRow;
     tableRows.value = [...tableRows.value];
   }
+}
+
+/**
+ * 证据文件上传 / 删除后的保存入口。
+ *
+ * 子组件 emit 出来的 nextRow 才是带新路径的那一行，模板 v-for 里的 row
+ * 可能仍是替换前的旧对象。直接拿旧 row 标脏虽然 key 一样，
+ * 但会出现「界面已显示文件、防抖窗口内切页却还没落库」的丢数据窗口：
+ * 证据上传是显式重操作，不该跟文本输入共用 1.5s 防抖。
+ */
+function handleScreenshotAutoSave(nextRow: any) {
+  if (!nextRow) return;
+  handleRowUpdate(nextRow);
+  autoSave.debounceAutoSave(nextRow, 300);
 }
 
 // 处理引用命令（来自 KnowledgePanel）

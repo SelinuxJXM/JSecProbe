@@ -155,7 +155,13 @@ async function cleanupScreenshots(dryRun: boolean, projectId?: string): Promise<
       if (now - f.mtime > TEMP_EXPIRE_MS) orphans.push(f);
       continue;
     }
-    if (!referenced.has(f.absPath)) orphans.push(f);
+    if (!referenced.has(f.absPath)) {
+      // 删除不可逆：刚上传的证据可能因为自动保存还在防抖窗口内、或旧版把
+      // screenshot_paths 写成 [] 而暂时「没有引用」。24h 内的受管证据文件一律先留着，
+      // 等引用稳定后再判定，避免把本来还能找回的原件提前删掉。
+      if (now - f.mtime > TEMP_EXPIRE_MS) orphans.push(f);
+      continue;
+    }
   }
   orphans.sort((a, b) => b.size - a.size); // 大文件在前，便于预览
   const orphanSizeBytes = orphans.reduce((s, f) => s + f.size, 0);
