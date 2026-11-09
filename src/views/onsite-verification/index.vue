@@ -363,6 +363,7 @@ import AiAnalysis from './components/ai-analysis.vue';
 import PageHint from '@/components/PageHint/index.vue';
 import { useProjectNav } from '@/composables/useProjectNav';
 import { screenshotsFromRecord } from './utils/screenshots';
+import { toUiCompliance } from '../../../shared/assessment-result';
 
 // ==================== 路由和基础状态 ====================
 const route = useRoute();
@@ -825,18 +826,6 @@ async function selectGlobalDomain(domainId: string) {
       }
     }
 
-    const complianceMap: Record<string, string> = {
-      'compliant': 'conform',
-      'conform': 'conform',
-      'partial': 'partial',
-      'non_compliant': 'nonconform',
-      'nonconform': 'nonconform',
-      'not_applicable': 'na',
-      'notapplicable': 'na',
-      'na': 'na',
-      'untested': '',
-    };
-
     // 整表重建前作废旧脏标记：新行的 key 与旧行无关，留着会拿旧 key 去写新行
     autoSave.markClean();
     tableRows.value = items.map((item: any, index: number) => {
@@ -847,7 +836,7 @@ async function selectGlobalDomain(domainId: string) {
       const presetResult = saved?.result || item.presetResult || '';
       const presetRecord = saved?.findings ?? item.presetRecord ?? '';
 
-      const complianceValue = complianceMap[presetResult] || '';
+      const complianceValue = toUiCompliance(presetResult);
       let conclusionText = presetRecord;
 
       if (complianceValue === 'na' && !conclusionText) {
@@ -933,18 +922,6 @@ async function selectAsset(asset: any) {
       recordMap.set(record.itemId, record);
     }
 
-    const complianceMap: Record<string, string> = {
-      'compliant': 'conform',
-      'conform': 'conform',
-      'partial': 'partial',
-      'non_compliant': 'nonconform',
-      'nonconform': 'nonconform',
-      'not_applicable': 'na',
-      'notapplicable': 'na',
-      'na': 'na',
-      'untested': '',
-    };
-
     const methodMap: Record<string, string> = {
       'check': '核查',
       'interview': '访谈',
@@ -966,7 +943,7 @@ async function selectAsset(asset: any) {
       }
 
       const assetCategory = asset.category;
-      let initialCompliance = record ? (complianceMap[record.result] || '') : '';
+      let initialCompliance = record ? toUiCompliance(record.result) : '';
       let initialConclusion = record?.findings || '';
 
       if (!record && assetCategory && ASSET_NA_MAPPING[assetCategory]) {

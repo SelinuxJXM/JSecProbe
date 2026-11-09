@@ -238,6 +238,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { onBeforeUnmount } from 'vue';
+import { parseAiCompliance } from '../../../../shared/assessment-result';
 import {
   MagicStick,
   Picture,
@@ -301,14 +302,11 @@ const {
   currentItemId: props.currentItemId,
 });
 
-// 合规标签样式
+// 合规标签样式：与「应用 AI 结果」共用同一个解析函数，避免写入值与显示样式两套口径。
+// 历史写法用 includes('符合') 打头，「不符合」「部分符合」会被标成 conform 样式。
 const complianceClass = computed(() => {
-  if (!aiAnalysisResult.value) return '';
-  const compliance = aiAnalysisResult.value.compliance;
-  if (compliance === 'conform' || compliance?.includes('符合')) return 'conform';
-  if (compliance === 'partial' || compliance?.includes('部分')) return 'partial';
-  if (compliance === 'nonconform' || compliance?.includes('不符合')) return 'nonconform';
-  return 'na';
+  if (!aiAnalysisResult.value) return 'na';
+  return parseAiCompliance(aiAnalysisResult.value.compliance) || 'na';
 });
 
 // 暴露给父组件

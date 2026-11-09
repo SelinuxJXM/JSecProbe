@@ -541,7 +541,7 @@ body {
   <aside class="sidebar" id="sidebar" aria-label="目录导航">
     <div class="sidebar-header">
       <div class="sidebar-title"><a href="index.html">📄 产品白皮书</a></div>
-      <div class="sidebar-subtitle">JSecProbe V2.4.9</div>
+      <div class="sidebar-subtitle">JSecProbe V2.4.10</div>
     </div>
     <nav aria-label="目录">
       <div class="toc">
@@ -679,7 +679,7 @@ body {
   <main class="content" id="main-content">
     <article class="article">
       <h1>JSecProbe 等级保护现场测评系统</h1>
-      <p class="subtitle">产品白皮书 · 当前版本 V2.4.9 · 技术标准 GB/T 22239-2019</p>
+      <p class="subtitle">产品白皮书 · 当前版本 V2.4.10 · 技术标准 GB/T 22239-2019</p>
 
       <h2 id="intro">一、产品概述</h2>
 
@@ -1422,6 +1422,18 @@ body {
             </td>
           </tr>
           <tr>
+            <td>白皮书 V1.12</td><td>V2.4.10</td>
+            <td>
+              <ul style="margin:0 0 0 18px;padding:0;">
+                <li>修复：AI 智能辅助把「不符合」判定结果错误显示成「符合」——标签样式的判断以 <code>includes('符合')</code> 打头，「不符合」「部分符合」会被这条先命中；现写入结论与显示样式共用同一个解析函数</li>
+                <li>一致性：测评结论值域收拢到 <code>shared/assessment-result.ts</code> 作为唯一真相源，数据库旧格式（conform / nonconform / notapplicable）与新格式（compliant / non_compliant / not_applicable）在一处声明；现场核查页两处重复的映射表、AI 结果应用处两处重复的映射表、后端合规状态校验白名单均改为引用同一份定义</li>
+                <li>健壮性：AI 返回的结论文本按「否定优先」解析（不符合 &gt; 部分符合 &gt; 不适用 &gt; 符合），并兼容常见英文别名，避免 AI 换一种措辞就落成空白结论</li>
+                <li>质量保障：新增 30 条用例覆盖解析、写入与显示同源、校验白名单一致性，并加入反漂移扫描，防止统计 SQL 与结论枚举各自增添值后悄悄错位；测试基线 7 个文件 100 个用例通过</li>
+                <li>附录 D 新增「白皮书变更记录」V1.12 条目</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
             <td>白皮书 V1.11</td><td>V2.4.9</td>
             <td>
               <ul style="margin:0 0 0 18px;padding:0;">
@@ -1566,7 +1578,7 @@ body {
 
       <hr>
       <p style="text-align:center;color:var(--gray-500);font-size:14px;padding:20px 0;">
-        <em>本文档最后更新：2026 年 11 月（V1.11，对应 V2.4.9）</em><br>
+        <em>本文档最后更新：2026 年 11 月（V1.12，对应 V2.4.10）</em><br>
         <strong>JSecProbe - 让等保测评更高效、更规范、更智能</strong>
       </p>
     </article>

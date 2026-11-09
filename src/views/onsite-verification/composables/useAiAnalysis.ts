@@ -1,6 +1,7 @@
 import { ref, computed, nextTick, type Ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import type { AssessmentRecord } from '../../../../shared/types';
+import { parseAiCompliance } from '../../../../shared/assessment-result';
 
 /**
  * useAiAnalysis composable 的配置选项
@@ -381,14 +382,8 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
     const row = aiCurrentRow.value;
     const result = aiAnalysisResult.value;
 
-    const resultMap: Record<string, string> = {
-      '符合': 'conform',
-      '部分符合': 'partial',
-      '不符合': 'nonconform',
-      '不适用': 'na',
-    };
-
-    row.compliance = resultMap[result.compliance] || '';
+    // 与 ai-analysis.vue 的标签样式共用 parseAiCompliance：否定优先，且支持 AI 返回的英文别名
+    row.compliance = parseAiCompliance(result.compliance);
     row.conclusion = result.conclusion || '';
 
     if (result.keyEvidencePoints && result.keyEvidencePoints.length > 0) {
@@ -655,13 +650,7 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
           for (const result of results) {
             const row = tableRows.value.find(r => r.itemId === result.itemId);
             if (row) {
-              const resultMap: Record<string, string> = {
-                '符合': 'conform',
-                '部分符合': 'partial',
-                '不符合': 'nonconform',
-                '不适用': 'na',
-              };
-              const complianceValue = resultMap[result.compliance] || '';
+              const complianceValue = parseAiCompliance(result.compliance);
               if (complianceValue) {
                 row.compliance = complianceValue;
               }
