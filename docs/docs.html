@@ -541,7 +541,7 @@ body {
   <aside class="sidebar" id="sidebar" aria-label="目录导航">
     <div class="sidebar-header">
       <div class="sidebar-title"><a href="index.html">📄 产品白皮书</a></div>
-      <div class="sidebar-subtitle">JSecProbe V2.5.0</div>
+      <div class="sidebar-subtitle">JSecProbe V2.5.1</div>
     </div>
     <nav aria-label="目录">
       <div class="toc">
@@ -679,7 +679,7 @@ body {
   <main class="content" id="main-content">
     <article class="article">
       <h1>JSecProbe 等级保护现场测评系统</h1>
-      <p class="subtitle">产品白皮书 · 当前版本 V2.5.0 · 技术标准 GB/T 22239-2019</p>
+      <p class="subtitle">产品白皮书 · 当前版本 V2.5.1 · 技术标准 GB/T 22239-2019</p>
 
       <h2 id="intro">一、产品概述</h2>
 
@@ -1422,6 +1422,18 @@ body {
             </td>
           </tr>
           <tr>
+            <td>白皮书 V1.15</td><td>V2.5.1</td>
+            <td>
+              <ul style="margin:0 0 0 18px;padding:0;">
+                <li>修复：现场核查「导出 Excel」只勾选单个资产时，文件里仍额外带出若干张「XX_全局层面」工作表——后端把「一个全局层面都没勾」的显式空数组误判为「导出全部全局层面」，导致未勾选的全局结论与证据引用被一并写出。现抽出纯函数 <code>shared/export-scope.ts</code> 的 <code>shouldIncludeGlobalSheet()</code>：仅当参数真的未传（兼容旧调用）才按全量处理，显式空数组严格表示不导出任何全局层面</li>
+                <li>体验：混合勾选「全局层面 + 资产」时，默认文件名原先被前面的分支抢先命中的死代码拦住，显示成「XX_全局层面」；现将混合内容分支提到最前，文件名正确显示「混合内容_现场核查记录」</li>
+                <li>质量保障：新增 <code>tests/shared/export-scope.test.ts</code> 共 8 条用例，覆盖未传 / null 全量、空数组不导出、按层面精确匹配、全选场景，并加 3 条源码反漂移门禁禁止再把 <code>domainIds.length === 0</code> 写回；测试基线 12 个文件 152 个用例通过、1 个按环境跳过</li>
+                <li>兼容性：仅调整 sheet 生成范围与默认文件名，不改动数据库写入、JSON 解析与回填落库；导入侧按文件内实际存在的 sheet 处理，缺全局层面表只会少导入、不会删除已有记录</li>
+                <li>附录 D 新增「白皮书变更记录」V1.15 条目</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
             <td>白皮书 V1.14</td><td>V2.5.0</td>
             <td>
               <ul style="margin:0 0 0 18px;padding:0;">
@@ -1606,7 +1618,7 @@ body {
 
       <hr>
       <p style="text-align:center;color:var(--gray-500);font-size:14px;padding:20px 0;">
-        <em>本文档最后更新：2026 年 11 月（V1.14，对应 V2.5.0）</em><br>
+        <em>本文档最后更新：2026 年 11 月（V1.15，对应 V2.5.1）</em><br>
         <strong>JSecProbe - 让等保测评更高效、更规范、更智能</strong>
       </p>
     </article>

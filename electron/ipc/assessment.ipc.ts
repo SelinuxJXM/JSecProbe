@@ -15,6 +15,7 @@ import { wrap } from '../utils/ipc-wrapper';
 import { validateUuid, validateNotEmpty, validateComplianceStatus, sanitizeInput } from '../utils/validation';
 import { validateReadablePath } from '../utils/path-resolver';
 import type { ExcelSheetInfo } from '../../shared/types';
+import { shouldIncludeGlobalSheet } from '../../shared/export-scope';
 import { computeAssessmentProgress } from '../services/assessment-progress';
 
 // 国标 fallback：域 ID → sheet 名（用于测评 Excel 导出/导入）
@@ -1146,8 +1147,10 @@ export function registerAssessmentHandlers(): void {
 
       // 按领域顺序遍历：每个领域先导出全局层面，再按资产类型顺序导出该领域的资产
       for (const { domain: domainKey } of DOMAIN_SHEETS) {
-        // 判断是否需要导出该领域
-        const hasGlobalData = !domainIds || domainIds.length === 0 || domainIds.includes(domainKey);
+        // 判断是否需要导出该领域的全局层面。
+        // domainIds 为显式空数组时表示「一个全局层面都没勾」，绝不能当成全量导出，
+        // 否则只选一个资产也会带出所有域的全局测评记录（详见 shared/export-scope.ts）。
+        const hasGlobalData = shouldIncludeGlobalSheet(domainIds, domainKey);
         const hasAssetData = domainAssetsMap.has(domainKey);
 
         if (!hasGlobalData && !hasAssetData) continue;
@@ -1180,7 +1183,12 @@ export function registerAssessmentHandlers(): void {
       const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
       let contentLabel = '现场核查记录表';
       
-      if (domainIds && domainIds.length === 1) {
+      // 混合选择必须最先判断：原先放在末尾，会被前面的 domainIds 分支先命中，
+      // 导致「同时选了全局层面 + 资产」的文件名一直显示成「XX_全局层面」或「多层面」，
+      // 看起来像只导出了全局层面。该分支此前是永远不可达的死代码。
+      if (domainIds && domainIds.length > 0 && assetIds && assetIds.length > 0) {
+        contentLabel = `混合内容_现场核查记录`;
+      } else if (domainIds && domainIds.length === 1) {
         contentLabel = `${DOMAIN_NAMES[domainIds[0]] || domainIds[0]}_全局层面`;
       } else if (domainIds && domainIds.length > 1) {
         contentLabel = `多层面_全局层面`;
@@ -1191,8 +1199,6 @@ export function registerAssessmentHandlers(): void {
         contentLabel = `${domainName}_${asset?.name || '资产'}`;
       } else if (assetIds && assetIds.length > 1) {
         contentLabel = `多资产_现场核查记录`;
-      } else if (domainIds && domainIds.length > 0 && assetIds && assetIds.length > 0) {
-        contentLabel = `混合内容_现场核查记录`;
       }
       
       const defaultFileName = `${project.name || '测评项目'}_${contentLabel}_${timestamp}.xlsx`;
