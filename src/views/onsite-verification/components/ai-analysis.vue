@@ -16,10 +16,10 @@
   <div v-if="aiDialogMinimized" class="mini-ai-progress mini-ai-single" @click="aiDialogVisible = true; aiDialogMinimized = false">
     <div class="mini-ai-progress-header">
       <span class="mini-ai-progress-title"><el-icon><MagicStick /></el-icon> AI单条分析</span>
-      <span class="mini-ai-progress-percent">{{ Math.round((aiStep / 6) * 100) }}%</span>
+      <span class="mini-ai-progress-percent">{{ Math.max(Math.round((aiStep / 6) * 100), aiWaitPercent) }}%</span>
     </div>
     <div class="mini-ai-progress-bar-container">
-      <div class="mini-ai-progress-bar" :style="{ width: (aiStep / 6) * 100 + '%' }"></div>
+      <div class="mini-ai-progress-bar" :style="{ width: Math.max((aiStep / 6) * 100, aiWaitPercent) + '%' }"></div>
     </div>
     <div class="mini-ai-progress-message">{{ aiLoadingText || '分析中...' }}</div>
     <div class="mini-ai-progress-restore">点击展开详情</div>
@@ -84,6 +84,12 @@
     <div v-if="aiLoading" class="ai-loading-area">
       <div class="loading-spinner"></div>
       <p class="loading-text">{{ aiLoadingText }}</p>
+      <el-progress
+        class="single-wait-progress"
+        :percentage="Math.max(Math.round((aiStep / 6) * 100), aiWaitPercent)"
+        :show-text="false"
+        :stroke-width="6"
+      />
     </div>
 
     <div v-else-if="aiAnalysisResult" class="ai-result-area">
@@ -269,6 +275,7 @@ const {
   aiLoading,
   aiLoadingText,
   aiStep,
+  aiWaitPercent,
   aiCurrentRow,
   aiAnalysisResult,
   batchAiProgress,
@@ -425,6 +432,11 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   padding: 60px 0;
+
+  .single-wait-progress {
+    width: 70%;
+    margin-top: 12px;
+  }
 
   .loading-spinner {
     width: 48px;

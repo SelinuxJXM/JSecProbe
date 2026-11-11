@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
-import type { User } from '../../shared/types';
+import type { AiChatStreamChunk, User } from '../../shared/types';
 
 const ipc = <T = any>(channel: string) => (...args: any[]): Promise<T> => ipcRenderer.invoke(channel, ...args);
 
@@ -23,6 +23,7 @@ const updateService = {
 
 const aiService = {
   chat: ipc<{ content: string; suggestions: string[]; modelName?: string; switched?: boolean }>('ai:chat'),
+  chatStream: ipc<any>('ai:chatStream'),
   cancelChat: ipc<{ canceled: boolean }>('ai:cancelChat'),
   analyzeAssessment: ipc<{ content: string }>('ai:analyzeAssessment'),
   cancelSingleAnalysis: ipc<{ canceled: boolean }>('ai:cancelSingleAnalysis'),
@@ -70,7 +71,12 @@ const aiService = {
   listPrompts: ipc<any>('ai:prompts:list'),
   savePrompt: ipc<{ success: boolean }>('ai:prompts:save'),
   resetPrompt: ipc<{ success: boolean }>('ai:prompts:reset'),
-  onAnalysisProgress: (callback: (data: { stage: string; message: string; percent: number }) => void) => {
+  onChatChunk: (callback: (data: AiChatStreamChunk) => void) => {
+    const handler = (_e: IpcRendererEvent, data: AiChatStreamChunk) => callback(data);
+    ipcRenderer.on('ai:chatChunk', handler);
+    return () => ipcRenderer.removeListener('ai:chatChunk', handler);
+  },
+  onAnalysisProgress: (callback: (data: { stage: string; message: string; percent: number; scope?: string }) => void) => {
     const handler = (_e: IpcRendererEvent, data: any) => callback(data);
     ipcRenderer.on('ai:progress', handler);
     return () => ipcRenderer.removeListener('ai:progress', handler);

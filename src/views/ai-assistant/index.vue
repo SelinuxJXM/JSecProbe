@@ -200,7 +200,8 @@
             </div>
             <div class="msg-content">
               <div class="msg-role">AI助手</div>
-              <div class="msg-bubble typing">
+              <div v-if="streamingText" class="msg-bubble markdown-body streaming-bubble" v-html="renderMarkdown(streamingText)"></div>
+              <div v-else class="msg-bubble typing">
                 <span></span><span></span><span></span>
               </div>
             </div>
@@ -840,6 +841,44 @@ const showPromptDrawer = ref(false);
 
 const loading = ref(false);
 const messages = ref<{ id: number; role: string; content: string; suggestions?: string[]; attachments?: PendingAttachment[] }[]>([]);
+
+// ── AI 对话流式输出（只用 loading 气泡承载草稿，不进 messages，切页/取消都不会污染历史）──
+const streamingText = ref('');
+const activeStreamId = ref('');
+let chatChunkCleanup: (() => void) | null = null;
+let streamPendingText = '';
+let streamFlushTimer: number | null = null;
+
+/** 合并 60ms 内的增量再刷新，避免每个 token 都整段重跑 Markdown 渲染。 */
+function queueStreamText(text: string) {
+  streamPendingText += text;
+  if (streamFlushTimer !== null) return;
+  streamFlushTimer = window.setTimeout(() => {
+    streamFlushTimer = null;
+    if (streamPendingText) {
+      streamingText.value += streamPendingText;
+      streamPendingText = '';
+      nextTick(() => scrollToBottom());
+    }
+  }, 60);
+}
+
+function flushStreamText() {
+  if (streamFlushTimer !== null) {
+    window.clearTimeout(streamFlushTimer);
+    streamFlushTimer = null;
+  }
+  if (streamPendingText) {
+    streamingText.value += streamPendingText;
+    streamPendingText = '';
+  }
+}
+
+function resetStreamState() {
+  flushStreamText();
+  streamingText.value = '';
+  activeStreamId.value = '';
+}
 const inputMessage = ref('');
 const pendingAttachments = ref<PendingAttachment[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -1665,22 +1704,26 @@ async function sendMessage(customMessage?: string, context?: string) {
   await nextTick();
   scrollToBottom();
 
-  // 如果已配置AI，优先使用AI
+  // 已配置 AI：先走流式；流式不可用自动回退到原有一次性请求
   if (isConfigured.value) {
+    const chatParams = {
+      messages: buildRequestMessages(),
+      model: aiSettings.mode === 'local' ? localEngineModel.value : aiSettings.model,
+      temperature: aiSettings.temperature,
+      context: context || undefined,
+    };
     try {
-      const res = await window.api.ai.chat({
-        messages: buildRequestMessages(),
-        model: aiSettings.mode === 'local' ? localEngineModel.value : aiSettings.model,
-        temperature: aiSettings.temperature,
-        context: context || undefined,
-      });
+      const streamOutcome = await runStreamChat(chatParams);
+      if (streamOutcome !== 'fallback') {
+        loading.value = false;
+        nextTick(() => scrollToBottom());
+        return;
+      }
+
+      // 一次性请求（含完整多模型故障转移），行为与升级前完全一致
+      const res = await window.api.ai.chat(chatParams);
       if (res.success && res.data) {
-        messages.value.push({
-          id: Date.now() + Math.random(),
-          role: 'assistant',
-          content: res.data.content,
-          suggestions: res.data.suggestions,
-        });
+        pushAssistantMessage(res.data.content, res.data.suggestions);
         loading.value = false;
         nextTick(() => scrollToBottom());
         return;
@@ -1697,12 +1740,7 @@ async function sendMessage(customMessage?: string, context?: string) {
         return;
       }
       // AI调用失败，显示错误信息，不降级
-      messages.value.push({
-        id: Date.now() + Math.random(),
-        role: 'assistant',
-        content: `AI调用失败：${error.message || '未知错误'}`,
-        suggestions: ['检查AI配置', '查看控制台日志'],
-      });
+      pushAssistantMessage(`AI调用失败：${error.message || '未知错误'}`, ['检查AI配置', '查看控制台日志']);
       loading.value = false;
       nextTick(() => scrollToBottom());
       return;
@@ -1718,6 +1756,61 @@ async function sendMessage(customMessage?: string, context?: string) {
   });
   loading.value = false;
   nextTick(() => scrollToBottom());
+}
+
+function pushAssistantMessage(content: string, suggestions?: string[]) {
+  messages.value.push({
+    id: Date.now() + Math.random(),
+    role: 'assistant',
+    content,
+    suggestions,
+  });
+}
+
+type StreamOutcome = 'done' | 'canceled' | 'error' | 'fallback';
+
+/**
+ * 流式对话。返回 fallback 表示这次流式不可用，调用方自动改走一次性 ai:chat。
+ *
+ * 流式期间文本只存在于 loading 气泡，不写入 messages；最终以主进程汇总的完整内容
+ * 落入历史，既避免节流刷新漏字，也不会把半截回答带进下一轮对话上下文。
+ */
+async function runStreamChat(params: {
+  messages: { role: string; content: string; attachments?: any }[];
+  model?: string;
+  temperature?: number;
+  context?: string;
+}): Promise<StreamOutcome> {
+  if (!window.api?.ai?.chatStream) return 'fallback';
+
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  activeStreamId.value = requestId;
+  streamingText.value = '';
+  streamPendingText = '';
+
+  try {
+    const res = await window.api.ai.chatStream({ ...params, requestId });
+    flushStreamText();
+
+    if (res.success && res.data) {
+      // 以主进程汇总的完整内容为准（含用户中断时保留的部分）
+      pushAssistantMessage(res.data.content, res.data.suggestions);
+      return 'done';
+    }
+    if (res.error?.code === 'AI_STREAM_FALLBACK') return 'fallback';
+    if (res.error?.code === 'AI_CHAT_CANCELED') {
+      if (streamingText.value.trim()) pushAssistantMessage(streamingText.value);
+      return streamingText.value.trim() ? 'done' : 'canceled';
+    }
+    pushAssistantMessage(`AI调用失败：${res.error?.message || '未知错误'}`, ['检查AI配置', '查看控制台日志']);
+    return 'error';
+  } catch (error: any) {
+    if (error?.message === '已停止生成') return 'canceled';
+    pushAssistantMessage(`AI调用失败：${error?.message || '未知错误'}`, ['检查AI配置', '查看控制台日志']);
+    return 'error';
+  } finally {
+    resetStreamState();
+  }
 }
 
 /**
@@ -1901,12 +1994,21 @@ function stopHealthCheck() {
 }
 
 onMounted(async () => {
+  chatChunkCleanup = window.api?.ai?.onChatChunk?.((chunk) => {
+    if (!activeStreamId.value || chunk.requestId !== activeStreamId.value) return;
+    if (chunk.type === 'delta' && chunk.text) queueStreamText(chunk.text);
+  }) || null;
   await loadSettings();
   loadProjects();
 });
 
 onUnmounted(() => {
   stopHealthCheck();
+  if (chatChunkCleanup) {
+    chatChunkCleanup();
+    chatChunkCleanup = null;
+  }
+  resetStreamState();
   if (pullProgressCleanup) {
     pullProgressCleanup();
   }
@@ -2319,6 +2421,27 @@ onActivated(() => {
       }
     }
   }
+}
+
+/* 流式生成中的光标，让用户一眼看出内容还在继续 */
+.streaming-bubble {
+  min-height: 1.5em;
+
+  &::after {
+    content: '';
+    display: inline-block;
+    width: 2px;
+    height: 1em;
+    margin-left: 3px;
+    vertical-align: -2px;
+    background: currentColor;
+    opacity: 0.65;
+    animation: ai-stream-caret 1s steps(2, start) infinite;
+  }
+}
+
+@keyframes ai-stream-caret {
+  to { visibility: hidden; }
 }
 
 @keyframes typing {

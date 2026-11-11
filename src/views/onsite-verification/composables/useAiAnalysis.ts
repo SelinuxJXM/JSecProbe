@@ -49,6 +49,9 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
   const batchAiProgress = ref({ visible: false, percent: 0, message: '', stage: '', current: 0, total: 0, text: '' });
   const batchAiMinimized = ref(false);
   const aiDialogMinimized = ref(false);
+  // 单条分析等待期的真实报活百分比：主进程每秒上报一次，等待期间进度条才有可见变化。
+  // 只增不退、封顶 88%，响应返回后由 aiStep=6 接管到 100%。
+  const aiWaitPercent = ref(0);
 
   // 用户主动取消标记：关闭/最小化对话框后置位，底层请求被中断。
   // 用它区分"取消"与"失败"——取消不是错误，不弹失败提示、不往记录里填脏结果。
@@ -183,6 +186,17 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
     aiLoadingText.value = '正在准备分析数据...';
     // 新一轮分析开始时重置取消标记（同一行可能被反复分析）
     singleCancelled.value = false;
+    aiWaitPercent.value = 0;
+
+    // 订阅主进程等待报活。单条与批量共用 ai:progress 通道，只认 scope=single；
+    // 订阅在函数结束时统一退订，避免同一行反复分析时监听器叠加。
+    const unsubscribeWait = window.api?.ai?.onAnalysisProgress?.((data: any) => {
+      if (data?.scope !== 'single' || !aiLoading.value) return;
+      const percent = Number(data.percent) || 0;
+      // 只增不退：主进程已保证单调递增，这里再兜一层，防止进度条闪烁回退
+      aiWaitPercent.value = Math.max(aiWaitPercent.value, percent);
+      if (data.message) aiLoadingText.value = data.message;
+    });
 
     // 加载AI配置（获取OCR预处理设置）- 每次分析都重新加载，避免配置过期
     try {
@@ -374,6 +388,10 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
       if (!singleCancelled.value) {
         ElMessage.error('AI分析失败：' + (error.message || error));
       }
+    } finally {
+      // 无论成功 / 失败 / 取消，都必须退订并归零，避免监听器叠加或残留进度
+      unsubscribeWait?.();
+      aiWaitPercent.value = 0;
     }
   }
 
@@ -540,6 +558,8 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
 
     // 注册进度监听器，实时更新批量分析进度
     let unsubscribeProgress: (() => void) | null = window.api.ai.onAnalysisProgress((data) => {
+      // 单条分析共用 ai:progress 通道但带 scope=single；并发触发时不要覆盖批量进度
+      if ((data as any)?.scope === 'single') return;
       batchAiProgress.value = { ...batchAiProgress.value, ...data };
     });
 
@@ -717,6 +737,7 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
     aiLoading,
     aiLoadingText,
     aiStep,
+    aiWaitPercent,
     aiCurrentRow,
     aiAnalysisResult,
 

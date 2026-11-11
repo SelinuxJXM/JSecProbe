@@ -437,6 +437,22 @@ export interface ChatMessageWithAttachments {
   attachments?: ChatAttachment[];
 }
 
+/** AI 助手对话的流式增量事件（主进程 → 发起窗口）。 */
+export interface AiChatStreamChunk {
+  requestId: string;
+  type: 'delta';
+  text: string;
+}
+
+/** ai:chatStream 的返回数据；失败时 error.code = AI_STREAM_FALLBACK 由前端回退一次性请求。 */
+export interface AiChatStreamResult {
+  content: string;
+  modelName?: string;
+  switched?: boolean;
+  suggestions: string[];
+  partial?: 'canceled' | 'interrupted';
+}
+
 // ============ 项目归档（整包导出 / 整包还原） ============
 
 export interface ProjectArchiveCounts {
@@ -745,6 +761,8 @@ export interface ApiBridge {
   };
   ai: {
     chat: (params: { messages: ChatMessageWithAttachments[]; model?: string; temperature?: number; context?: string }) => Promise<IpcResponse<{ content: string; suggestions: string[] }>>;
+    chatStream: (params: { messages: ChatMessageWithAttachments[]; model?: string; temperature?: number; context?: string; requestId: string }) => Promise<IpcResponse<AiChatStreamResult>>;
+    onChatChunk: (callback: (data: AiChatStreamChunk) => void) => () => void;
     cancelChat: () => Promise<IpcResponse<{ canceled: boolean }>>;
     analyzeAssessment: (params: { controlPoint: string; requirement: string; command: string; result: string; screenshots?: string[]; ocrPreprocess?: boolean; standardId?: string; itemId?: string; domain?: string }) => Promise<IpcResponse<{ content: string }>>;
     cancelSingleAnalysis: () => Promise<IpcResponse<{ canceled: boolean }>>;
@@ -802,7 +820,7 @@ export interface ApiBridge {
     setActiveModel: (modelId: string | null) => Promise<IpcResponse<void>>;
     testModelConnection: (modelId: string) => Promise<IpcResponse<any>>;
     getProgress: () => Promise<IpcResponse<{ stage: string; message: string; percent: number; timestamp: number } | null>>;
-    onAnalysisProgress: (callback: (data: { stage: string; message: string; percent: number }) => void) => () => void;
+    onAnalysisProgress: (callback: (data: { stage: string; message: string; percent: number; scope?: string }) => void) => () => void;
     onBatchIssueProgress: (callback: (data: { stage: string; message: string; percent: number; current: number; total: number }) => void) => () => void;
     listPrompts: () => Promise<IpcResponse<AiPromptInfo[]>>;
     savePrompt: (payload: { key: string; template: string }) => Promise<IpcResponse<{ success: boolean }>>;

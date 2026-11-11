@@ -1348,6 +1348,9 @@ onMounted(async () => {
   clipboardHandler.setupGlobalPasteHandler();
 
   removeAnalysisProgress = window.api?.ai.onAnalysisProgress((data: any) => {
+    // 单条分析复用了 ai:progress 通道，但带 scope=single；批量弹窗不要消费它，
+    // 否则单行分析等待时的心跳会把批量进度弹窗的状态覆盖掉。
+    if (data?.scope === 'single') return;
     if (aiAnalysisRef.value) {
       aiAnalysisRef.value.batchAiProgress.percent = data.percent || 0;
       aiAnalysisRef.value.batchAiProgress.message = data.message || '';

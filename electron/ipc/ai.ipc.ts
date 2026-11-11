@@ -50,6 +50,14 @@ import {
   validateTemplate,
 } from '../services/ai-prompt.service';
 import { ASSET_CATEGORIES } from '../../shared/asset-categories';
+import { SseDeltaParser } from '../../shared/ai-stream';
+import {
+  MODEL_PROBE_TIMEOUT_MS,
+  ModelHealthTracker,
+  effectiveTimeout,
+  orderByHealth,
+} from '../../shared/ai-model-health';
+import { startWaitHeartbeat, type AiProgressTick } from '../../shared/ai-wait-progress';
 import { computeComplianceStats } from '../services/compliance-stats';
 
 // ====== 工作台确定性预警规则（纯常量，模块顶层，便于单测与复用）======
@@ -89,6 +97,10 @@ const PROGRESS_EXPIRE_MS = 5 * 60 * 1000; // 5 分钟过期
 let batchIssueCancelRequested = false;
 let batchIssueRunning = false;
 let chatAbortController: AbortController | null = null;
+// 云端模型健康记录（进程内）。仅影响失败分支的尝试顺序与超时，成功路径完全不变。
+const aiModelHealth = new ModelHealthTracker();
+/** 流式首个有效字块的最长等待：超时即回退到成熟的一次性请求，避免某些网关不支持流式时干等。 */
+const STREAM_FIRST_BYTE_TIMEOUT_MS = 20_000;
 // 单条/批量 AI 分析的取消控制器。UI 关闭对话框时只藏界面，底层请求仍在云端跑，
 // 必须让用户能主动中断（选错文件 / 模型响应过慢等都该能中止）。
 let singleAnalyzeAbortController: AbortController | null = null;
@@ -787,12 +799,14 @@ export async function runWithFailover(
 ): Promise<{ content: string; modelName?: string }> {
   const { build } = options;
 
-  async function attempt(ep: { model: string; apiBase: string; apiKey: string; name: string }): Promise<{ content: string; modelName?: string }> {
+  async function attempt(ep: { model: string; apiBase: string; apiKey: string; name: string }, coolingDown = false): Promise<{ content: string; modelName?: string }> {
     const { body, timeoutMs } = build(ep);
     const apiUrl = ensureApiUrl(ep.apiBase, 'cloud');
     if (!apiUrl) throw new Error(`模型 ${ep.name} API 地址无效`);
     const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(new Error('请求超时')), timeoutMs || 30000);
+    // 冷却中的模型最近刚失败过，只给短探活，不值得再等满一个按内容算出来的动态超时。
+    const attemptTimeoutMs = effectiveTimeout(timeoutMs || 30000, coolingDown);
+    const timer = setTimeout(() => ac.abort(new Error('请求超时')), attemptTimeoutMs);
     // 外部取消与内部超时合并：任一方触发都中止本次请求。
     // 必须在 timer 之前监听，避免外部取消瞬间晚于响应返回造成误报。
     const onExternalAbort = () => ac.abort(new Error('用户已取消'));
@@ -837,25 +851,91 @@ export async function runWithFailover(
   if (endpoints.length === 0) {
     throw new Error('尚未配置云端模型，请在 AI 设置的「云端模型列表」中添加模型');
   }
+  // 近期失败过的模型排到健康模型后面；没有失败记录时顺序与原来完全一致。
+  aiModelHealth.prune();
+  const orderedEndpoints = orderByHealth(endpoints, ep => ep.id, aiModelHealth);
   let lastErr: any = null;
-  for (const ep of endpoints) {
+  for (const ep of orderedEndpoints) {
     // 已取消则直接中止，不再尝试下一个端点
     if (externalSignal?.aborted) {
       throw new Error('用户已取消');
     }
+    const coolingDown = aiModelHealth.isCoolingDown(ep.id);
+    if (coolingDown) {
+      log.info(`[AI故障转移] 模型 ${ep.name} 处于降权窗口，本次探活超时 ${MODEL_PROBE_TIMEOUT_MS / 1000}s`);
+    }
     try {
-      return await attempt(ep);
+      const result = await attempt(ep, coolingDown);
+      aiModelHealth.recordSuccess(ep.id);
+      return result;
     } catch (e: any) {
       lastErr = e;
       // 取消导致的失败不应触发故障转移：用户要停，不是求下个端点
       if (externalSignal?.aborted) {
         throw new Error('用户已取消');
       }
+      // 地址无效属于确定性配置错误，不该把模型打成「故障」；其余按模型故障降权。
+      if (!/API 地址无效/.test(e?.message || '')) {
+        aiModelHealth.recordFailure(ep.id);
+      }
       log.warn(`[AI故障转移] 模型 ${ep.name} 失败: ${e.message}`);
     }
   }
-  throw new Error(`云端模型全部失败（共 ${endpoints.length} 个）。最近错误：${lastErr?.message || ''}`);
+  throw new Error(`云端模型全部失败（共 ${orderedEndpoints.length} 个）。最近错误：${lastErr?.message || ''}`);
 }
+
+interface ChatRequestParams {
+  messages: { role: string; content: string; attachments?: Array<{ name: string; path: string; type: 'image' | 'document' }> }[];
+  model?: string;
+  temperature?: number;
+  context?: string;
+}
+
+/**
+ * 对话请求的公共前置：读配置 / 校验 API Key / 拼接上下文与附件消息。
+ * ai:chat 与 ai:chatStream 共用，避免两条通道的配置口径漂移（历史上出过 URL 拼接不一致的 404）。
+ */
+async function prepareChatRequest(params: ChatRequestParams): Promise<{
+  config: any;
+  mode: string;
+  messages: any[];
+  temperature: number;
+}> {
+  const db = getDb();
+  const configs = await db.select().from(schema.aiConfigs).limit(1);
+  if (configs.length === 0) throw new Error('AI未配置');
+  const config = normalizeConfig(sanitize(configs[0]));
+  const mode = config.mode || 'cloud';
+
+  if (shouldValidateApiKey(config) && !config.apiKey && !config.activeModelId) {
+    // 自动（按优先级）模式下，任一启用的云端模型配置了 API Key 即视为已配置
+    const cloudRows = await db.select({ enabled: schema.aiCloudModels.enabled, apiKey: schema.aiCloudModels.apiKey })
+      .from(schema.aiCloudModels)
+      .where(eq(schema.aiCloudModels.configId, 'default'))
+      .all();
+    const hasUsableKey = cloudRows.some(m => m.enabled === 1 && !!m.apiKey);
+    if (!hasUsableKey) {
+      throw new Error('API Key未配置');
+    }
+  }
+
+  const temperature = params.temperature ?? config.temperature ?? 0.3;
+  const messages: any[] = [];
+  if (params.context) {
+    messages.push({ role: 'system', content: params.context });
+  }
+  for (const msg of params.messages) {
+    messages.push({ role: msg.role, content: await buildChatMessageContent(msg) });
+  }
+  return { config, mode, messages, temperature };
+}
+
+/** 固定的对话后续建议，流式与一次性请求保持一致。 */
+const CHAT_SUGGESTIONS = [
+  '是否需要进一步详细分析？',
+  '将结果保存到核查记录',
+  '生成整改建议',
+];
 
 export function registerAIHandlers(): void {
   /**
@@ -894,8 +974,12 @@ export function registerAIHandlers(): void {
           }
         }
 
+        // 近期失败过的模型排到健康模型后面；没失败记录时顺序与原来完全一致。
+        aiModelHealth.prune();
+        const orderedModels = orderByHealth(attemptOrder, m => m.id, aiModelHealth);
+
         let lastError = '';
-        for (const model of attemptOrder) {
+        for (const model of orderedModels) {
           const apiKey = model.apiKey ? decryptApiKey(model.apiKey) : '';
           if (!apiKey) {
             log.warn(`[AI故障转移] 模型 ${model.name} 缺少 API Key，跳过`);
@@ -907,6 +991,11 @@ export function registerAIHandlers(): void {
             log.warn(`[AI故障转移] 模型 ${model.name} API 地址无效，跳过`);
             lastError = `模型 ${model.name} API 地址无效`;
             continue;
+          }
+
+          const coolingDown = aiModelHealth.isCoolingDown(model.id);
+          if (coolingDown) {
+            log.info(`[AI故障转移] 模型 ${model.name} 处于降权窗口，本次探活超时 ${MODEL_PROBE_TIMEOUT_MS / 1000}s`);
           }
 
           try {
@@ -925,7 +1014,7 @@ export function registerAIHandlers(): void {
                 'Authorization': `Bearer ${apiKey}`,
               },
               body: requestBody,
-            }, undefined, signal);
+            }, effectiveTimeout(AI_FETCH_TIMEOUT_MS, coolingDown), signal);
 
             if (!response.ok) {
               const errorBody = await response.text().catch(() => '');
@@ -939,6 +1028,7 @@ export function registerAIHandlers(): void {
               throw new Error('模型返回内容为空');
             }
             log.info(`[AI故障转移] 模型 ${model.name} 调用成功, 返回内容长度: ${content.length}字符`);
+            aiModelHealth.recordSuccess(model.id);
             return { success: true, modelId: model.id, modelName: model.name, content };
           } catch (error: any) {
             // 用户主动取消：不再故障转移到下一个模型，直接向上抛出
@@ -946,6 +1036,7 @@ export function registerAIHandlers(): void {
               log.info('[AI故障转移] 用户已取消，终止后续尝试');
               throw new Error('用户已取消');
             }
+            aiModelHealth.recordFailure(model.id);
             log.warn(`[AI故障转移] 模型 ${model.name} 失败: ${error.message}`);
             lastError = error.message || String(error);
             continue; // 尝试下一个
@@ -953,7 +1044,7 @@ export function registerAIHandlers(): void {
         }
 
         // 所有云端模型都失败
-        throw new Error(`云端模型全部失败（共 ${attemptOrder.length} 个）。最近错误：${lastError}`);
+        throw new Error(`云端模型全部失败（共 ${orderedModels.length} 个）。最近错误：${lastError}`);
       }
     }
 
@@ -1413,45 +1504,15 @@ export function registerAIHandlers(): void {
     }
   });
 
-  ipcMain.handle('ai:chat', async (_event, params: {
-    messages: { role: string; content: string; attachments?: Array<{ name: string; path: string; type: 'image' | 'document' }> }[];
-    model?: string;
-    temperature?: number;
-    context?: string;
-  }) => {
+  ipcMain.handle('ai:chat', async (_event, params: ChatRequestParams) => {
     assertTrusted(_event);
     // 本地/云端长回答可能持续一分钟以上，用户需要能中途停止
     const chatController = new AbortController();
     chatAbortController = chatController;
     try {
-      const db = getDb();
-      const configs = await db.select().from(schema.aiConfigs).limit(1);
-      if (configs.length === 0) throw new Error('AI未配置');
-      const config = normalizeConfig(sanitize(configs[0]));
-      const mode = config.mode || 'cloud';
+      const { config, mode, messages, temperature } = await prepareChatRequest(params);
 
-      if (shouldValidateApiKey(config) && !config.apiKey && !config.activeModelId) {
-        // 自动（按优先级）模式下，任一启用的云端模型配置了 API Key 即视为已配置
-        const cloudRows = await db.select({ enabled: schema.aiCloudModels.enabled, apiKey: schema.aiCloudModels.apiKey })
-          .from(schema.aiCloudModels)
-          .where(eq(schema.aiCloudModels.configId, 'default'))
-          .all();
-        const hasUsableKey = cloudRows.some(m => m.enabled === 1 && !!m.apiKey);
-        if (!hasUsableKey) {
-          throw new Error('API Key未配置');
-        }
-      }
-
-      const temperature = params.temperature ?? config.temperature ?? 0.3;
-      const messages: any[] = [];
-      if (params.context) {
-        messages.push({ role: 'system', content: params.context });
-      }
-      for (const msg of params.messages) {
-        messages.push({ role: msg.role, content: await buildChatMessageContent(msg) });
-      }
-
-      // 使用故障转移机制
+      // 使用故障转移机制（流式失败后也会回退到这里，故障转移语义保持不变）
       const result = await callWithFailover({ messages, temperature, mode, config, signal: chatController.signal });
 
       try {
@@ -1470,11 +1531,7 @@ export function registerAIHandlers(): void {
           content: result.content,
           modelName: result.modelName,
           switched: result.modelName !== config.model,
-          suggestions: [
-            '是否需要进一步详细分析？',
-            '将结果保存到核查记录',
-            '生成整改建议',
-          ],
+          suggestions: CHAT_SUGGESTIONS,
         },
       });
     } catch (error: any) {
@@ -1495,6 +1552,197 @@ export function registerAIHandlers(): void {
         },
       });
     } finally {
+      if (chatAbortController === chatController) chatAbortController = null;
+    }
+  });
+
+  /**
+   * AI 助手对话的流式通道（独立新增，不改动 ai:chat 的请求与故障转移语义）。
+   *
+   * 契约：
+   * - 过程中通过 `ai:chatChunk` 事件把增量推给发起窗口，payload 带 requestId 供前端过滤；
+   * - invoke 的 Promise 在流结束后才 resolve，前端 loading 状态与原来一致；
+   * - 首个有效字块之前出现任何问题（不支持流式 / 非 2xx / 超时 / 首字节超时 / 空内容），
+   *   返回 error.code = AI_STREAM_FALLBACK，由前端自动回退到成熟的 ai:chat；
+   * - 已经吐出内容后中断：保留已生成部分，不重新发起请求（避免两段拼接与重复计费）。
+   *
+   * 只尝试按健康排序后的第一个端点，不在流式里实现多模型故障转移——失败统一交给
+   * ai:chat 的既有串行故障转移处理，风险关在单个页面里。
+   */
+  ipcMain.handle('ai:chatStream', async (event, rawParams: ChatRequestParams & { requestId: string }) => {
+    assertTrusted(event);
+    const params: ChatRequestParams & { requestId: string } = rawParams || { messages: [], requestId: '' };
+    const requestId = String(params.requestId || '');
+
+    const chatController = new AbortController();
+    chatAbortController = chatController;
+    const ac = new AbortController();
+    let firstByteTimer: ReturnType<typeof setTimeout> | null = null;
+    let totalTimer: ReturnType<typeof setTimeout> | null = null;
+    const onCancel = () => ac.abort();
+    chatController.signal.addEventListener('abort', onCancel, { once: true });
+
+    let endpoint: { key: string; name: string; model: string; apiUrl: string; apiKey: string } | null = null;
+    let content = '';
+    let gotContent = false;
+
+    const emitDelta = (text: string) => {
+      content += text;
+      if (!gotContent && content.trim()) {
+        gotContent = true;
+        if (firstByteTimer) { clearTimeout(firstByteTimer); firstByteTimer = null; }
+      }
+      try {
+        event.sender.send('ai:chatChunk', { requestId, type: 'delta', text });
+      } catch {
+        // 窗口可能已关闭，后续读取仍会正常结束，不应因此误判为失败
+      }
+    };
+
+    try {
+      const { config, mode, messages, temperature } = await prepareChatRequest(params);
+
+      if (mode === 'local') {
+        const model = getLocalEngineModel(config);
+        endpoint = {
+          key: 'local',
+          name: model || '本地模型',
+          model,
+          apiUrl: resolveLocalChatUrl(config, mode),
+          apiKey: 'ollama',
+        };
+      } else {
+        const cloudEndpoints = await resolveCloudEndpoints(config);
+        aiModelHealth.prune();
+        const ordered = orderByHealth(cloudEndpoints, ep => ep.id, aiModelHealth);
+        const ep = ordered[0];
+        if (!ep) {
+          return sanitize({
+            success: false,
+            error: { code: 'AI_STREAM_FALLBACK', message: '没有可用的云端模型，回退一次性请求' },
+          });
+        }
+        endpoint = {
+          key: ep.id,
+          name: ep.name,
+          model: ep.model,
+          apiUrl: ensureApiUrl(ep.apiBase, 'cloud'),
+          apiKey: ep.apiKey,
+        };
+      }
+      if (!endpoint.apiUrl) throw new Error('API 地址无效');
+
+      const coolingDown = aiModelHealth.isCoolingDown(endpoint.key);
+      const totalTimeoutMs = effectiveTimeout(AI_FETCH_TIMEOUT_MS, coolingDown);
+      // 首字节超时兜底：某些 Electron 网络栈 / 中转网关会缓冲 SSE，
+      // 20 秒还拿不到第一个字就回退，绝不把用户卡在「转圈但没字」的状态。
+      firstByteTimer = setTimeout(() => ac.abort(), STREAM_FIRST_BYTE_TIMEOUT_MS);
+      totalTimer = setTimeout(() => ac.abort(), totalTimeoutMs);
+
+      const response = await aiFetch(endpoint.apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${endpoint.apiKey}`,
+          'Accept': 'text/event-stream',
+        },
+        body: JSON.stringify({ model: endpoint.model, messages, temperature, stream: true }),
+        signal: ac.signal,
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        throw new Error(`API请求失败(${response.status}): ${errorBody.substring(0, 300)}`);
+      }
+
+      const streamBody: any = response.body;
+      if (!streamBody || typeof streamBody.getReader !== 'function') {
+        throw new Error('流式响应不可用');
+      }
+
+      const reader = streamBody.getReader();
+      const decoder = new TextDecoder();
+      const parser = new SseDeltaParser();
+      let streamDone = false;
+
+      const applyEvents = (events: ReturnType<SseDeltaParser['push']>) => {
+        for (const ev of events) {
+          if (ev.type === 'delta') emitDelta(ev.text);
+          else if (ev.type === 'error') throw new Error(ev.message);
+          else streamDone = true;
+        }
+      };
+
+      while (!streamDone) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        applyEvents(parser.push(decoder.decode(value, { stream: true })));
+      }
+      if (!streamDone) applyEvents(parser.flush());
+
+      if (!content.trim()) throw new Error('流式返回内容为空');
+
+      aiModelHealth.recordSuccess(endpoint.key);
+      try {
+        writeOperationLog({
+          action: 'ai_chat',
+          module: 'ai',
+          description: `AI对话: 模式=${mode}, 模型=${endpoint.name}, 消息数=${params.messages.length}, 上下文=${params.context ? '是' : '否'}, 故障转移=否（流式）`,
+        });
+      } catch (logErr: any) {
+        log.error('[操作日志] 写入AI对话日志失败:', logErr.message);
+      }
+
+      return sanitize({
+        success: true,
+        data: {
+          content,
+          modelName: endpoint.name,
+          switched: false,
+          suggestions: CHAT_SUGGESTIONS,
+        },
+      });
+    } catch (error: any) {
+      const message = error?.message || '流式调用失败';
+      if (chatController.signal.aborted) {
+        log.info('[ai:chatStream] 用户已停止生成');
+        if (content.trim()) {
+          // 用户主动停止：保留已经生成的字，不写错误气泡、不重复请求
+          return sanitize({
+            success: true,
+            data: { content, modelName: endpoint?.name, switched: false, suggestions: CHAT_SUGGESTIONS, partial: 'canceled' },
+          });
+        }
+        return sanitize({ success: false, error: { code: 'AI_CHAT_CANCELED', message: '已停止生成' } });
+      }
+
+      if (gotContent && content.trim()) {
+        // 半截回答不再重试：重试会让用户看到两段拼接，且重复消耗云端配额。
+        log.warn(`[ai:chatStream] 流中断，保留已生成 ${content.length} 字符: ${message}`);
+        return sanitize({
+          success: true,
+          data: {
+            content: `${content}\n\n> 生成中断，以上为已生成内容。`,
+            modelName: endpoint?.name,
+            switched: false,
+            suggestions: CHAT_SUGGESTIONS,
+            partial: 'interrupted',
+          },
+        });
+      }
+
+      // 首块前失败：记录模型故障（配置类错误不算），让一次性请求的故障转移也优先跳过它。
+      const configError = /AI未配置|API Key未配置|API 地址无效|API地址/.test(message);
+      if (endpoint && !configError) aiModelHealth.recordFailure(endpoint.key);
+      log.warn(`[ai:chatStream] 流式不可用，回退一次性请求: ${message}`);
+      return sanitize({
+        success: false,
+        error: { code: 'AI_STREAM_FALLBACK', message },
+      });
+    } finally {
+      if (firstByteTimer) clearTimeout(firstByteTimer);
+      if (totalTimer) clearTimeout(totalTimer);
+      chatController.signal.removeEventListener('abort', onCancel);
       if (chatAbortController === chatController) chatAbortController = null;
     }
   });
@@ -1550,8 +1798,8 @@ export function registerAIHandlers(): void {
     return sanitize({ success: true, data: { canceled: false } });
   });
 
-  ipcMain.handle('ai:analyzeAssessment', async (_event, rawParams: any) => {
-    assertTrusted(_event);
+  ipcMain.handle('ai:analyzeAssessment', async (event, rawParams: any) => {
+    assertTrusted(event);
     const params = sanitize(rawParams) as {
       controlPoint: string;
       requirement: string;
@@ -1666,6 +1914,22 @@ export function registerAIHandlers(): void {
       }
       const dynamicTimeout = calculateTimeout(1, screenshotCount, totalImageSizeKB, privacyMode);
 
+      // 一次性请求期间主进程没有任何事件，渲染进程的 6 步流程条会一直停在第 2 步。
+      // 这里只补「真实等待秒数」的报活：不改请求体、不改故障转移、不改 JSON 解析与回填。
+      // scope=single 让共用 ai:progress 通道的批量弹窗订阅能过滤掉，避免串台；
+      // 也刻意不写 currentProgress（那是批量弹窗轮询兜底用的全局单例）。
+      const sendSingleProgress = (data: AiProgressTick) => {
+        try { event.sender.send('ai:progress', data); } catch (innerErr: any) {
+          log.warn('[单条分析] 发送进度失败:', innerErr?.message);
+        }
+      };
+      const stopWaiting = startWaitHeartbeat(sendSingleProgress, {
+        from: 34,
+        to: 88,
+        label: 'AI正在分析关键证据点',
+        scope: 'single',
+      });
+
       // 使用云端模型列表做故障转移（失败自动切换下一模型）
       const controller = new AbortController();
       singleAnalyzeAbortController = controller;
@@ -1678,6 +1942,7 @@ export function registerAIHandlers(): void {
           }),
         }, controller.signal);
       } finally {
+        stopWaiting();
         singleAnalyzeAbortController = null;
       }
       const content = runResult.content;
@@ -1716,37 +1981,23 @@ export function registerAIHandlers(): void {
     };
     const ocrPreprocess = params.ocrPreprocess === true;
 
-    const sendProgress = (data: { stage: string; message: string; percent: number }) => {
-      currentProgress = { ...data, timestamp: Date.now() };
+    const sendProgress = (data: AiProgressTick) => {
+      // 不把 scope 写进 currentProgress：它是批量弹窗轮询兜底用的全局单例，
+      // 单条分析的心跳不该污染它。
+      currentProgress = {
+        stage: data.stage,
+        message: data.message,
+        percent: data.percent,
+        timestamp: Date.now(),
+      };
       try { _event.sender.send('ai:progress', data); } catch (innerErr: any) {
         log.warn('[批量分析] 发送进度失败:', innerErr.message);
       }
     };
 
-    let heartbeatTimer: NodeJS.Timeout | null = null;
-    const startHeartbeat = (startPercent: number, endPercent: number) => {
-      let current = startPercent;
-      const startedAt = Date.now();
-      // 云端模型响应常要 30-60s。旧实现每 2 秒才 +1%，到 90% 后彻底静止，
-      // 文案还一直写「正在提交」，用户看到进度条不动会以为请求卡住或没发出去。
-      // 改成每秒报活 + 显示真实等待秒数；百分比到顶后仍持续上报，直到请求返回。
-      // stage 用 receiving，让进度弹窗停在「AI分析 / 等待结果」而不是「提交AI」。
-      heartbeatTimer = setInterval(() => {
-        if (current < endPercent) current += 1;
-        const waited = Math.floor((Date.now() - startedAt) / 1000);
-        sendProgress({
-          stage: 'receiving',
-          message: `AI正在分析中，已等待 ${waited}s...`,
-          percent: current,
-        });
-      }, 1000);
-    };
-    const stopHeartbeat = () => {
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-      }
-    };
+    // 等待期报活已抽到 shared 下复用：批量与单条都只上报真实等待秒数，
+    // 不推测模型生成了多少内容；百分比只增不退且封顶，避免进度条走满却没结果。
+    let stopWaiting: (() => void) | null = null;
 
     try {
       sendProgress({ stage: 'init', message: '正在读取配置...', percent: 5 });
@@ -1902,7 +2153,7 @@ export function registerAIHandlers(): void {
 
       sendProgress({ stage: 'sending', message: '正在提交给AI分析...', percent: 60 });
 
-      startHeartbeat(61, 90);
+      stopWaiting = startWaitHeartbeat(sendProgress, { from: 61, to: 90 });
 
       // 使用云端模型列表做故障转移（失败自动切换下一模型）
       let runResult: any;
@@ -1916,7 +2167,8 @@ export function registerAIHandlers(): void {
           }),
         }, controller.signal);
       } finally {
-        stopHeartbeat();
+        stopWaiting?.();
+        stopWaiting = null;
         batchScreenshotsAbortController = null;
       }
       const content = runResult.content;
