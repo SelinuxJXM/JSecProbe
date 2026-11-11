@@ -12,7 +12,12 @@ import { useAppStore } from './stores/app';
 import './styles/global.scss';
 
 // Global unhandled error/rejection guard (best-effort console + log to preload)
+// Chromium 在布局抖动时会把 ResizeObserver 的良性警告以 error 事件抛出
+// （多由 Element Plus 内部触发布局计算引起），它不是 JS 异常也不需要修复，
+// 过滤掉以免刷屏淹没真正值得排查的报错。
+const BENIGN_RESIZE_OBSERVER = /^ResizeObserver loop (completed with undelivered notifications|limit exceeded)/;
 window.addEventListener('error', (e) => {
+  if (BENIGN_RESIZE_OBSERVER.test(e.message || '')) return;
   console.error('[全局] 未捕获异常:', e.error || e.message);
 });
 

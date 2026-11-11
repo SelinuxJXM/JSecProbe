@@ -252,7 +252,8 @@ import {
 
 const props = defineProps<{
   tableRows: any[];
-  saveAllRows: () => Promise<boolean>;
+  /** 保存 AI 回填的行：必须传入被改动的行，由父组件标脏后立即落库 */
+  saveAllRows: (rows?: any[]) => Promise<boolean>;
   loadScreenshotDataUrl: (row: any, filePath: string) => Promise<string | null>;
   // Phase 4 行标上下文注入（与 composable 对应）
   projectId?: string;

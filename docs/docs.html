@@ -541,7 +541,7 @@ body {
   <aside class="sidebar" id="sidebar" aria-label="目录导航">
     <div class="sidebar-header">
       <div class="sidebar-title"><a href="index.html">📄 产品白皮书</a></div>
-      <div class="sidebar-subtitle">JSecProbe V2.4.10</div>
+      <div class="sidebar-subtitle">JSecProbe V2.4.11</div>
     </div>
     <nav aria-label="目录">
       <div class="toc">
@@ -679,7 +679,7 @@ body {
   <main class="content" id="main-content">
     <article class="article">
       <h1>JSecProbe 等级保护现场测评系统</h1>
-      <p class="subtitle">产品白皮书 · 当前版本 V2.4.10 · 技术标准 GB/T 22239-2019</p>
+      <p class="subtitle">产品白皮书 · 当前版本 V2.4.11 · 技术标准 GB/T 22239-2019</p>
 
       <h2 id="intro">一、产品概述</h2>
 
@@ -1422,6 +1422,20 @@ body {
             </td>
           </tr>
           <tr>
+            <td>白皮书 V1.13</td><td>V2.4.11</td>
+            <td>
+              <ul style="margin:0 0 0 18px;padding:0;">
+                <li>修复：AI 单条 / 批量分析把结论回填到测评记录后，切换页面或测评对象再返回，回填内容全部消失——回填只改了内存中的表格行，从未标脏，自动保存的「脏行快照」机制会直接空跑、零次写库；批量分支还丢弃了保存结果，反而提示「已自动填入 N 条」。现回填行统一经 <code>saveAppliedRows()</code> 标脏并立即同步落库，保存失败保留脏标记、切页前重试并阻断切换</li>
+                <li>修复：单条 AI 应用的「直接落库兜底」漏传后端必填的 <code>projectId</code>（以及 assetId / method / screenshotPaths），一直被校验拒绝，等于两条回填路径都没写过库；现删除该旁路，统一走字段完整的自动保存通道</li>
+                <li>修复：老用户拖动窗口、最大化或开合 DevTools 时控制台反复报 <code>Cannot read properties of undefined (reading 'guid')</code>——新手引导未播放时步骤数组为空，但窗口 resize 监听仍无条件去算高亮锚点；现 resize 与滚动一样改走带可见性判断与节流的重算函数，并对空步骤做防御</li>
+                <li>体验：全局异常捕获器不再把 Chromium 的 <code>ResizeObserver loop</code> 良性警告刷成「未捕获异常」，避免淹没真正的错误日志</li>
+                <li>体验：AI 功能反馈提速——点击后立刻弹窗、批量前置准备分阶段显示真实进度、主进程等待模型期间每秒报活并显示已等待秒数（原每 2 秒 +1% 且到 90% 静止）、进度轮询缩短为 1 秒且只补不退、问题清单的假进度不再提前显示「正在生成」</li>
+                <li>质量保障：新增 7 条 AI 回填回归用例并更新结论值域反漂移断言；测试基线 8 个文件 107 个用例通过、1 个按环境跳过</li>
+                <li>附录 D 新增「白皮书变更记录」V1.13 条目</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
             <td>白皮书 V1.12</td><td>V2.4.10</td>
             <td>
               <ul style="margin:0 0 0 18px;padding:0;">
@@ -1578,7 +1592,7 @@ body {
 
       <hr>
       <p style="text-align:center;color:var(--gray-500);font-size:14px;padding:20px 0;">
-        <em>本文档最后更新：2026 年 11 月（V1.12，对应 V2.4.10）</em><br>
+        <em>本文档最后更新：2026 年 11 月（V1.13，对应 V2.4.11）</em><br>
         <strong>JSecProbe - 让等保测评更高效、更规范、更智能</strong>
       </p>
     </article>

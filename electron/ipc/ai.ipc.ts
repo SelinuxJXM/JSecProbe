@@ -1726,12 +1726,20 @@ export function registerAIHandlers(): void {
     let heartbeatTimer: NodeJS.Timeout | null = null;
     const startHeartbeat = (startPercent: number, endPercent: number) => {
       let current = startPercent;
+      const startedAt = Date.now();
+      // 云端模型响应常要 30-60s。旧实现每 2 秒才 +1%，到 90% 后彻底静止，
+      // 文案还一直写「正在提交」，用户看到进度条不动会以为请求卡住或没发出去。
+      // 改成每秒报活 + 显示真实等待秒数；百分比到顶后仍持续上报，直到请求返回。
+      // stage 用 receiving，让进度弹窗停在「AI分析 / 等待结果」而不是「提交AI」。
       heartbeatTimer = setInterval(() => {
-        if (current < endPercent) {
-          current += 1;
-          sendProgress({ stage: 'sending', message: `正在提交给AI分析... (${current}%)`, percent: current });
-        }
-      }, 2000);
+        if (current < endPercent) current += 1;
+        const waited = Math.floor((Date.now() - startedAt) / 1000);
+        sendProgress({
+          stage: 'receiving',
+          message: `AI正在分析中，已等待 ${waited}s...`,
+          percent: current,
+        });
+      }, 1000);
     };
     const stopHeartbeat = () => {
       if (heartbeatTimer) {

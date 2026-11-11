@@ -3,7 +3,7 @@
     <!-- AI分析组件（包含所有AI相关弹窗） -->
     <AiAnalysis
       :table-rows="tableRows"
-      :save-all-rows="autoSave.saveAllRows"
+      :save-all-rows="saveAiAppliedRows"
       :load-screenshot-data-url="loadScreenshotDataUrl"
       :project-id="String($route.params.id || '')"
       :standard-id="standardInfo?.id"
@@ -363,6 +363,7 @@ import AiAnalysis from './components/ai-analysis.vue';
 import PageHint from '@/components/PageHint/index.vue';
 import { useProjectNav } from '@/composables/useProjectNav';
 import { screenshotsFromRecord } from './utils/screenshots';
+import { saveAppliedRows } from './utils/ai-result-save';
 import { toUiCompliance } from '../../../shared/assessment-result';
 
 // ==================== 路由和基础状态 ====================
@@ -629,6 +630,22 @@ const autoSave = useAutoSave({
   updateAssetProgress,
   loadProgress,
 });
+
+/**
+ * AI 单条 / 批量分析回填后的保存入口。
+ *
+ * 回填改的是内存里的行对象，必须先把这些行标脏再立即同步落库。
+ * 历史 bug：这里原先直接把 autoSave.saveAllRows 传给 AI 组件，而 saveAllRows
+ * 走「脏行快照」机制，dirtyMap 为空时直接 return false —— 一次 IPC 都不发，
+ * 界面上看着填好了，切换测评对象后整表从数据库重建，回填内容全部消失。
+ */
+async function saveAiAppliedRows(rows: any[] = []): Promise<boolean> {
+  return saveAppliedRows(rows, {
+    markDirty: (row) => autoSave.markDirty(row),
+    saveAllRows: () => autoSave.saveAllRows(),
+    hasUnsavedChanges: () => autoSave.hasUnsavedChanges.value,
+  });
+}
 
 // AI 分析 composable
 const aiAnalysisRef = ref<InstanceType<typeof AiAnalysis> | null>(null);
@@ -1340,7 +1357,7 @@ onMounted(async () => {
           aiAnalysisRef.value.batchAiMinimized = false;
           ElMessage.success('AI批量分析已完成！');
         }
-        setTimeout(() => { aiAnalysisRef.value!.batchAiProgress.visible = false; }, 800);
+        setTimeout(() => { aiAnalysisRef.value!.batchAiProgress.visible = false; }, 400);
       }
     }
   });
@@ -1351,7 +1368,9 @@ onMounted(async () => {
       const res = await window.api.ai.getProgress();
       if (res.success && res.data && aiAnalysisRef.value) {
         const current = aiAnalysisRef.value.batchAiProgress;
-        if (res.data.percent > current.percent || res.data.stage !== current.stage) {
+        // 只补不退：主进程已通过事件实时推送进度，轮询仅作推送丢失时的兜底。
+        // 旧写法在 stage 不同时会把轮询读到的旧状态盖回刚推送的新状态，进度条会倒退闪烁。
+        if ((res.data.percent || 0) > (current.percent || 0)) {
           current.percent = res.data.percent || 0;
           current.message = res.data.message || '';
           current.stage = res.data.stage || '';
@@ -1362,7 +1381,8 @@ onMounted(async () => {
       console.warn('[AI批量分析] 进度轮询失败:', e);
     }
   };
-  const pollTimer = window.setInterval(pollProgress, 2000);
+  // 1 秒兜底：正常情况走实时推送，这里只负责把「某次推送丢了」的进度补回来
+  const pollTimer = window.setInterval(pollProgress, 1000);
   // 定时器句柄改为组件级变量（P2-10）：挂在 window 上会让多个实例/重复挂载互相覆盖，
   // 前一个定时器再也无法被清理，卸载后仍在轮询
   aiBatchPollTimer = pollTimer;

@@ -269,8 +269,11 @@ function buildSteps(pid: string): OnboardingStep[] {
 
 // ==================== 定位 ====================
 
-function selectorOf(step: OnboardingStep): string {
-  return step.guid ? `[data-guide="${step.guid}"]` : '';
+function selectorOf(step?: OnboardingStep): string {
+  // steps 初始为空数组，引导未打开时 currentStep 是 undefined；
+  // 可选链兜底，任何误调都不会因读 guid 而抛异常。
+  const guid = step?.guid;
+  return guid ? `[data-guide="${guid}"]` : '';
 }
 
 function resolveRoute(route?: string): string {
@@ -320,6 +323,9 @@ function centerCard(): Record<string, string> {
 
 function calculatePosition() {
   const step = currentStep.value;
+  // 引导未打开时（老用户 startGuide 直接 return，steps 仍是空数组）不重算高亮：
+  // 全局 resize 事件会一直触发，这里没有步骤可读，写样式也没有意义。
+  if (!visible.value || !step) return;
   const selector = selectorOf(step);
   const targetEl = selector ? document.querySelector(selector) : null;
 
@@ -614,11 +620,12 @@ defineExpose({
 });
 
 onMounted(() => {
-  window.addEventListener('resize', calculatePosition);
+  // 与滚动一致走 scheduleRecalc：自带 visible 判断 + rAF 节流
+  window.addEventListener('resize', scheduleRecalc);
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', calculatePosition);
+  window.removeEventListener('resize', scheduleRecalc);
   document.removeEventListener('scroll', scheduleRecalc, true);
   removeKeyListener();
   onboardingRunning.value = false;

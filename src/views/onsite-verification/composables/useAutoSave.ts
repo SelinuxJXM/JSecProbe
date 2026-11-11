@@ -146,13 +146,22 @@ export function useAutoSave(options: AutoSaveOptions) {
   });
 
   /**
+   * 只标脏、不启动防抖定时器。
+   * 供「改完立即同步落库」的调用方使用（例如 AI 结果回填）：这类操作是离散的，
+   * 用户可能马上切页，等 1.5 秒防抖窗口会来不及落库。
+   */
+  function markDirty(row: TableRow) {
+    const key = keyOf(row);
+    dirtyMap.set(key, (dirtyMap.get(key) || 0) + 1);
+  }
+
+  /**
    * 标脏并启动防抖。版本号自增，用于识别「保存期间的新改动」。
    * @param delay 可选自定义防抖窗口：文本输入用默认 1.5s，证据上传/删除这类
    *              离散且不可恢复的操作传短延迟，尽快把路径引用落库。
    */
   function debounceAutoSave(row: TableRow, delay?: number) {
-    const key = keyOf(row);
-    dirtyMap.set(key, (dirtyMap.get(key) || 0) + 1);
+    markDirty(row);
     core.scheduleSave(delay);
   }
 
@@ -171,6 +180,7 @@ export function useAutoSave(options: AutoSaveOptions) {
     hasUnsavedChanges: core.hasUnsavedChanges,
     lastSavedTime: core.lastSavedTime,
     saveAllRows: core.runSave,
+    markDirty,
     debounceAutoSave,
     startPeriodicSave: core.startPeriodicSave,
     stopPeriodicSave: core.stopPeriodicSave,

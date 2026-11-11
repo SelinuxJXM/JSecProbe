@@ -168,14 +168,22 @@ describe('反漂移：统计与报表里的 result 字面量', () => {
     expect(new Set(values)).toEqual(new Set(TESTED_RESULTS));
   });
 
-  it('AI 应用结果的 UI→DB 反向映射只能产出合法 DB 值', () => {
-    const source = readSource('src/views/onsite-verification/composables/useAiAnalysis.ts');
-    const match = source.match(/const complianceMap: Record<string, AssessmentRecord\['result'\]>\s*=\s*\{([^}]*)\}/);
-    expect(match, '未找到 UI→DB 反向映射').not.toBeNull();
+  it('UI→DB 落库映射只能产出合法 DB 值，且 AI 回填不得另起旁路', () => {
+    // 唯一落库映射在 useAutoSave.persist()：AI 单条 / 批量回填现在也统一走它。
+    const saveSource = readSource('src/views/onsite-verification/composables/useAutoSave.ts');
+    const match = saveSource.match(/const complianceMap: Record<string, AssessmentRecord\['result'\]>\s*=\s*\{([^}]*)\}/);
+    expect(match, '未找到 UI→DB 落库映射').not.toBeNull();
     const values = [...match![1].matchAll(/:\s*'([^']+)'/g)].map(m => m[1]);
     expect(values.length).toBeGreaterThan(0);
     for (const value of values) {
       expect(DB_RESULT_VALUES as readonly string[]).toContain(value);
     }
+
+    // 历史 bug：AI 回填曾自己硬编码一份映射直接调 saveRecord，漏传后端必填的
+    // projectId / assetId，兜底从未生效；回填还绕过 dirtyMap 导致切页全丢。
+    // 这条旁路必须保持移除，避免日后有人「顺手加回来」把数据写歪。
+    const aiSource = readSource('src/views/onsite-verification/composables/useAiAnalysis.ts');
+    expect(aiSource).not.toMatch(/const complianceMap/);
+    expect(aiSource).not.toMatch(/assessment\.saveRecord/);
   });
 });

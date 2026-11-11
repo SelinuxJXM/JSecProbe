@@ -1,6 +1,5 @@
 import { ref, computed, nextTick, type Ref } from 'vue';
 import { ElMessage } from 'element-plus';
-import type { AssessmentRecord } from '../../../../shared/types';
 import { parseAiCompliance } from '../../../../shared/assessment-result';
 
 /**
@@ -9,8 +8,11 @@ import { parseAiCompliance } from '../../../../shared/assessment-result';
 interface UseAiAnalysisOptions {
   /** 测评记录表格数据 */
   tableRows: Ref<any[]>;
-  /** 保存所有行的方法 */
-  saveAllRows: () => Promise<boolean>;
+  /**
+   * 保存 AI 回填的行。必须传入被改动的行：父组件据此标脏并立即同步落库。
+   * 不传 / 传空数组表示没有实际改动，无需保存。
+   */
+  saveAllRows: (rows?: any[]) => Promise<boolean>;
   /** 加载截图 DataURL 的方法 */
   loadScreenshotDataUrl: (row: any, filePath: string) => Promise<string | null>;
   // Phase 4 行标上下文：用于注入 AI prompt
@@ -164,6 +166,24 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
       return;
     }
 
+    const hasScreenshots = row.screenshots && row.screenshots.length > 0;
+    const hasEvidence = row.evidence && row.evidence.trim().length > 0;
+    if (!hasEvidence && !hasScreenshots) {
+      ElMessage.warning('请先在关键证据点中填写内容或上传截图');
+      return;
+    }
+
+    // 先把弹窗和 loading 亮出来，再去读配置 / 提取文档：这些前置动作是 IPC + 文件 IO，
+    // 原先排在弹窗之前，点击后会有一段时间界面毫无反应，容易被当成没点上而重复点击。
+    aiCurrentRow.value = row;
+    aiAnalysisResult.value = null;
+    aiDialogVisible.value = true;
+    aiLoading.value = true;
+    aiStep.value = 1;
+    aiLoadingText.value = '正在准备分析数据...';
+    // 新一轮分析开始时重置取消标记（同一行可能被反复分析）
+    singleCancelled.value = false;
+
     // 加载AI配置（获取OCR预处理设置）- 每次分析都重新加载，避免配置过期
     try {
       const configRes = await window.api.ai.getConfig();
@@ -173,22 +193,6 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
     } catch (e) {
       console.warn('[aiAnalyze] 加载AI配置失败:', e);
     }
-
-    const hasScreenshots = row.screenshots && row.screenshots.length > 0;
-    const hasEvidence = row.evidence && row.evidence.trim().length > 0;
-    if (!hasEvidence && !hasScreenshots) {
-      ElMessage.warning('请先在关键证据点中填写内容或上传截图');
-      return;
-    }
-
-    aiCurrentRow.value = row;
-    aiAnalysisResult.value = null;
-    aiDialogVisible.value = true;
-    aiLoading.value = true;
-    aiStep.value = 1;
-    aiLoadingText.value = '正在准备分析数据...';
-    // 新一轮分析开始时重置取消标记（同一行可能被反复分析）
-    singleCancelled.value = false;
 
     try {
       // 分离图片文件和其他文件
@@ -413,39 +417,18 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
     }
 
 
+    // 把改动行交给父组件标脏并立即同步落库。
+    // 旧实现在这里绕开自动保存、直接调底层记录接口兜底，却漏了必填的
+    // projectId / assetId / method / screenshotPaths：后端 validateNotEmpty(projectId)
+    // 会直接拒掉，兜底从未真正生效；即便成功也会把资产级记录写成项目级，切回资产视图照样看不到。
+    // 统一走 autoSave.persist 才能保证字段完整、口径一致。
     try {
-      const saveRes = await saveAllRows();
-      if (saveRes) {
+      const saved = await saveAllRows([row]);
+      if (saved) {
         ElMessage.success('AI分析结果已填入记录表并保存');
       } else {
-        console.error('[applyAiResult] saveAllRows returned false');
-        if (window.api?.assessment?.saveRecord) {
-          // UI 内部值 → 数据库 AssessmentRecord.result 类型值
-          // 必须与 shared/types.ts 中 result 字段定义保持一致
-          const complianceMap: Record<string, AssessmentRecord['result']> = {
-            'conform': 'compliant',
-            'partial': 'partial',
-            'nonconform': 'non_compliant',
-            'na': 'not_applicable',
-            '': 'untested',
-          };
-          const directRes = await window.api.assessment.saveRecord({
-            id: row.id || undefined,
-            itemId: row.itemId,
-            result: complianceMap[row.compliance] || 'untested',
-            findings: row.conclusion || '',
-            evidence: row.evidence || '',
-            commandOutput: row.evidence || '',
-          });
-          if (directRes.success && directRes.data) {
-            row.id = directRes.data.id;
-            ElMessage.success('AI分析结果已填入记录表并保存');
-          } else {
-            ElMessage.error('保存失败，请手动点击保存按钮');
-          }
-        } else {
-          ElMessage.error('保存失败，请手动点击保存按钮');
-        }
+        console.error('[applyAiResult] 回填保存失败，脏数据已保留');
+        ElMessage.error('回填内容已保留在表格中，但保存失败，请点击「保存」重试后再切换页面');
       }
     } catch (err: any) {
       console.error('[applyAiResult] 保存异常:', err);
@@ -546,7 +529,14 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
 
     batchAiLoading.value = true;
     batchCancelled.value = false;
-    batchAiProgress.value = { visible: true, percent: 0, message: '准备中...', stage: 'init', current: 0, total: tableRows.value.length, text: '准备中...' };
+    batchAiProgress.value = { visible: true, percent: 2, message: '正在准备分析数据...', stage: 'init', current: 0, total: tableRows.value.length, text: '准备中...' };
+
+    // 主进程只在收到 IPC 之后才开始推送进度；此前前端还得读配置、提取文档文本，
+    // 这段空白原先一直停在「准备中...」，容易被当成卡死。这里按阶段主动更新文案，
+    // 百分比压在 5 以下 —— 主进程首个进度就是 5%，衔接时不会倒退。
+    const stageHint = (message: string, percent: number) => {
+      batchAiProgress.value = { ...batchAiProgress.value, message, percent, stage: 'init' };
+    };
 
     // 注册进度监听器，实时更新批量分析进度
     let unsubscribeProgress: (() => void) | null = window.api.ai.onAnalysisProgress((data) => {
@@ -556,6 +546,7 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
     try {
       // 加载AI配置（获取OCR预处理设置）
       if (!aiConfig.value) {
+        stageHint('正在读取AI配置...', 3);
         try {
           const configRes = await window.api.ai.getConfig();
           if (configRes.success && configRes.data) {
@@ -577,13 +568,16 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
       const textFiles = batchFiles.value.filter(f => f.fileType === 'text');
       let docContents: { name: string; content: string }[] = [];
       if (docFiles.length > 0) {
+        stageHint(`正在提取 ${docFiles.length} 个文档的文本...`, 4);
         const docRes = await window.api.document.extractText({ filePaths: docFiles.map(d => d.path) });
         if (docRes.success && docRes.data) {
           docContents = docRes.data;
         }
       }
       if (textFiles.length > 0) {
-        for (const textFile of textFiles) {
+        for (let i = 0; i < textFiles.length; i++) {
+          const textFile = textFiles[i];
+          stageHint(`正在读取文本文件 (${i + 1}/${textFiles.length})...`, 4);
           try {
             const res = await window.api.screenshot.readText({ filePath: textFile.path });
             if (res.success && res.data) {
@@ -595,6 +589,7 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
         }
       }
 
+      stageHint(`正在提交给AI分析（${items.length} 个测评项 / ${imagePaths.length} 张截图）...`, 5);
       const res = await window.api.ai.batchAnalyzeScreenshots({
         items,
         screenshots: imagePaths,
@@ -645,30 +640,47 @@ export function useAiAnalysis(options: UseAiAnalysisOptions) {
 
         if (analysis) {
           const results = analysis.results || [];
-          let appliedCount = 0;
+          // 用 Set 去重：AI 可能对同一 itemId 返回多条结果
+          const changedRows = new Set<any>();
 
           for (const result of results) {
             const row = tableRows.value.find(r => r.itemId === result.itemId);
-            if (row) {
-              const complianceValue = parseAiCompliance(result.compliance);
-              if (complianceValue) {
-                row.compliance = complianceValue;
-              }
-              if (result.conclusion) {
-                row.conclusion = result.conclusion;
-              }
-              appliedCount++;
+            if (!row) continue;
+            let changed = false;
+            const complianceValue = parseAiCompliance(result.compliance);
+            if (complianceValue) {
+              row.compliance = complianceValue;
+              changed = true;
             }
+            if (result.conclusion) {
+              row.conclusion = result.conclusion;
+              changed = true;
+            }
+            if (changed) changedRows.add(row);
           }
 
-          ElMessage.success(`AI分析完成，已自动填入 ${appliedCount} 条测评记录`);
+          // 回填只改内存行对象，必须把改动行交给父组件标脏并立即落库。
+          // 历史 bug：直接 await saveAllRows() 且不传行 → dirtyMap 为空 → runSave 空跑返回 false，
+          // 而这里连返回值都丢掉了，界面提示「已自动填入」，切页整表重建后内容全部消失。
+          let saved = false;
           try {
-            await saveAllRows();
+            saved = await saveAllRows(Array.from(changedRows));
           } catch (err: any) {
             console.error('[batchAiAnalyze] saveAllRows threw:', err);
           }
+          if (saved) {
+            ElMessage.success(`AI分析完成，已自动填入并保存 ${changedRows.size} 条测评记录`);
+          } else {
+            console.error('[batchAiAnalyze] 回填保存失败，脏数据已保留');
+            ElMessage.error(`已填入 ${changedRows.size} 条测评记录，但保存失败；内容仍在表格中，请点击「保存」重试后再切换页面`);
+          }
           // 更新进度状态为完成
-          batchAiProgress.value = { ...batchAiProgress.value, stage: 'done', percent: 100, message: '分析完成' };
+          batchAiProgress.value = {
+            ...batchAiProgress.value,
+            stage: 'done',
+            percent: 100,
+            message: saved ? '分析完成并已保存' : '填入完成但保存失败',
+          };
         } else {
           console.error('[batchAiAnalyze] JSON解析失败:', parseError);
           ElMessage.warning('AI返回结果解析失败，请查看控制台或重试');

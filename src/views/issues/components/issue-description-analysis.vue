@@ -290,11 +290,18 @@ async function analyzeIssueDescription(issue: Issue) {
   singleStep.value = 1;
   singleLoadingText.value = singleStepTexts[0];
 
-  // 模拟步骤进度
+  // 模拟步骤进度：本地动作只推进到第 4 步「等待响应」就停住。
+  // 旧写法会自动走到第 5 步「正在生成问题描述」，但此时请求还在云端跑 ——
+  // 进度条早早走满却迟迟不出结果，比不做进度更像卡死。
+  // 等待期间显示真实秒数，让用户确认请求仍在进行。
+  const startedAt = Date.now();
   const stepInterval = setInterval(() => {
-    if (singleStep.value < 5 && singleLoading.value) {
+    if (!singleLoading.value) return;
+    if (singleStep.value < 4) {
       singleStep.value++;
       singleLoadingText.value = singleStepTexts[singleStep.value - 1];
+    } else {
+      singleLoadingText.value = `${singleStepTexts[3]}（已等待 ${Math.floor((Date.now() - startedAt) / 1000)}s）`;
     }
   }, 800);
 
