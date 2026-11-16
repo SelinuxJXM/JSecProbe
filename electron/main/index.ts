@@ -15,6 +15,7 @@ import { initAutoUpdater } from '../services/update.service';
 import { migrateAllPaths } from '../utils/path-migration';
 import { stopOllama } from '../services/ollama.service';
 import { stopHerdsman } from '../services/herdsman.service';
+import { normalizeExternalUrl } from '../utils/external-url';
 
 logger.setProductionMode(app.isPackaged);
 
@@ -161,11 +162,13 @@ function createWindow() {
   // 非 http/https 一律 deny：原实现 `action: 'allow'` 会让 file:// 等 scheme 在应用窗口里
   // 打开新的窗口/标签，且该窗口同样加载 preload，等于凭空多出一个能调 IPC 的可控页面。
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      shell.openExternal(url);
-      return { action: 'deny' };
+    // 渲染层的 <a target="_blank"> 会走到这里（登录页的 GitHub 链接即如此），
+    // 必须和 shell:openExternal / externalLink:open 共用同一套校验，避免出现绕过口。
+    try {
+      shell.openExternal(normalizeExternalUrl(url));
+    } catch (e: any) {
+      log.warn('已阻止不合法的外部链接:', e?.message || '未知原因');
     }
-    log.warn('已阻止非 http(s) 的窗口打开请求:', url);
     return { action: 'deny' };
   });
 
@@ -179,7 +182,11 @@ function createWindow() {
     }
     if (url.startsWith('http://') || url.startsWith('https://')) {
       event.preventDefault();
-      shell.openExternal(url);
+      try {
+        shell.openExternal(normalizeExternalUrl(url));
+      } catch (e: any) {
+        log.warn('已阻止不合法的页面导航链接:', e?.message || '未知原因');
+      }
       return;
     }
     event.preventDefault();

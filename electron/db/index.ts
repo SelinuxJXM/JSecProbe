@@ -125,6 +125,7 @@ export async function initDatabase(): Promise<void> {
     ensureCompatColumns(sqlite);
     migrateAiConfigsTable(sqlite);
     ensureCollectionTables(sqlite);
+    ensureExternalLinkTables(sqlite);
     createIndexes(sqlite);
     detectSchemaDrift(sqlite);
     // 孤儿检测放在迁移/补列之后，避免把"表刚建好还没灌数据"误判为孤儿
@@ -445,6 +446,28 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
       ip_address TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS external_links (
+      id TEXT PRIMARY KEY,
+      link_key TEXT,
+      title TEXT NOT NULL,
+      url TEXT NOT NULL,
+      group_name TEXT NOT NULL DEFAULT '自定义',
+      description TEXT NOT NULL DEFAULT '',
+      icon_text TEXT,
+      network_zone TEXT NOT NULL DEFAULT 'internet',
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      is_hidden INTEGER NOT NULL DEFAULT 0,
+      is_favorite INTEGER NOT NULL DEFAULT 0,
+      is_stale INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      scope TEXT NOT NULL DEFAULT 'global',
+      owner_id TEXT,
+      last_opened_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
   `);
 
   // 兼容旧库：standards 表已存在但缺新字段时补齐（CREATE TABLE IF NOT EXISTS 不更新已存在表）
@@ -471,6 +494,42 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
   }
 
   log.info('自动建表完成');
+}
+
+/**
+ * 外链模块建表兜底：无条件、幂等执行。
+ *
+ * 迁移账本（__drizzle_migrations）只在 SQL 文件 hash 变化时执行一次；若用户曾手动删表、
+ * 或从旧备份恢复过一份不含外链表的库，账本却仍标记 0003 已完成，表不会自己回来，
+ * 运行时会直接抛 "no such table: external_links"。这类结构必须像补列一样每次启动兜底。
+ */
+function ensureExternalLinkTables(sqlite: Database.Database): void {
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS external_links (
+        id TEXT PRIMARY KEY,
+        link_key TEXT,
+        title TEXT NOT NULL,
+        url TEXT NOT NULL,
+        group_name TEXT NOT NULL DEFAULT '自定义',
+        description TEXT NOT NULL DEFAULT '',
+        icon_text TEXT,
+        network_zone TEXT NOT NULL DEFAULT 'internet',
+        is_builtin INTEGER NOT NULL DEFAULT 0,
+        is_hidden INTEGER NOT NULL DEFAULT 0,
+        is_favorite INTEGER NOT NULL DEFAULT 0,
+        is_stale INTEGER NOT NULL DEFAULT 0,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        scope TEXT NOT NULL DEFAULT 'global',
+        owner_id TEXT,
+        last_opened_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+  } catch (err) {
+    log.warn('外链模块建表兜底失败:', err);
+  }
 }
 
 /**

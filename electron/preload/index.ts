@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
-import type { AiChatStreamChunk, User } from '../../shared/types';
+import type { AiChatStreamChunk, User, ApiBridge } from '../../shared/types';
 
 const ipc = <T = any>(channel: string) => (...args: any[]): Promise<T> => ipcRenderer.invoke(channel, ...args);
 
@@ -19,6 +19,21 @@ const updateService = {
     ipcRenderer.on('update:progress', handler);
     return () => ipcRenderer.removeListener('update:progress', handler);
   },
+};
+
+/**
+ * 外链模块：用 ApiBridge['externalLink'] 反向约束本对象，
+ * 避免「主进程加了通道、preload 漏注册」这类只有运行到才发现的错。
+ */
+const externalLinkService: ApiBridge['externalLink'] = {
+  list: ipc('externalLink:list'),
+  create: ipc('externalLink:create'),
+  update: ipc('externalLink:update'),
+  delete: ipc('externalLink:delete'),
+  reorder: ipc('externalLink:reorder'),
+  open: ipc('externalLink:open'),
+  import: ipc('externalLink:import'),
+  export: ipc('externalLink:export'),
 };
 
 const aiService = {
@@ -324,6 +339,7 @@ const api = {
     readFileBase64: ipc<string>('fs:readFileBase64'),
     writeTextFile: ipc<any>('fs:writeTextFile'),
   },
+  externalLink: externalLinkService,
 
   collection: {
     listProfiles: ipc<any[]>('collection:listProfiles'),

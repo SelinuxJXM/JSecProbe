@@ -329,6 +329,9 @@
     <!-- 标准库管理（v-show：切 tab 不卸载，保留对照/合规分析状态，与拆分前行为一致） -->
     <StandardsTab v-show="activeTab === 'standards'" />
 
+    <!-- 内置 / 自定义外链管理 -->
+    <ExternalLinksTab v-show="activeTab === 'links'" />
+
     <!-- 系统维护（方案 §九.496 可选：孤儿截图清理 + 其它） -->
     <template v-if="activeTab === 'maintenance'">
       <div class="card p-md" style="margin-bottom: 16px">
@@ -477,12 +480,14 @@ import { useUserStore } from '@/stores/user';
 import { applyPrimaryColor, getSavedPrimaryColor, clearPrimaryColor, reapplyPrimaryColor, DEFAULT_PRIMARY_COLOR } from '@/utils/theme';
 import type { UpdateStatus } from '../../../shared/types';
 import StandardsTab from './components/StandardsTab.vue';
+import ExternalLinksTab from './components/ExternalLinksTab.vue';
 
 const allTabs = [
   { key: 'settings', label: '常规设置' },
   { key: 'users', label: '用户管理', adminOnly: true },
   { key: 'logs', label: '操作日志' },
   { key: 'standards', label: '标准库管理' },
+  { key: 'links', label: '外链管理' },
   { key: 'maintenance', label: '系统维护' },
 ];
 const activeTab = ref('settings');

@@ -16,6 +16,7 @@ import {
 } from '../utils/path-resolver';
 import { createFullBackup, restoreFromZipBackup, restoreFromLegacyBackup, restoreFromZipBackupIncremental, previewZipBackup, listBackups, isBackupEncrypted } from '../services/backup.service';
 import { wrap } from '../utils/ipc-wrapper';
+import { normalizeExternalUrl } from '../utils/external-url';
 
 function restartApp(): void {
   try {
@@ -154,10 +155,10 @@ export function registerSystemHandlers(): void {
   ipcMain.handle('shell:openExternal', wrap(async (_event, url: string) => {
     // 仅允许 http/https：此前 else 分支会把任意本地路径交给 shell.openPath，
     // 等于对外暴露"打开任意文件"原语（可执行任意程序）。外部链接一律走浏览器。
-    if (!/^https?:\/\//i.test(url)) {
-      throw new Error('只允许打开 http/https 链接');
-    }
-    await shell.openExternal(url);
+    // 校验统一收敛到 external-url.ts：除协议外还会规范化 URL、拒绝 userinfo 钓鱼写法
+    // 与空白/反斜杠歧义地址（但不拦内网，现场测评常需打开客户内网系统）。
+    const safeUrl = normalizeExternalUrl(url);
+    await shell.openExternal(safeUrl);
   }, { moduleName: 'system', requireSession: true }));
 
   ipcMain.handle('system:selectFile', wrap(async (_event, filters?: FileFilter[]) => {

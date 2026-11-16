@@ -521,6 +521,82 @@ export interface ProjectArchiveImportResult {
   warnings: string[];
 }
 
+// ============ 内置 / 自定义外链 ============
+// 与主进程 electron/services/external-link-core.ts 的 ExternalLinkItem 字段一一对应。
+// 主进程用 core 的类型，渲染层用这里的类型，IPC 边界靠字段一致而非共享运行时对象。
+export type ExternalLinkSource = 'builtin' | 'custom';
+export type ExternalLinkNetworkZone = 'internet' | 'intranet';
+
+export interface ExternalLinkItem {
+  id: string;
+  key: string;
+  title: string;
+  url: string;
+  groupName: string;
+  description: string;
+  iconText: string;
+  networkZone: ExternalLinkNetworkZone;
+  source: ExternalLinkSource;
+  isHidden: boolean;
+  isFavorite: boolean;
+  isStale: boolean;
+  sortOrder: number;
+  lastOpenedAt: string | null;
+  hasOverride: boolean;
+  scope: string;
+}
+
+export interface ExternalLinkCreateInput {
+  title: string;
+  url: string;
+  groupName?: string;
+  description?: string;
+  iconText?: string;
+  networkZone?: ExternalLinkNetworkZone;
+  isHidden?: boolean;
+  isFavorite?: boolean;
+  sortOrder?: number;
+}
+
+export interface ExternalLinkPatch {
+  title?: string;
+  url?: string;
+  groupName?: string;
+  description?: string;
+  iconText?: string;
+  networkZone?: ExternalLinkNetworkZone;
+  isHidden?: boolean;
+  isFavorite?: boolean;
+  isStale?: boolean;
+  sortOrder?: number;
+}
+
+export interface LinkOpenContext {
+  projectName?: string;
+  assetIp?: string;
+  standardCode?: string;
+}
+
+export interface ExternalLinkImportResult {
+  imported: number;
+  skipped: number;
+  errors: string[];
+}
+
+/**
+ * 手动导入 sites.txt 时「仅测评相关分类」勾选框使用的推荐分类。
+ * 只是导入时的默认建议，不是同步白名单；取消勾选即可全量导入。
+ */
+export const RECOMMENDED_SITES_GROUPS = [
+  '学习资料 / 等保密评',
+  '学习资料 / 标准学习',
+  '渗透相关 / 空间测绘',
+  '渗透相关 / 渗透测试',
+  '技术论坛',
+];
+
+export type ExternalLinkImportFormat = 'sites' | 'bookmarks' | 'json';
+
 export interface ApiBridge {
   auth: {
     login: (username: string, password: string) => Promise<IpcResponse<LoginResult>>;
@@ -870,6 +946,25 @@ export interface ApiBridge {
     readFile: (path: string) => Promise<IpcResponse<string>>;
     readFileBase64: (path: string) => Promise<IpcResponse<string>>;
     writeTextFile: (path: string, data: string) => Promise<IpcResponse<void>>;
+  };
+  /** 内置 / 自定义外链：统一出口在 externalLink:open，别再用 shell.openExternal 拼新地址 */
+  externalLink: {
+    list: () => Promise<IpcResponse<ExternalLinkItem[]>>;
+    create: (data: ExternalLinkCreateInput) => Promise<IpcResponse<string>>;
+    update: (id: string, patch: ExternalLinkPatch) => Promise<IpcResponse<ExternalLinkItem>>;
+    delete: (id: string) => Promise<IpcResponse<void>>;
+    reorder: (orderedIds: string[]) => Promise<IpcResponse<void>>;
+    open: (id: string, context?: LinkOpenContext) => Promise<IpcResponse<{
+      url: string;
+      missing: string[];
+      source: string;
+    }>>;
+    import: (payload: {
+      format: ExternalLinkImportFormat;
+      content: string;
+      groups?: string[];
+    }) => Promise<IpcResponse<ExternalLinkImportResult>>;
+    export: () => Promise<IpcResponse<string>>;
   };
   /**
    * 渲染进程发送日志到主进程

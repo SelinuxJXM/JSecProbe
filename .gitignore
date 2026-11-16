@@ -76,3 +76,6 @@ original_index.vue
 *.tsbuildinfo
 dist-output/
 .tools/
+
+# 公众号运营资料（文章 / 配图 / 策划，非源码，不纳入开发仓库）
+/公众号/

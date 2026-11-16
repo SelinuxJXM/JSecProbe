@@ -391,3 +391,36 @@ export const collectionDocuments = sqliteTable('collection_documents', {
   title: text('title').notNull(),
   createdAt: text('created_at').notNull(),
 });
+
+// ============ 内置 / 自定义外链 ============
+//
+// 设计要点：内置链接**不写入本表**，而是以只读 seed（external-link.seed.ts）形式随版本打包。
+// 本表只存两类数据：
+//   1. is_builtin = 0：用户自己新增的链接；
+//   2. is_builtin = 1 + link_key：用户对某条内置/远程链接的「覆盖层」（改名、换 URL、
+//      隐藏、排序、收藏、失效标记、最近打开时间）。
+// 升级内置清单时只需替换 seed，用户的排序与改动不会冲突。导航站本身是 seed 里的一条
+// 外链；若要把站内链接搬进应用，用「导入 sites.txt」手动完成，不做任何远程同步或缓存。
+// link_key 允许多个覆盖行共存于不同 scope，故不设 UNIQUE；由服务层按 (link_key, scope, owner_id)
+// 定位，定位不到时才插入。
+export const externalLinks = sqliteTable('external_links', {
+  id: text('id').primaryKey(),
+  linkKey: text('link_key'),
+  title: text('title').notNull(),
+  url: text('url').notNull(),
+  groupName: text('group_name').notNull().default('自定义'),
+  description: text('description').notNull().default(''),
+  iconText: text('icon_text'),
+  networkZone: text('network_zone').notNull().default('internet'),
+  isBuiltin: integer('is_builtin').notNull().default(0),
+  isHidden: integer('is_hidden').notNull().default(0),
+  isFavorite: integer('is_favorite').notNull().default(0),
+  isStale: integer('is_stale').notNull().default(0),
+  sortOrder: integer('sort_order').notNull().default(0),
+  scope: text('scope').notNull().default('global'),
+  ownerId: text('owner_id'),
+  lastOpenedAt: text('last_opened_at'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+

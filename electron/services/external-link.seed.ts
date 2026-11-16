@@ -1,0 +1,178 @@
+/**
+ * 内置外链清单（只读层，随版本打包）。
+ *
+ * 为什么是 TS 常量而不是数据库种子行：内置链接会被官方迁移/下线（例如国家标准全文公开系统
+ * 2025-03 起整合并入 std.samr.gov.cn）。若把内置项写进用户表，每次升级都要和用户的改名、
+ * 排序、隐藏做冲突合并，且旧 URL 永远留在库里。改成只读 seed + 用户覆盖层后，
+ * 修一条内置链接只需改本文件，用户数据一行都不动。
+ *
+ * key 是稳定标识，**不要随意修改**：用户对该条的隐藏/收藏/排序覆盖按 key 关联。
+ */
+import type { LinkSeed } from './external-link-core';
+
+export const BUILTIN_LINKS: LinkSeed[] = [
+  // —— 标准法规 ——
+  {
+    key: 'std.samr',
+    title: '全国标准信息公共服务平台',
+    url: 'https://std.samr.gov.cn',
+    groupName: '标准法规',
+    description: '国标/行标/地标/团标查询与文本查阅；原国家标准全文公开系统已并入此平台',
+    iconText: '标',
+    networkZone: 'internet',
+    sortOrder: 100,
+  },
+  {
+    key: 'tc260',
+    title: '全国网络安全标准化技术委员会',
+    url: 'https://www.tc260.org.cn/',
+    groupName: '标准法规',
+    description: '网络安全国家标准与实践指南发布',
+    iconText: '委',
+    networkZone: 'internet',
+    sortOrder: 110,
+  },
+  {
+    key: 'djbh',
+    title: '网络安全等级保护网',
+    url: 'https://www.djbh.net/',
+    groupName: '标准法规',
+    description: '等保政策、测评机构与通知公告',
+    iconText: '保',
+    networkZone: 'internet',
+    sortOrder: 120,
+  },
+  {
+    key: 'cac',
+    title: '中央网信办',
+    url: 'https://www.cac.gov.cn/',
+    groupName: '标准法规',
+    description: '网络安全法律法规与政策发布',
+    iconText: '网',
+    networkZone: 'internet',
+    sortOrder: 130,
+  },
+  // —— 漏洞与预警 ——
+  {
+    key: 'cnvd',
+    title: '国家信息安全漏洞共享平台 CNVD',
+    url: 'https://www.cnvd.org.cn/',
+    groupName: '漏洞与预警',
+    description: '漏洞通报与收录查询',
+    iconText: '洞',
+    networkZone: 'internet',
+    sortOrder: 200,
+  },
+  {
+    key: 'cnnvd',
+    title: '国家信息安全漏洞库 CNNVD',
+    url: 'https://www.cnnvd.org.cn/',
+    groupName: '漏洞与预警',
+    description: '漏洞编号与影响范围核对',
+    iconText: '库',
+    networkZone: 'internet',
+    sortOrder: 210,
+  },
+  {
+    key: 'cncert',
+    title: '国家互联网应急中心 CNCERT',
+    url: 'https://www.cert.org.cn/',
+    groupName: '漏洞与预警',
+    description: '威胁预警与安全通告',
+    iconText: '警',
+    networkZone: 'internet',
+    sortOrder: 220,
+  },
+  // —— 项目支持（收编原先散落在各视图里的硬编码链接） ——
+  {
+    key: 'whitepaper',
+    title: '产品白皮书',
+    url: 'https://www.soer.ccwu.cc/JSecProbe/docs.html',
+    groupName: '项目支持',
+    description: 'JSecProbe 使用说明与常见问题',
+    iconText: '书',
+    networkZone: 'internet',
+    sortOrder: 300,
+  },
+  {
+    key: 'repo',
+    title: '源码仓库',
+    url: 'https://github.com/SelinuxJXM/JSecProbe',
+    groupName: '项目支持',
+    description: 'GitHub 源码仓库',
+    iconText: '源',
+    networkZone: 'internet',
+    sortOrder: 310,
+  },
+  {
+    key: 'releases',
+    title: '版本下载',
+    url: 'https://github.com/SelinuxJXM/JSecProbe/releases',
+    groupName: '项目支持',
+    description: '各版本安装包与发布说明',
+    iconText: '版',
+    networkZone: 'internet',
+    sortOrder: 320,
+  },
+  {
+    key: 'issues',
+    title: '问题反馈',
+    url: 'https://github.com/SelinuxJXM/JSecProbe/issues',
+    groupName: '项目支持',
+    description: '提交缺陷与需求',
+    iconText: '馈',
+    networkZone: 'internet',
+    sortOrder: 330,
+  },
+  {
+    key: 'nav',
+    title: '官方导航站',
+    url: 'https://www.soer.ccwu.cc/Nav/',
+    groupName: '项目支持',
+    description: '常用在线工具导航',
+    iconText: '航',
+    networkZone: 'internet',
+    sortOrder: 340,
+  },
+  {
+    key: 'ollama-download',
+    title: 'Ollama 下载',
+    url: 'https://ollama.com/download',
+    groupName: '项目支持',
+    description: '本地大模型引擎安装包',
+    iconText: '模',
+    networkZone: 'internet',
+    sortOrder: 350,
+  },
+  // —— 测评工具箱：与 JSecProbe 配套的三个在线工具 ——
+  {
+    key: 'jsec-risk',
+    title: '等保高风险指引库',
+    url: 'https://www.soer.ccwu.cc/JSecRisk',
+    groupName: '测评工具箱',
+    description: '高风险判定的标准要求、问题描述、缓解措施与风险评价速查',
+    iconText: '险',
+    networkZone: 'internet',
+    sortOrder: 400,
+  },
+  {
+    key: 'jsec-cmd',
+    title: '等保测评命令台',
+    url: 'https://www.soer.ccwu.cc/JSecCmd',
+    groupName: '测评工具箱',
+    description: '42 类设备与系统的测评命令速查，含详细命令、一键核查与增值命令',
+    iconText: '令',
+    networkZone: 'internet',
+    sortOrder: 410,
+  },
+  {
+    key: 'jsec-topo',
+    title: '等保拓扑绘图平台',
+    url: 'https://www.soer.ccwu.cc/JSecTopo',
+    groupName: '测评工具箱',
+    description: '网络拓扑绘制，内置等保资产图标库与典型模板，可导出报告版式图与资产清单',
+    iconText: '拓',
+    networkZone: 'internet',
+    sortOrder: 420,
+  },
+];

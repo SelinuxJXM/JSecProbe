@@ -69,7 +69,7 @@
         <div class="sidebar-footer-card">
           <!-- 版本号由主进程 app.getVersion() 提供，不在此硬编码 -->
           <div class="sf-version">v{{ currentVersion || '-' }}</div>
-          <a href="https://github.com/SelinuxJXM/JSecProbe" target="_blank" class="sf-github" title="访问 GitHub 仓库">
+          <a :href="GITHUB_REPO_URL" target="_blank" @click.prevent="openRepo" class="sf-github" title="访问 GitHub 仓库">
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
             </svg>
@@ -83,7 +83,7 @@
       </div>
       
       <div class="sidebar-footer-mini" v-if="appStore.sidebarCollapsed">
-        <a href="https://github.com/SelinuxJXM/JSecProbe" target="_blank" rel="noopener noreferrer" class="sfm-github" title="访问 GitHub 仓库">
+        <a :href="GITHUB_REPO_URL" target="_blank" @click.prevent="openRepo" rel="noopener noreferrer" class="sfm-github" title="访问 GitHub 仓库">
           <svg viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
           </svg>
@@ -112,6 +112,9 @@
             <el-icon class="header-icon"><Bell /></el-icon>
             <span v-if="hasUpdate" class="bell-badge"></span>
           </div>
+          <el-tooltip content="常用链接（Ctrl+L）" placement="top" :show-after="300">
+            <el-icon class="header-icon" @click="showLinkLauncher = true"><Link /></el-icon>
+          </el-tooltip>
           <el-tooltip content="查看产品白皮书" placement="top" :show-after="300">
             <el-icon class="header-icon" @click="openWhitepaper"><QuestionFilled /></el-icon>
           </el-tooltip>
@@ -152,6 +155,9 @@
         </router-view>
       </main>
     </div>
+
+    <!-- 外链快捷面板：Ctrl+L 或顶栏图标唤起，任意页面可用 -->
+    <LinkQuickLauncher v-model="showLinkLauncher" :context="linkContext" />
 
     <!-- 新手引导 -->
     <OnboardingGuide ref="onboardingRef" />
@@ -301,11 +307,15 @@ import {
   CaretBottom,
   Fold,
   Expand,
+  Link,
 } from '@element-plus/icons-vue';
 import SidebarIcon from '@/components/SidebarIcon.vue';
 import OnboardingGuide from '@/components/OnboardingGuide/index.vue';
+import LinkQuickLauncher from '@/components/LinkQuickLauncher.vue';
 import DOMPurify from 'dompurify';
 import { resetAllHints } from '@/utils/onboarding-state';
+import { GITHUB_REPO_URL, LINK_BUILTIN_IDS } from '@/constants/external-links';
+import type { LinkOpenContext } from '../../shared/types';
 
 const route = useRoute();
 const router = useRouter();
@@ -378,15 +388,28 @@ async function checkForUpdates() {
   }
 }
 
-const WHITEPAPER_URL = 'https://www.soer.ccwu.cc/JSecProbe/docs.html';
-
-async function openWhitepaper() {
-  if (!window.api) return;
-  try {
-    await window.api.shell.openExternal(WHITEPAPER_URL);
-  } catch (err: any) {
-    ElMessage.error(err?.message || '打开白皮书失败');
+/**
+ * 打开外链一律走 externalLink:open：主进程统一做 URL 校验、上下文变量替换，
+ * 并记录最近打开时间。原先各处直接 shell.openExternal(硬编码 URL) 的写法已收编到内置 seed。
+ */
+async function openBuiltinLink(id: string): Promise<void> {
+  if (!window.api?.externalLink) return;
+  const res = await window.api.externalLink.open(id, linkContext.value);
+  if (!res.success) {
+    ElMessage.error(res.error?.message || '打开链接失败');
+    return;
   }
+  if (res.data?.missing?.length) {
+    ElMessage.warning('链接中的上下文变量未取到值，已按空值打开');
+  }
+}
+
+function openWhitepaper(): void {
+  void openBuiltinLink(LINK_BUILTIN_IDS.whitepaper);
+}
+
+function openRepo(): void {
+  void openBuiltinLink(LINK_BUILTIN_IDS.repo);
 }
 
 async function downloadUpdate() {
@@ -419,6 +442,12 @@ let onboardingTimer: ReturnType<typeof setTimeout> | undefined;
  * 页面未注册时不做任何事，避免误吞浏览器/系统的保存行为之外的操作。
  */
 function handleGlobalKeydown(e: KeyboardEvent) {
+  // Ctrl+L：唤起 / 收起外链快捷面板（Electron 无地址栏，不与之冲突）
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'l' || e.key === 'L')) {
+    e.preventDefault();
+    showLinkLauncher.value = !showLinkLauncher.value;
+    return;
+  }
   if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
     const target = e.target as HTMLElement | null;
     // 输入框内的 Ctrl+S 同样视为保存（Excel 习惯），但要阻止默认行为
@@ -501,6 +530,19 @@ async function loadCurrentProjectName() {
     if (token === nameRequestToken) currentProjectName.value = '';
   }
 }
+
+// 外链快捷面板与上下文变量：项目名取面包屑同源的异步加载结果，
+// 资产 IP / 标准编号从路由 query 取（各页面可按需带上）。
+const showLinkLauncher = ref(false);
+const linkContext = computed<LinkOpenContext>(() => {
+  const q = route.query;
+  const pick = (v: unknown): string => (typeof v === 'string' ? v : '');
+  return {
+    projectName: currentProjectName.value || pick(q.projectName),
+    assetIp: pick(q.assetIp) || pick(q.ip),
+    standardCode: pick(q.standardCode),
+  };
+});
 
 watch(
   () => [appStore.currentProjectId, route.fullPath],

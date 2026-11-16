@@ -808,6 +808,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, nextTick, onMounted, onUnmounted, onDeactivated, onActivated, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { LINK_BUILTIN_IDS } from '@/constants/external-links';
 import { renderMarkdown } from '@/utils/markdown';
 import { fetchProjectOptions } from '@/utils/project-options';
 import {
@@ -1285,9 +1286,12 @@ async function handleTestOllamaConnection() {
   }
 }
 
-function openDownloadPage() {
-  if (installGuide.value?.downloadUrl && window.api) {
-    window.api.shell.openExternal(installGuide.value.downloadUrl);
+async function openDownloadPage() {
+  // 收编为内置外链：URL 由内置 seed 维护，走统一出口（校验 + 最近打开时间）
+  if (!window.api?.externalLink) return;
+  const res = await window.api.externalLink.open(LINK_BUILTIN_IDS.ollamaDownload);
+  if (!res.success) {
+    ElMessage.error(res.error?.message || '打开下载页失败');
   }
 }
 
