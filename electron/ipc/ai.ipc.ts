@@ -59,6 +59,26 @@ import {
 } from '../../shared/ai-model-health';
 import { startWaitHeartbeat, type AiProgressTick } from '../../shared/ai-wait-progress';
 import { computeComplianceStats } from '../services/compliance-stats';
+import {
+  formatGuidelineCandidates,
+  searchGuidelineCandidates,
+} from '../services/high-risk-guideline.service';
+import { parseRiskLevelJudgment } from '../../shared/risk-level';
+import { parseMajorRiskDraft } from '../../shared/major-risk';
+import {
+  formatCatalogCandidates,
+  formatRecordSnippets,
+  matchCatalogCandidates,
+  searchAssessmentRecords,
+} from '../services/major-risk.service';
+import type {
+  RiskLevelJudgeParams,
+  RiskLevelJudgeResult,
+  RiskLevelJudgment,
+  MajorRiskAiDraft,
+  MajorRiskAiParams,
+  MajorRiskCatalogItem,
+} from '../../shared/types';
 
 // ====== 工作台确定性预警规则（纯常量，模块顶层，便于单测与复用）======
 // 5 条规则：后端判定预警本体，AI 仅对命中项补充处置建议，不得新增/删除预警
@@ -108,6 +128,12 @@ let batchScreenshotsAbortController: AbortController | null = null;
 let issueDescriptionAbortController: AbortController | null = null;
 let issueAbortController: AbortController | null = null;
 let batchIssueAbortController: AbortController | null = null;
+// 风险分析 AI 生成：单条与批量共用一个取消控制器，用户关闭弹窗/点取消时中止底层请求。
+let riskAnalysisAbortController: AbortController | null = null;
+// 依据高风险判定指引自动定级：单条与批量共用一个取消控制器
+let riskLevelJudgeAbortController: AbortController | null = null;
+// 重大风险隐患三要素识别：单条与批量共用一个取消控制器
+let majorRiskAbortController: AbortController | null = null;
 
 function sanitize<T>(obj: T): any {
   try {
@@ -276,6 +302,210 @@ function extractAiJson(text: string, label: string): Record<string, any> {
 }
 
 // 计算动态超时时间（基于图片数量和大小）
+/**
+ * 解析风险分析 AI 返回的分析结果：优先当作纯文本，兼容模型偶发返回的 JSON（取 result / consequence / analysis 字段）。
+ * 只产出一段「可能导致XXXX的风险」文本，不写库 —— 落库仍走带归属校验与字段白名单的 riskAnalysis:save。
+ */
+function parseRiskAiDraft(content: string): { result: string } {
+  // 先剥掉模型偶发包裹的 Markdown 代码围栏与首尾引号，再做 JSON 判定，
+  // 这样「```json\n{"result":...}\n```」也能正确解析，而不是残留一整段 JSON 字符串。
+  let raw = String(content || '').trim();
+  raw = raw.replace(/^```(?:json|text)?\s*/i, '').replace(/\s*```$/, '').trim();
+  raw = raw.replace(/^["']|["']$/g, '').trim();
+  let result = '';
+  // 兼容模型返回 {"result": "..."} 之类 JSON（或旧版 consequence 字段）
+  if (raw.startsWith('{')) {
+    try {
+      const obj = extractAiJson(raw, '风险分析');
+      const candidate = obj.result ?? obj.consequence ?? obj.analysis;
+      if (typeof candidate === 'string') result = candidate;
+    } catch {
+      /* 非预期 JSON 时回退为纯文本处理 */
+    }
+  }
+  if (!result) result = raw;
+  return { result: result.slice(0, 800) };
+}
+
+/** 风险分析批量生成时的单条输入 */
+interface RiskAiIssue {
+  issueId: string;
+  issueTitle: string;
+  issueDescription: string;
+  securityDomain: string;
+  controlPoint: string;
+  controlName: string;
+  assetName?: string;
+  riskLevel?: string;
+  rectificationSuggestion?: string;
+}
+
+/**
+ * 对一条问题调用 AI 生成风险分析草稿（云端故障转移 / 本地引擎）。
+ * 单条与批量共用，避免两处 prompt 拼接与解析口径漂移。
+ * signal 由调用方持有，支持用户取消。
+ */
+async function generateRiskDraft(issue: RiskAiIssue, signal: AbortSignal): Promise<ReturnType<typeof parseRiskAiDraft>> {
+  const db = getDb();
+  const configs = await db.select().from(schema.aiConfigs).limit(1);
+  if (configs.length === 0) throw new Error('AI未配置');
+  const config = normalizeConfig(sanitize(configs[0]));
+  const mode = config.mode || 'cloud';
+  const temperature = config.temperature ?? 0.3;
+
+  const privacyMode = config.privacyMode === 1;
+  const extraWords = config.sensitiveWords
+    ? config.sensitiveWords.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
+    : [];
+  const clean = (v: string): string => (privacyMode ? desensitizeText(v || '', extraWords) : (v || ''));
+
+  const template = await getPromptTemplate('risk_analysis');
+  const rendered = renderPromptTemplate(template, {
+    '问题标题': clean(issue.issueTitle),
+    '安全域': clean(issue.securityDomain),
+    '控制点': clean(issue.controlPoint),
+    '控制项': clean(issue.controlName),
+    '测评对象': clean(issue.assetName || ''),
+    '问题描述': clean(issue.issueDescription),
+    '初判等级': clean(issue.riskLevel || ''),
+    '整改建议': clean(issue.rectificationSuggestion || ''),
+  });
+
+  const messages = [
+    {
+      role: 'system',
+      content: '你是一名专业的网络安全等级保护测评专家。严格依据给定问题信息，写一段简短的风险分析结果（"可能导致XXXX的风险"）。直接输出纯文本，不要 JSON、不要 Markdown、不要任何解释说明。',
+    },
+    { role: 'user', content: rendered },
+  ];
+
+  const runResult = await runWithFailover(config, mode, {
+    build: (ep) => ({
+      body: JSON.stringify({ model: ep.model, messages, temperature }),
+      timeoutMs: 60000,
+    }),
+  }, signal);
+  return parseRiskAiDraft(runResult.content);
+}
+
+/** 召回候选指引 → 渲染提示词 → 调用 AI → 结构化定级结论 */
+async function generateRiskLevelJudgment(params: RiskLevelJudgeParams, signal: AbortSignal): Promise<RiskLevelJudgment> {
+  const db = getDb();
+  const configs = await db.select().from(schema.aiConfigs).limit(1);
+  if (configs.length === 0) throw new Error('AI未配置');
+  const config = normalizeConfig(sanitize(configs[0]));
+  const mode = config.mode || 'cloud';
+  const temperature = config.temperature ?? 0.2;
+
+  const privacyMode = config.privacyMode === 1;
+  const extraWords = config.sensitiveWords
+    ? config.sensitiveWords.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
+    : [];
+  const clean = (v: string): string => (privacyMode ? desensitizeText(v || '', extraWords) : (v || ''));
+
+  const candidates = searchGuidelineCandidates(params);
+  const template = await getPromptTemplate('risk_level');
+  const rendered = renderPromptTemplate(template, {
+    '问题标题': clean(params.issueTitle || ''),
+    '安全域': clean(params.securityDomain || ''),
+    '控制点': clean(params.controlPoint || ''),
+    '控制项': clean(params.controlName || ''),
+    '测评对象': clean(params.assetName || ''),
+    '问题描述': clean(params.issueDescription || ''),
+    '整改建议': clean(params.rectificationSuggestion || ''),
+    '现有等级': clean(params.currentLevel || ''),
+    '判定指引候选': formatGuidelineCandidates(candidates),
+  });
+
+  const messages = [
+    {
+      role: 'system',
+      content: '你是网络安全等级保护测评专家。严格依据给定的高风险判定指引候选项和现场事实判定风险等级；不得编造指引条目；只输出一个 JSON 对象。',
+    },
+    { role: 'user', content: rendered },
+  ];
+
+  const runResult = await runWithFailover(config, mode, {
+    build: (ep) => ({
+      body: JSON.stringify({ model: ep.model, messages, temperature }),
+      timeoutMs: 60000,
+    }),
+  }, signal);
+  return parseRiskLevelJudgment(runResult.content, candidates);
+}
+
+/**
+ * 召回清单候选 + 检索现场测评记录 → 渲染三要素提示词 → 调 AI → 结构化草稿。
+ * 清单为空时仍让 AI 基于问题事实与现场记录审慎判定（verdict 倾向 non_major/pending）。
+ */
+async function generateMajorRiskDraft(params: MajorRiskAiParams, signal: AbortSignal): Promise<MajorRiskAiDraft> {
+  const db = getDb();
+  const configs = await db.select().from(schema.aiConfigs).limit(1);
+  if (configs.length === 0) throw new Error('AI未配置');
+  const config = normalizeConfig(sanitize(configs[0]));
+  const mode = config.mode || 'cloud';
+  const temperature = config.temperature ?? 0.2;
+
+  const privacyMode = config.privacyMode === 1;
+  const extraWords = config.sensitiveWords
+    ? config.sensitiveWords.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
+    : [];
+  const clean = (v: string): string => (privacyMode ? desensitizeText(v || '', extraWords) : (v || ''));
+
+  const catalogRows = await db.select().from(schema.majorRiskCatalog)
+    .where(eq(schema.majorRiskCatalog.enabled, 1));
+  const catalogItems: MajorRiskCatalogItem[] = catalogRows.map(r => ({
+    id: r.id,
+    code: r.code || undefined,
+    title: r.title,
+    category: r.category || undefined,
+    criteria: r.criteria || undefined,
+    keywords: r.keywords || undefined,
+    source: r.source || undefined,
+    sortOrder: r.sortOrder,
+    enabled: r.enabled === 1,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  }));
+  const candidates = matchCatalogCandidates(params, catalogItems);
+  const snippets = await searchAssessmentRecords({
+    projectId: params.projectId,
+    issueId: params.issueId,
+    keyword: `${params.issueDescription || ''} ${params.issueTitle || ''}`,
+    limit: 12,
+  });
+
+  const template = await getPromptTemplate('major_risk');
+  const rendered = renderPromptTemplate(template, {
+    '问题标题': clean(params.issueTitle || ''),
+    '安全域': clean(params.securityDomain || ''),
+    '控制点': clean(params.controlPoint || ''),
+    '控制项': clean(params.controlName || ''),
+    '测评对象': clean(params.assetName || ''),
+    '问题描述': clean(params.issueDescription || ''),
+    '初判等级': clean(params.riskLevel || ''),
+    '整改建议': clean(params.rectificationSuggestion || ''),
+    '清单候选': formatCatalogCandidates(candidates),
+    '现场测评记录': formatRecordSnippets(snippets),
+  });
+
+  const messages = [
+    {
+      role: 'system',
+      content: '你是网络安全等级保护测评专家。严格依据给定的重大风险隐患清单条目与全系统现场测评记录，按相关性/严重性/高发性三要素各写一段并给出最终判定：严重性与高发性必须综合系统整体防护措施（防火墙策略、专网隔离、专人专用账号等）与是否发现被利用痕迹判断，防护有效可不满足高发性；不得编造清单编号与记录中不存在的事实；只输出一个 JSON 对象。',
+    },
+    { role: 'user', content: rendered },
+  ];
+
+  const runResult = await runWithFailover(config, mode, {
+    build: (ep) => ({
+      body: JSON.stringify({ model: ep.model, messages, temperature }),
+      timeoutMs: 90000,
+    }),
+  }, signal);
+  return parseMajorRiskDraft(runResult.content);
+}
+
 function calculateTimeout(itemCount: number, imageCount: number, totalImageSizeKB: number, privacyMode: boolean): number {
   const baseTimeout = 60000;
   const perItemTimeout = 3000;
@@ -2398,6 +2628,365 @@ export function registerAIHandlers(): void {
         success: false,
         error: { code: 'AI_ANALYZE_ISSUE_DESC_ERROR', message: error.message || 'AI分析失败' },
       });
+    }
+  });
+
+  /**
+   * 单条问题的风险分析 AI 生成：返回结构化草稿，不写库。
+   * 前端回填到分析弹窗表单，经人工复核后走 riskAnalysis:save 落库。
+   */
+  ipcMain.handle('ai:analyzeRisk', async (_event, rawParams: RiskAiIssue) => {
+    assertTrusted(_event);
+    try {
+      const params = sanitize(rawParams) as RiskAiIssue;
+      if (!params?.issueTitle && !params?.issueDescription) {
+        throw new Error('问题信息为空，无法分析');
+      }
+      const controller = new AbortController();
+      riskAnalysisAbortController = controller;
+      let draft: ReturnType<typeof parseRiskAiDraft>;
+      try {
+        draft = await generateRiskDraft(params, controller.signal);
+      } catch (err: any) {
+        if (controller.signal.aborted || err?.message === '用户已取消') {
+          return sanitize({ success: false, error: { code: 'AI_RISK_CANCELED', message: '已取消' } });
+        }
+        throw err;
+      } finally {
+        if (riskAnalysisAbortController === controller) riskAnalysisAbortController = null;
+      }
+      try {
+        writeOperationLog({
+          action: 'ai_analyze_risk',
+          module: 'ai',
+          targetName: params.issueTitle,
+          description: `AI风险分析: ${params.issueTitle}`,
+        });
+      } catch (logErr: any) {
+        log.error('[操作日志] 写入AI风险分析日志失败:', logErr.message);
+      }
+      return sanitize({ success: true, data: draft });
+    } catch (error: any) {
+      log.error('[ai:analyzeRisk] 错误:', error?.message || error);
+      return sanitize({
+        success: false,
+        error: { code: 'AI_ANALYZE_RISK_ERROR', message: error?.message || 'AI风险分析失败' },
+      });
+    }
+  });
+
+  // 主动中断当前单条或批量的风险分析 AI 请求。
+  ipcMain.handle('ai:cancelRiskAnalysis', async (_event) => {
+    assertTrusted(_event);
+    if (riskAnalysisAbortController) {
+      riskAnalysisAbortController.abort();
+      riskAnalysisAbortController = null;
+      return sanitize({ success: true, data: { canceled: true } });
+    }
+    return sanitize({ success: true, data: { canceled: false } });
+  });
+
+  /**
+   * 批量风险分析：对每条问题调用 AI 生成草稿，推送进度，返回草稿数组（不写库）。
+   * 前端拿到草稿后逐条回填并重渲染，由用户统一复核保存；或逐条调用 riskAnalysis:save。
+   */
+  ipcMain.handle('ai:batchAnalyzeRisks', async (_event, rawParams: { issues: RiskAiIssue[] }) => {
+    assertTrusted(_event);
+    const sendProgress = (data: { stage: string; message: string; percent: number; current: number; total: number }) => {
+      try { _event.sender.send('ai:batchRiskProgress', data); } catch (innerErr: any) {
+        log.warn('[批量风险分析] 发送进度失败:', innerErr.message);
+      }
+    };
+    const params = sanitize(rawParams) as { issues: RiskAiIssue[] };
+    const issues = Array.isArray(params?.issues) ? params.issues : [];
+    if (issues.length === 0) {
+      return sanitize({ success: false, error: { code: 'NO_ISSUES', message: '没有待分析的问题' } });
+    }
+    const controller = new AbortController();
+    riskAnalysisAbortController = controller;
+    const results: Array<{ issueId: string; draft?: ReturnType<typeof parseRiskAiDraft>; success: boolean; error?: string }> = [];
+    try {
+      for (let i = 0; i < issues.length; i++) {
+        if (controller.signal.aborted) break;
+        const issue = issues[i];
+        sendProgress({
+          stage: 'analyzing',
+          message: `正在分析第 ${i + 1}/${issues.length} 条：${issue.issueTitle || ''}`,
+          percent: Math.round((i / issues.length) * 100),
+          current: i,
+          total: issues.length,
+        });
+        try {
+          const draft = await generateRiskDraft(issue, controller.signal);
+          results.push({ issueId: issue.issueId, draft, success: true });
+        } catch (err: any) {
+          if (controller.signal.aborted) break;
+          results.push({ issueId: issue.issueId, success: false, error: err?.message || '分析失败' });
+        }
+      }
+      const canceled = controller.signal.aborted;
+      sendProgress({
+        stage: canceled ? 'canceled' : 'done',
+        message: canceled ? '已取消' : `完成 ${results.filter(r => r.success).length}/${issues.length} 条`,
+        percent: 100,
+        current: issues.length,
+        total: issues.length,
+      });
+      try {
+        writeOperationLog({
+          action: 'ai_batch_analyze_risk',
+          module: 'ai',
+          description: `AI批量风险分析: ${issues.length} 条，成功 ${results.filter(r => r.success).length} 条${canceled ? '（已取消）' : ''}`,
+        });
+      } catch (logErr: any) {
+        log.error('[操作日志] 写入AI批量风险分析日志失败:', logErr.message);
+      }
+      return sanitize({ success: true, data: { results, canceled } });
+    } catch (error: any) {
+      log.error('[ai:batchAnalyzeRisks] 错误:', error?.message || error);
+      return sanitize({
+        success: false,
+        error: { code: 'AI_BATCH_RISK_ERROR', message: error?.message || '批量风险分析失败' },
+      });
+    } finally {
+      if (riskAnalysisAbortController === controller) riskAnalysisAbortController = null;
+    }
+  });
+
+  /**
+   * 重大风险隐患：单条三要素识别。召回清单 + 检索现场记录 → AI 草稿（不写库）。
+   * 前端回填表单、人工复核后走 majorRisk:save 落库。
+   */
+  ipcMain.handle('ai:analyzeMajorRisk', async (_event, rawParams: MajorRiskAiParams) => {
+    assertTrusted(_event);
+    try {
+      const params = sanitize(rawParams) as MajorRiskAiParams;
+      if (!params?.issueTitle && !params?.issueDescription) {
+        throw new Error('问题信息为空，无法识别');
+      }
+      const controller = new AbortController();
+      majorRiskAbortController = controller;
+      let draft: MajorRiskAiDraft;
+      try {
+        draft = await generateMajorRiskDraft(params, controller.signal);
+      } catch (err: any) {
+        if (controller.signal.aborted || err?.message === '用户已取消') {
+          return sanitize({ success: false, error: { code: 'AI_MAJOR_RISK_CANCELED', message: '已取消' } });
+        }
+        throw err;
+      } finally {
+        if (majorRiskAbortController === controller) majorRiskAbortController = null;
+      }
+      try {
+        writeOperationLog({
+          action: 'ai_analyze_major_risk',
+          module: 'ai',
+          targetName: params.issueTitle,
+          description: `AI重大风险隐患识别: ${params.issueTitle} → ${draft.verdict}`,
+        });
+      } catch (logErr: any) {
+        log.error('[操作日志] 写入重大风险隐患识别日志失败:', logErr.message);
+      }
+      return sanitize({ success: true, data: draft });
+    } catch (error: any) {
+      log.error('[ai:analyzeMajorRisk] 错误:', error?.message || error);
+      return sanitize({
+        success: false,
+        error: { code: 'AI_ANALYZE_MAJOR_RISK_ERROR', message: error?.message || '重大风险隐患识别失败' },
+      });
+    }
+  });
+
+  ipcMain.handle('ai:cancelMajorRiskAnalysis', async (_event) => {
+    assertTrusted(_event);
+    if (majorRiskAbortController) {
+      majorRiskAbortController.abort();
+      majorRiskAbortController = null;
+      return sanitize({ success: true, data: { canceled: true } });
+    }
+    return sanitize({ success: true, data: { canceled: false } });
+  });
+
+  /** 重大风险隐患批量识别：逐条 AI 草稿 + 进度推送，不写库。 */
+  ipcMain.handle('ai:batchAnalyzeMajorRisks', async (_event, rawParams: { issues: MajorRiskAiParams[] }) => {
+    assertTrusted(_event);
+    const sendProgress = (data: { stage: string; message: string; percent: number; current: number; total: number }) => {
+      try { _event.sender.send('ai:batchMajorRiskProgress', data); } catch (innerErr: any) {
+        log.warn('[批量重大风险隐患识别] 发送进度失败:', innerErr.message);
+      }
+    };
+    const params = sanitize(rawParams) as { issues: MajorRiskAiParams[] };
+    const issues = Array.isArray(params?.issues) ? params.issues : [];
+    if (issues.length === 0) {
+      return sanitize({ success: false, error: { code: 'NO_ISSUES', message: '没有待识别的问题' } });
+    }
+    const controller = new AbortController();
+    majorRiskAbortController = controller;
+    const results: Array<{ issueId: string; draft?: MajorRiskAiDraft; success: boolean; error?: string }> = [];
+    try {
+      for (let i = 0; i < issues.length; i++) {
+        if (controller.signal.aborted) break;
+        const issue = issues[i];
+        sendProgress({
+          stage: 'analyzing',
+          message: `正在识别第 ${i + 1}/${issues.length} 条：${issue.issueTitle || ''}`,
+          percent: Math.round((i / issues.length) * 100),
+          current: i,
+          total: issues.length,
+        });
+        try {
+          const draft = await generateMajorRiskDraft(issue, controller.signal);
+          results.push({ issueId: issue.issueId, draft, success: true });
+        } catch (err: any) {
+          if (controller.signal.aborted) break;
+          results.push({ issueId: issue.issueId, success: false, error: err?.message || '识别失败' });
+        }
+      }
+      const canceled = controller.signal.aborted;
+      sendProgress({
+        stage: canceled ? 'canceled' : 'done',
+        message: canceled ? '已取消' : `完成 ${results.filter(r => r.success).length}/${issues.length} 条`,
+        percent: 100,
+        current: issues.length,
+        total: issues.length,
+      });
+      try {
+        writeOperationLog({
+          action: 'ai_batch_analyze_major_risk',
+          module: 'ai',
+          description: `AI批量重大风险隐患识别: ${issues.length} 条，成功 ${results.filter(r => r.success).length} 条${canceled ? '（已取消）' : ''}`,
+        });
+      } catch (logErr: any) {
+        log.error('[操作日志] 写入AI批量重大风险隐患识别日志失败:', logErr.message);
+      }
+      return sanitize({ success: true, data: { results, canceled } });
+    } catch (error: any) {
+      log.error('[ai:batchAnalyzeMajorRisks] 错误:', error?.message || error);
+      return sanitize({
+        success: false,
+        error: { code: 'AI_BATCH_MAJOR_RISK_ERROR', message: error?.message || '批量重大风险隐患识别失败' },
+      });
+    } finally {
+      if (majorRiskAbortController === controller) majorRiskAbortController = null;
+    }
+  });
+
+  /**
+   * 依据《等保测评高风险判定指引》对单条问题自动定级。
+   * 只返回判定结论，不写库；前端收到后自行决定是否回填并保存。
+   */
+  ipcMain.handle('ai:judgeRiskLevel', async (_event, rawParams: RiskLevelJudgeParams) => {
+    assertTrusted(_event);
+    try {
+      const params = sanitize(rawParams) as RiskLevelJudgeParams;
+      if (!params?.issueTitle && !params?.issueDescription) {
+        throw new Error('问题信息为空，无法判定风险等级');
+      }
+      const controller = new AbortController();
+      riskLevelJudgeAbortController = controller;
+      let judgment: RiskLevelJudgment;
+      try {
+        judgment = await generateRiskLevelJudgment(params, controller.signal);
+      } catch (err: any) {
+        if (controller.signal.aborted || err?.message === '用户已取消') {
+          return sanitize({ success: false, error: { code: 'AI_RISK_LEVEL_CANCELED', message: '已取消' } });
+        }
+        throw err;
+      } finally {
+        if (riskLevelJudgeAbortController === controller) riskLevelJudgeAbortController = null;
+      }
+      try {
+        writeOperationLog({
+          action: 'ai_judge_risk_level',
+          module: 'ai',
+          targetName: params.issueTitle,
+          description: `AI判定风险等级: ${params.issueTitle} → ${judgment.level}${judgment.matchedId ? `（指引 ${judgment.matchedId}）` : ''}`,
+        });
+      } catch (logErr: any) {
+        log.error('[操作日志] 写入AI定级日志失败:', logErr.message);
+      }
+      return sanitize({ success: true, data: judgment });
+    } catch (error: any) {
+      log.error('[ai:judgeRiskLevel] 错误:', error?.message || error);
+      return sanitize({
+        success: false,
+        error: { code: 'AI_JUDGE_RISK_LEVEL_ERROR', message: error?.message || 'AI判定风险等级失败' },
+      });
+    }
+  });
+
+  /** 主动中断当前单条或批量的风险等级判定请求 */
+  ipcMain.handle('ai:cancelRiskLevelJudge', async (_event) => {
+    assertTrusted(_event);
+    if (riskLevelJudgeAbortController) {
+      riskLevelJudgeAbortController.abort();
+      riskLevelJudgeAbortController = null;
+      return sanitize({ success: true, data: { canceled: true } });
+    }
+    return sanitize({ success: true, data: { canceled: false } });
+  });
+
+  /** 批量依据判定指引定级：逐条调用 AI 并推送进度，前端拿到结论后回填风险等级 */
+  ipcMain.handle('ai:batchJudgeRiskLevels', async (_event, rawParams: { issues: RiskLevelJudgeParams[] }) => {
+    assertTrusted(_event);
+    const sendProgress = (data: { stage: string; message: string; percent: number; current: number; total: number }) => {
+      try { _event.sender.send('ai:batchRiskLevelProgress', data); } catch (innerErr: any) {
+        log.warn('[批量风险等级判定] 发送进度失败:', innerErr.message);
+      }
+    };
+    const params = sanitize(rawParams) as { issues: RiskLevelJudgeParams[] };
+    const issues = Array.isArray(params?.issues) ? params.issues : [];
+    if (issues.length === 0) {
+      return sanitize({ success: false, error: { code: 'NO_ISSUES', message: '没有待判定的问题' } });
+    }
+    const controller = new AbortController();
+    riskLevelJudgeAbortController = controller;
+    const results: RiskLevelJudgeResult[] = [];
+    try {
+      for (let i = 0; i < issues.length; i++) {
+        if (controller.signal.aborted) break;
+        const issue = issues[i];
+        sendProgress({
+          stage: 'analyzing',
+          message: `正在按判定指引定级 ${i + 1}/${issues.length}：${issue.issueTitle || ''}`,
+          percent: Math.round((i / issues.length) * 100),
+          current: i,
+          total: issues.length,
+        });
+        try {
+          const judgment = await generateRiskLevelJudgment(issue, controller.signal);
+          results.push({ issueId: issue.issueId || '', judgment, success: true });
+        } catch (err: any) {
+          if (controller.signal.aborted) break;
+          results.push({ issueId: issue.issueId || '', success: false, error: err?.message || '判定失败' });
+        }
+      }
+      const canceled = controller.signal.aborted;
+      sendProgress({
+        stage: canceled ? 'canceled' : 'done',
+        message: canceled ? '已取消' : `完成 ${results.filter(r => r.success).length}/${issues.length} 条`,
+        percent: 100,
+        current: issues.length,
+        total: issues.length,
+      });
+      try {
+        writeOperationLog({
+          action: 'ai_batch_judge_risk_level',
+          module: 'ai',
+          description: `AI批量判定风险等级: ${issues.length} 条，成功 ${results.filter(r => r.success).length} 条${canceled ? '（已取消）' : ''}`,
+        });
+      } catch (logErr: any) {
+        log.error('[操作日志] 写入AI批量定级日志失败:', logErr.message);
+      }
+      return sanitize({ success: true, data: { results, canceled } });
+    } catch (error: any) {
+      log.error('[ai:batchJudgeRiskLevels] 错误:', error?.message || error);
+      return sanitize({
+        success: false,
+        error: { code: 'AI_BATCH_RISK_LEVEL_ERROR', message: error?.message || '批量判定风险等级失败' },
+      });
+    } finally {
+      if (riskLevelJudgeAbortController === controller) riskLevelJudgeAbortController = null;
     }
   });
 

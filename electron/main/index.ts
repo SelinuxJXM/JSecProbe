@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, shell, session } from 'electron';
 import { join } from 'path';
 import * as fs from 'fs';
 import log from 'electron-log';
@@ -18,6 +18,14 @@ import { stopHerdsman } from '../services/herdsman.service';
 import { normalizeExternalUrl } from '../utils/external-url';
 
 logger.setProductionMode(app.isPackaged);
+
+// dev 态强制 Chromium 直连：宿主/系统注入的 HTTP_PROXY 会被 Chromium 读取，
+// 即使 NO_PROXY 含 127.0.0.1 也可能把本地 Vite 请求错误地交给代理，导致 loadURL
+// 挂起、渲染进程停在空白页（fetch 5173 超时但 Node/curl 正常）。AI 走独立 session
+// 自行 setProxy、更新走 electron-updater（Node 层），均不受此开关影响。
+if (!app.isPackaged) {
+  app.commandLine.appendSwitch('no-proxy-server');
+}
 
 let mainWindow: BrowserWindow | null = null;
 let backupIntervalId: NodeJS.Timeout | null = null;
@@ -176,8 +184,11 @@ function createWindow() {
   // 缺了这层拦截时，渲染层一个 <a href="file:///..."> 或意外跳转就能把窗口内容换成外部页面，
   // 而该页面仍持有 preload 注入的全部 API。
   const handleNavigation = (event: Electron.Event, url: string): void => {
-    // dev 态放行 Vite 开发服务器（HMR 整页刷新会触发一次真实导航）
-    if (process.env.NODE_ENV === 'development' && url.startsWith('http://localhost')) {
+    // dev 态放行 Vite 开发服务器（HMR 整页刷新会触发一次真实导航）。
+    // 必须同时放行 127.0.0.1 与 localhost：Vite 绑定地址与 Chromium 解析结果可能一个是 IPv4、一个是 IPv6，
+    // 只放行其中一个会让 HMR 导航被误拦。
+    if (process.env.NODE_ENV === 'development' &&
+        (url.startsWith('http://127.0.0.1') || url.startsWith('http://localhost'))) {
       return;
     }
     if (url.startsWith('http://') || url.startsWith('https://')) {
@@ -199,7 +210,16 @@ function createWindow() {
   logger.setTargetWindow(mainWindow.webContents);
 
   if (process.env.NODE_ENV === 'development') {
-    mainWindow.loadURL('http://localhost:5173');
+    if (process.env.JSECPROBE_DEV_FILE === '1') {
+      // 兜底：本机 Chromium 偶发连不上 Vite loopback（白屏、fetch 挂起，Node/curl 却正常），
+      // 此时可用 JSECPROBE_DEV_FILE=1 启动，改为加载 vite build 产出的最新渲染产物（file:// 稳定）。
+      // 正常开发仍走下方 loadURL 以获得 HMR。
+      mainWindow.loadFile(join(__dirname, '../../dist-renderer/index.html'));
+    } else {
+      // 固定用 127.0.0.1：本机曾出现 Vite 绑到 IPv6 ::1、而 Chromium 把 localhost 解析成 IPv4，
+      // 导致 loadURL 连不上、窗口停在 about:blank 白屏。显式 IPv4 消除解析歧义。
+      mainWindow.loadURL('http://127.0.0.1:5173');
+    }
   } else {
     mainWindow.loadFile(join(__dirname, '../../dist-renderer/index.html'));
   }
@@ -338,6 +358,14 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(async () => {
+  // dev 态对默认 session 显式强制直连：命令行 --no-proxy-server 未必压得住宿主注入的
+  // HTTP_PROXY 环境变量，session.setProxy({mode:'direct'}) 在网络层更彻底，避免 Chromium
+  // 把访问本地 Vite(127.0.0.1:5173) 的请求错误交给代理而卡死白屏。AI 走独立 partition
+  // 'ai-request' 自行 setProxy、更新走 electron-updater，均不受影响。
+  if (!app.isPackaged) {
+    await session.defaultSession.setProxy({ mode: 'direct' });
+    log.info('[dev] 默认 session 已强制直连（忽略系统/环境变量代理）');
+  }
   await initializeApp();
   createWindow();
   setupAutoBackup();

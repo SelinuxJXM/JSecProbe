@@ -34,16 +34,31 @@ import { logger } from "./logger";
  */
 function trustedRendererPrefixes(): string[] {
   const isDev = !app.isPackaged || process.env.NODE_ENV === "development";
+  // dev 常态走 Vite 开发服务器（http）。但本机 Chromium 偶发连不上 loopback（白屏），
+  // 此时可用 JSECPROBE_DEV_FILE=1 让窗口加载 vite build 产物（file://）；仅 dev 生效。
+  // 因此 dev 态除 http 前缀外，也要信任「本应用自己的 dist-renderer 目录」，
+  // 否则 file 模式下所有 IPC 都会被判为不可信来源而失败。仍然只信任本应用产物，
+  // 不含任意 file://。
+  const prefixes: string[] = [];
   if (isDev) {
-    return ["http://localhost", "http://127.0.0.1"];
+    prefixes.push("http://localhost", "http://127.0.0.1");
   }
   try {
     const rendererDir = join(app.getAppPath(), "dist-renderer");
-    return [pathToFileURL(rendererDir + sep).href, "app://"];
+    const rendererPrefix = pathToFileURL(rendererDir + sep).href;
+    if (isDev) {
+      prefixes.push(rendererPrefix);
+    } else {
+      return [rendererPrefix, "app://"];
+    }
   } catch (error) {
-    logger.warn("[auth-guard] 无法定位渲染产物目录，回退到宽松来源判定", { error: String(error) });
-    return ["file://", "app://"];
+    if (!isDev) {
+      logger.warn("[auth-guard] 无法定位渲染产物目录，回退到宽松来源判定", { error: String(error) });
+      return ["file://", "app://"];
+    }
   }
+  prefixes.push("app://");
+  return prefixes;
 }
 
 export function requireAuth(event: IpcMainInvokeEvent): void {

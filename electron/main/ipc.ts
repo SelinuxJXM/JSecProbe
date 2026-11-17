@@ -1,8 +1,11 @@
 import { registerAuthHandlers } from '../ipc/auth.ipc';
 import { registerProjectHandlers } from '../ipc/project.ipc';
+import { registerProjectGroupHandlers } from '../ipc/project-group.ipc';
 import { registerAssetHandlers } from '../ipc/asset.ipc';
 import { registerAssessmentHandlers } from '../ipc/assessment.ipc';
 import { registerIssueHandlers } from '../ipc/issue.ipc';
+import { registerRiskAnalysisHandlers } from '../ipc/risk-analysis.ipc';
+import { registerMajorRiskHandlers } from '../ipc/major-risk.ipc';
 import { registerScreenshotHandlers } from '../ipc/screenshot.ipc';
 import { registerStandardHandlers } from '../ipc/standard.ipc';
 import { registerAIHandlers } from '../ipc/ai.ipc';
@@ -21,9 +24,12 @@ import { registerExternalLinkHandlers } from '../ipc/external-link.ipc';
 export function registerIpcHandlers(): void {
   registerAuthHandlers();
   registerProjectHandlers();
+  registerProjectGroupHandlers();
   registerAssetHandlers();
   registerAssessmentHandlers();
   registerIssueHandlers();
+  registerRiskAnalysisHandlers();
+  registerMajorRiskHandlers();
   registerScreenshotHandlers();
   registerStandardHandlers();
   registerAIHandlers();

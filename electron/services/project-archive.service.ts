@@ -37,6 +37,8 @@ import { resolvePath } from '../utils/path-resolver';
 import { openBackupZip, sealZipFile, isEncryptedBackupFile, MIN_BACKUP_PASSWORD_LENGTH } from './backup-crypto';
 
 const ARCHIVE_KIND = 'jsec-project-archive';
+// 分组台账以「可选字段」形式加进 1.0 包（manifest.groups / data.projectGroups），刻意不升版本号：
+// 老版本程序读新包会忽略这两个字段，仍按「每系统一个项目」导入；新版本读旧包则走兼容分支。
 const ARCHIVE_VERSION = '1.0';
 const SUPPORTED_ARCHIVE_VERSIONS = ['1.0'];
 
@@ -63,7 +65,10 @@ export interface ProjectArchiveManifest {
   version: string;
   appVersion: string;
   createdAt: string;
+  /** manifest.projects 里的一行 = 一个被测系统（一条 projects 记录） */
   projects: ArchiveProjectSummary[];
+  /** 这些系统所属的项目分组台账；旧版归档包没有此字段 */
+  groups?: Array<{ id: string; name: string; projectNo?: string }>;
   counts: {
     assets: number;
     records: number;
@@ -84,12 +89,16 @@ export interface ProjectArchiveManifest {
 
 export interface ProjectArchiveData {
   projects: Row[];
+  /** 项目分组行，与 projects[].groupId 对应；旧版归档包没有此字段 */
+  projectGroups?: Row[];
   projectMembers: Row[];
   assets: Row[];
   connectionProfiles: Row[];
   assetConnections: Row[];
   assessmentRecords: Row[];
   issues: Row[];
+  /** 重大风险隐患分析结论；旧版归档包没有此字段，导入时兼容缺失 */
+  majorRiskAnalyses?: Row[];
   collectionTasks: Row[];
   collectionResults: Row[];
   collectionDocuments: Row[];
@@ -143,6 +152,8 @@ export interface ImportArchiveOptions {
 export interface ImportArchiveResult {
   success: boolean;
   imported: Array<{ id: string; name: string; mode: 'new' | 'overwrite' | 'copy' }>;
+  /** 本次导入重建/复用的项目分组，供前端提示「还原到了哪个项目下」 */
+  groups?: Array<{ id: string; name: string; systemCount: number }>;
   skipped: string[];
   restoredFiles: number;
   missingFiles: number;
@@ -275,6 +286,16 @@ export async function exportProjectArchive(options: ExportArchiveOptions): Promi
     }
     const foundIds = projectRows.map(p => p.id as string);
 
+    // 带上系统所属的项目分组台账，使归档在另一台机器上能还原成「一个项目下 N 个系统」。
+    // 只收录本次导出系统真正引用到的分组，避免把整库项目信息一起带走。
+    const groupIds = [...new Set(projectRows.map(p => p.groupId).filter(Boolean))] as string[];
+    const projectGroups = groupIds.length
+      ? ((await db
+          .select()
+          .from(schema.projectGroups)
+          .where(inArray(schema.projectGroups.id, groupIds))) as Row[])
+      : [];
+
     const members = (await db
       .select()
       .from(schema.projectMembers)
@@ -295,6 +316,11 @@ export async function exportProjectArchive(options: ExportArchiveOptions): Promi
       .select()
       .from(schema.issues)
       .where(inArray(schema.issues.projectId, foundIds))) as Row[];
+
+    const majorRiskAnalyses = (await db
+      .select()
+      .from(schema.majorRiskAnalysis)
+      .where(inArray(schema.majorRiskAnalysis.projectId, foundIds))) as Row[];
 
     const tasks = (await db
       .select()
@@ -411,6 +437,11 @@ export async function exportProjectArchive(options: ExportArchiveOptions): Promi
       appVersion: app.getVersion(),
       createdAt: new Date().toISOString(),
       projects: summaries,
+      groups: projectGroups.map(g => ({
+        id: g.id as string,
+        name: (g.name || '') as string,
+        projectNo: (g.projectNo || undefined) as string | undefined,
+      })),
       counts: {
         assets: assets.length,
         records: records.length,
@@ -431,12 +462,14 @@ export async function exportProjectArchive(options: ExportArchiveOptions): Promi
 
     const data: ProjectArchiveData = {
       projects: projectRows,
+      projectGroups,
       projectMembers: members,
       assets,
       connectionProfiles: Array.from(connectionMap.values()),
       assetConnections,
       assessmentRecords: records,
       issues,
+      majorRiskAnalyses,
       collectionTasks: tasks,
       collectionResults: results,
       collectionDocuments: documents,
@@ -458,7 +491,7 @@ export async function exportProjectArchive(options: ExportArchiveOptions): Promi
     const size = fs.statSync(destPath).size;
     log.info(
       `[项目归档] 导出完成: ${destPath}（${(size / 1024 / 1024).toFixed(2)} MB，` +
-        `${summaries.length} 个项目 / ${manifest.counts.files} 个附件${missingFiles.length ? ` / ${missingFiles.length} 个附件缺失` : ''}）`
+        `${summaries.length} 个系统 / ${projectGroups.length} 个项目 / ${manifest.counts.files} 个附件${missingFiles.length ? ` / ${missingFiles.length} 个附件缺失` : ''}）`
     );
 
     return {
@@ -534,6 +567,9 @@ export async function previewProjectArchive(
     const localById = new Map(localRows.map(r => [r.id, r.name]));
 
     const warnings: string[] = [];
+    if (!manifest.groups?.length && (manifest.projects?.length || 0) > 1) {
+      warnings.push('该归档包不含项目分组信息（旧版格式），导入后每个系统会各自成为一个项目');
+    }
     if (manifest.credentialsIncluded === false && manifest.counts.connections > 0) {
       warnings.push(`归档不含连接配置口令（${manifest.counts.connections} 条），恢复后需重新录入`);
     }
@@ -742,6 +778,17 @@ export async function importProjectArchive(options: ImportArchiveOptions): Promi
     const idRemap = new Map<string, string>();
     for (const plan of plans) idRemap.set(plan.source.id, plan.targetId);
 
+    // ---- 4.5) 项目分组台账 ----
+    // 新版归档带 projectGroups，同一分组下的多个系统会还原到同一个项目；
+    // 旧版归档没有该字段（或某系统的 groupId 指向包内不存在的分组），
+    // 则退化成原来的「一个系统一个项目」，保证系统始终能在项目列表里点开。
+    const archivedGroups: Row[] = Array.isArray(data.projectGroups) ? data.projectGroups : [];
+    const archivedGroupById = new Map<string, Row>(
+      archivedGroups.filter(g => g && g.id).map(g => [String(g.id), g]),
+    );
+    // 在事务外声明，事务内写入，事务结束后用于回填导入结果
+    const groupInfo = new Map<string, { name: string; systemCount: number }>();
+
     // ---- 5) 事务写入 ----
     //
     // 除标准/测评项必须保留原 id（测评记录的 item_id 直接指向它们）外，
@@ -752,11 +799,114 @@ export async function importProjectArchive(options: ImportArchiveOptions): Promi
       insertAll(tx, schema.standards, newStandards, 50);
       insertAll(tx, schema.assessmentItems, newItems, 100);
 
+      // 5.1 覆盖导入：先删旧系统、清理因此变空的旧分组。必须在分组还原之前完成，
+      //     否则「刚被清掉的分组」可能又被新系统引用，产生挂不上项目的孤儿。
+      //     例外：同机覆盖导入时，若这个分组正是归档里待还原的分组且归档带分组台账，
+      //     保留它供 5.2 复用，让系统回到原项目下而不是另建一个同名项目。
+      //     旧格式归档（无台账）不在此列，否则会留下一个 0 系统的空项目。
+      const reusableGroupIds = new Set(
+        plans
+          .filter(p => p.mode === 'overwrite')
+          .map(p => String(p.source.groupId || ''))
+          .filter(id => !!id && archivedGroupById.has(id)),
+      );
       for (const plan of plans) {
-        if (plan.mode === 'overwrite') {
-          deleteProjectCascade(tx, plan.targetId);
+        if (plan.mode !== 'overwrite') continue;
+        const oldGroups = tx
+          .select({ groupId: schema.projects.groupId })
+          .from(schema.projects)
+          .where(eq(schema.projects.id, plan.targetId))
+          .all() as Array<{ groupId: string | null }>;
+        deleteProjectCascade(tx, plan.targetId);
+        for (const old of oldGroups) {
+          if (!old.groupId) continue;
+          const rest = tx
+            .select({ id: schema.projects.id })
+            .from(schema.projects)
+            .where(eq(schema.projects.groupId, old.groupId))
+            .all();
+          if (rest.length === 0) {
+            if (strategy === 'overwrite' && reusableGroupIds.has(String(old.groupId))) continue;
+            tx.delete(schema.projectGroups).where(eq(schema.projectGroups.id, old.groupId)).run();
+          }
         }
-        insertAll(tx, schema.projects, [{ ...plan.source, id: plan.targetId }], 1);
+      }
+
+      // 5.2 分组还原：归档分组 id 一律重新映射，避免与本机已有分组撞主键。
+      //     唯一例外是「同机覆盖导入」且原分组仍在（下面 localGroupIds 命中），
+      //     此时复用原 id，让系统留在原来的项目下而不是多出一个同名项目。
+      const localGroupIds = new Set(
+        (tx.select({ id: schema.projectGroups.id }).from(schema.projectGroups).all() as Array<{ id: string }>)
+          .map(r => r.id),
+      );
+      const groupIdRemap = new Map<string, string>();
+
+      /** 兼容路径：无分组台账时，按系统自身字段建一个同名项目 */
+      const createLegacyGroup = (source: Row): string => {
+        const id = randomUUID();
+        const now = new Date().toISOString();
+        const name = String(source.name || source.systemName || '导入项目');
+        tx.insert(schema.projectGroups).values({
+          id,
+          name,
+          projectNo: source.projectNo ?? null,
+          assessedUnit: source.assessedUnit ?? null,
+          customerName: source.customerName ?? null,
+          assessor: source.assessor ?? null,
+          startDate: source.startDate ?? null,
+          endDate: source.endDate ?? null,
+          description: source.description ?? null,
+          status: source.status || 'draft',
+          sortOrder: 0,
+          createdAt: source.createdAt || now,
+          updatedAt: now,
+        }).run();
+        groupInfo.set(id, { name, systemCount: 1 });
+        return id;
+      };
+
+      const resolveGroup = (source: Row): string => {
+        const archivedId = source.groupId ? String(source.groupId) : '';
+        const archived = archivedId ? archivedGroupById.get(archivedId) : undefined;
+        if (!archived) return createLegacyGroup(source);
+
+        let targetId = groupIdRemap.get(archivedId);
+        if (!targetId) {
+          let name = String(archived.name || '导入项目');
+          if (strategy === 'overwrite' && localGroupIds.has(archivedId)) {
+            targetId = archivedId;
+          } else {
+            targetId = randomUUID();
+            if (strategy === 'copy') name += '（导入副本）';
+            const now = new Date().toISOString();
+            tx.insert(schema.projectGroups).values({
+              id: targetId,
+              name,
+              projectNo: archived.projectNo ?? null,
+              assessedUnit: archived.assessedUnit ?? null,
+              customerName: archived.customerName ?? null,
+              assessor: archived.assessor ?? null,
+              startDate: archived.startDate ?? null,
+              endDate: archived.endDate ?? null,
+              description: archived.description ?? null,
+              status: archived.status || 'draft',
+              sortOrder: archived.sortOrder ?? 0,
+              createdAt: archived.createdAt || now,
+              updatedAt: now,
+            }).run();
+          }
+          groupIdRemap.set(archivedId, targetId);
+          groupInfo.set(targetId, { name, systemCount: 0 });
+        }
+        groupInfo.get(targetId)!.systemCount++;
+        return targetId;
+      };
+
+      // 5.3 写入系统行，groupId 指向还原后的分组
+      for (const plan of plans) {
+        const source: Row = { ...plan.source, id: plan.targetId };
+        source.groupId = resolveGroup(source);
+        insertAll(tx, schema.projects, [source], 1);
       }
 
       // 先按 Row 过滤（用户不存在则丢弃），再生成新 id —— 展开后索引签名会丢失，
@@ -828,16 +978,37 @@ export async function importProjectArchive(options: ImportArchiveOptions): Promi
         }));
       insertAll(tx, schema.assessmentRecords, records);
 
+      const issueIdMap = new Map<string, string>();
       const issues = (data.issues || [])
         .filter(i => idRemap.has(i.projectId))
-        .map(i => ({
-          ...i,
-          id: randomUUID(),
-          projectId: idRemap.get(i.projectId)!,
-          assetId: i.assetId ? (assetIdMap.get(i.assetId) ?? i.assetId) : i.assetId,
-          evidenceFiles: rewriteList(i.evidenceFiles),
-        }));
+        .map(i => {
+          const newId = randomUUID();
+          issueIdMap.set(i.id, newId);
+          return {
+            ...i,
+            id: newId,
+            projectId: idRemap.get(i.projectId)!,
+            assetId: i.assetId ? (assetIdMap.get(i.assetId) ?? i.assetId) : i.assetId,
+            evidenceFiles: rewriteList(i.evidenceFiles),
+          };
+        });
       insertAll(tx, schema.issues, issues);
+
+      // 重大风险隐患分析：跟随问题走，issueId 与 id 都换成新 UUID；
+      // 旧版归档包没有该字段时跳过，保持向后兼容。catalogId 是全局清单 id，
+      // 清单不随项目归档，导出后若本机无该清单条目，仅保留名称快照供复核。
+      insertAll(
+        tx,
+        schema.majorRiskAnalysis,
+        (data.majorRiskAnalyses || [])
+          .filter(a => idRemap.has(a.projectId) && issueIdMap.has(a.issueId))
+          .map(a => ({
+            ...a,
+            id: randomUUID(),
+            projectId: idRemap.get(a.projectId)!,
+            issueId: issueIdMap.get(a.issueId)!,
+          })),
+      );
 
       insertAll(
         tx,
@@ -867,8 +1038,13 @@ export async function importProjectArchive(options: ImportArchiveOptions): Promi
       imported.push({ id: plan.targetId, name: plan.source.name, mode: plan.mode });
     }
 
-    log.info(`[项目归档] 导入完成: ${imported.length} 个项目，${restoredFiles} 个附件`);
-    return { success: true, imported, skipped, restoredFiles, missingFiles, warnings };
+    const groups = [...groupInfo.entries()].map(([id, info]) => ({
+      id,
+      name: info.name,
+      systemCount: info.systemCount,
+    }));
+    log.info(`[项目归档] 导入完成: ${imported.length} 个系统 / ${groups.length} 个项目，${restoredFiles} 个附件`);
+    return { success: true, imported, groups, skipped, restoredFiles, missingFiles, warnings };
   } catch (error: any) {
     log.error('[项目归档] 导入失败:', error);
     return {

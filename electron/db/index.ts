@@ -4,6 +4,7 @@ import { join, dirname } from 'path';
 import * as fs from 'fs';
 import log from 'electron-log';
 import bcrypt from 'bcryptjs';
+import { randomUUID } from 'crypto';
 import * as schema from './schema';
 import { runMigrations } from './migrator';
 import { getDbPath, getAppDataPath, getAppDataPathSync } from '../main/paths';
@@ -102,14 +103,30 @@ export async function initDatabase(): Promise<void> {
 
     db = drizzle(sqlite, { schema });
 
-    const migrationsPath = join(__dirname, 'migrations');
+    const bundledMigrationsPath = join(__dirname, 'migrations');
+    // dev 下产物目录可能没有静态 SQL（复制插件只在 build 阶段执行），回退到源码目录；
+    // 打包后源码目录不存在，自然以产物目录为准。
+    const sourceMigrationsPath = join(process.cwd(), 'electron', 'db', 'migrations');
+    const migrationsPath = fs.existsSync(join(bundledMigrationsPath, 'meta', '_journal.json'))
+      ? bundledMigrationsPath
+      : (fs.existsSync(join(sourceMigrationsPath, 'meta', '_journal.json'))
+        ? sourceMigrationsPath
+        : bundledMigrationsPath);
     const metaJournalPath = join(migrationsPath, 'meta', '_journal.json');
+
+    // 权威建表路径：无条件执行。
+    // autoCreateTables 全部是 CREATE TABLE IF NOT EXISTS + PRAGMA 判存补列，幂等；
+    // 它覆盖的 25 张表与迁移 SQL 完全一致，还带有迁移 SQL 里没有的 JS 侧补列逻辑。
+    // 无论迁移文件是否存在都先跑一遍，可保证「存量库 / 全新库 / 打包版 / dev」
+    // 的结构都由同一套经过验证的逻辑建立，新增迁移文件不会改变建表结果。
+    await autoCreateTables(sqlite);
 
     if (fs.existsSync(metaJournalPath)) {
       try {
         log.info('执行数据库迁移:', migrationsPath);
         // 使用自建的幂等迁移器（见 ./migrator.ts）：存量库上 JS 兜底已建过的列会被跳过，
-        // 不会因 duplicate column name 导致整个迁移回滚
+        // 不会因 duplicate column name 导致整个迁移回滚；且对「无账本但结构已完整」的
+        // 存量库只补记账本、不重放历史 DDL（详见 migrator.ts 的 baseline 分支）。
         runMigrations(sqlite, migrationsPath);
         log.info('数据库迁移完成');
       } catch (migrateError) {
@@ -117,8 +134,7 @@ export async function initDatabase(): Promise<void> {
         await recoverFromMigrationError(sqlite, migrationsPath, migrateError);
       }
     } else {
-      log.info('未找到迁移文件，使用自动建表');
-      await autoCreateTables(sqlite);
+      log.info('未找到迁移文件，仅使用自动建表');
     }
 
     // 兼容旧库补列：必须无条件执行（详见 ensureCompatColumns 注释）
@@ -126,6 +142,7 @@ export async function initDatabase(): Promise<void> {
     migrateAiConfigsTable(sqlite);
     ensureCollectionTables(sqlite);
     ensureExternalLinkTables(sqlite);
+    ensureProjectGroupTables(sqlite);
     createIndexes(sqlite);
     detectSchemaDrift(sqlite);
     // 孤儿检测放在迁移/补列之后，避免把"表刚建好还没灌数据"误判为孤儿
@@ -136,6 +153,7 @@ export async function initDatabase(): Promise<void> {
     await initStandardLibrary();
     await initKnowledgeBase();
     await initCommandLibrary();
+    await initMajorRiskCatalog();
 
     log.info('数据库初始化成功');
   } catch (error) {
@@ -331,9 +349,56 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
       fixed_date TEXT,
       assessor TEXT,
       evidence_files TEXT,
+      risk_likelihood TEXT,
+      risk_impact TEXT,
+      risk_score INTEGER,
+      risk_evaluated_level TEXT,
+      risk_threat TEXT,
+      risk_consequence TEXT,
+      risk_strategy TEXT,
+      risk_countermeasure TEXT,
+      risk_residual TEXT,
+      risk_analyst TEXT,
+      risk_analyzed_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS major_risk_catalog (
+      id TEXT PRIMARY KEY,
+      code TEXT,
+      title TEXT NOT NULL,
+      category TEXT,
+      criteria TEXT,
+      keywords TEXT,
+      source TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS major_risk_catalog_enabled_idx ON major_risk_catalog (enabled);
+
+    CREATE TABLE IF NOT EXISTS major_risk_analysis (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      issue_id TEXT NOT NULL,
+      catalog_id TEXT,
+      catalog_title TEXT,
+      relevance TEXT,
+      severity TEXT,
+      frequency TEXT,
+      verdict TEXT NOT NULL DEFAULT 'pending',
+      conclusion TEXT,
+      analyst TEXT,
+      analyzed_at TEXT,
+      reviewed_at TEXT,
+      source TEXT NOT NULL DEFAULT 'manual',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS major_risk_analysis_project_idx ON major_risk_analysis (project_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS major_risk_analysis_issue_unique ON major_risk_analysis (issue_id);
 
     CREATE TABLE IF NOT EXISTS knowledge_categories (
       id TEXT PRIMARY KEY,
@@ -431,6 +496,7 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
       -- 新建库会得到一个指向空标准的默认值。与 schema.ts 对齐为空串，由业务侧动态解析。
       default_standard TEXT DEFAULT '',
       standard_data_version INTEGER NOT NULL DEFAULT 1,
+      major_risk_seed_version INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
     );
 
@@ -533,12 +599,98 @@ function ensureExternalLinkTables(sqlite: Database.Database): void {
 }
 
 /**
+ * 项目分组层：建表 / 补列 / 存量回填兜底（无条件、幂等执行）。
+ *
+ * 与 ensureExternalLinkTables 同理：迁移账本只在 0004 首次执行时建表，
+ * 若用户从旧备份恢复了一份不含 project_groups 的库、或手动删过表/列，
+ * 账本仍标记完成，结构不会自己回来。因此每次启动都兜底一次。
+ *
+ * 回填规则：group_id 为空的历史项目，各自生成一个同名项目分组，把项目级字段
+ * 复制过去；系统行（projects）本身除 group_id 外一个字段都不改，
+ * 资产 / 测评记录 / 问题 / 附件自然跟着原 project_id 留在原系统里。
+ * 用事务包裹「建分组 + 回写 group_id」，避免中途失败留下半个未关联的项目。
+ */
+function ensureProjectGroupTables(sqlite: Database.Database): void {
+  try {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS project_groups (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        project_no TEXT,
+        assessed_unit TEXT,
+        customer_name TEXT,
+        assessor TEXT,
+        start_date TEXT,
+        end_date TEXT,
+        description TEXT,
+        status TEXT NOT NULL DEFAULT 'draft',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+
+    const projectCols = sqlite.prepare('PRAGMA table_info(projects)').all() as Array<{ name: string }>;
+    if (!projectCols.some(c => c.name === 'group_id')) {
+      sqlite.exec('ALTER TABLE projects ADD COLUMN group_id TEXT');
+      log.info('已为 projects 添加 group_id 列');
+    }
+
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS project_group_status_idx ON project_groups(status);
+      CREATE INDEX IF NOT EXISTS project_group_ref_idx ON projects(group_id);
+    `);
+
+    const legacy = sqlite.prepare(`
+      SELECT id, name, project_no, assessed_unit, customer_name, assessor,
+             start_date, end_date, description, status, created_at, updated_at
+      FROM projects
+      WHERE group_id IS NULL OR group_id = ''
+    `).all() as Array<{
+      id: string; name: string; project_no: string | null; assessed_unit: string | null;
+      customer_name: string | null; assessor: string | null; start_date: string | null;
+      end_date: string | null; description: string | null; status: string;
+      created_at: string; updated_at: string;
+    }>;
+
+    if (legacy.length === 0) return;
+
+    const insertGroup = sqlite.prepare(`
+      INSERT INTO project_groups (
+        id, name, project_no, assessed_unit, customer_name, assessor,
+        start_date, end_date, description, status, sort_order, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    `);
+    const linkProject = sqlite.prepare("UPDATE projects SET group_id = ? WHERE id = ? AND (group_id IS NULL OR group_id = '')");
+
+    const backfill = sqlite.transaction(() => {
+      for (const p of legacy) {
+        const groupId = randomUUID();
+        insertGroup.run(
+          groupId, p.name, p.project_no, p.assessed_unit, p.customer_name, p.assessor,
+          p.start_date, p.end_date, p.description, p.status, p.created_at, p.updated_at,
+        );
+        linkProject.run(groupId, p.id);
+      }
+    });
+    backfill();
+    log.info(`[项目分组] 已为 ${legacy.length} 个历史项目建立同名分组（业务数据未改动）`);
+  } catch (err) {
+    log.warn('项目分组结构兜底失败:', err);
+  }
+}
+
+/**
  * 兼容旧库的"补列"迁移。
  *
- * 这些 ALTER 原先写在 autoCreateTables() 内，而该函数仅在 _journal.json 不存在时才执行；
- * 打包后迁移目录必然存在，导致这些列在升级用户的库上永远不会创建 —— 而 schema.ts 已声明
+ * 这些 ALTER 原先写在 autoCreateTables() 内，而该函数历史上仅在 _journal.json
+ * 不存在时才执行：一旦打包产物带上迁移目录（或 dev 回退到源码迁移目录），
+ * 升级用户的库就不再走 autoCreateTables，这些列永远不会创建 —— 而 schema.ts 已声明
  * 它们、业务代码也会真实写入（如 operation_logs.detail_json），结果是运行时
- * "no such column"。因此这里必须无条件执行，且与 drizzle 迁移解耦。
+ * "no such column"。因此这里必须无条件执行，且与 drizzle 迁移账本解耦。
+ *
+ * 注：现在 autoCreateTables() 已改为无条件执行，但本函数仍要保留 —— 迁移账本只记一次，
+ * 用户从旧备份恢复一份缺列的库时账本仍标记完成，只有无条件兜底能自愈。
  *
  * 全部为幂等操作：先 PRAGMA table_info 判断列是否存在。
  */
@@ -566,6 +718,29 @@ function ensureCompatColumns(sqlite: Database.Database): void {
   // 命令库行业维度
   addColumnIfMissing('knowledge_commands', 'industry',
     "ALTER TABLE knowledge_commands ADD COLUMN industry TEXT NOT NULL DEFAULT ''", '兼容旧库');
+
+  // 风险分析（0005）：所有列可空，无需默认值，直接 ALTER 即可。
+  // 必须无条件兜底：用户可能从旧备份恢复一份缺列的库而迁移账本已标记完成。
+  const RISK_ANALYSIS_COLUMNS: Array<[string, string]> = [
+    ['risk_likelihood', 'ALTER TABLE issues ADD COLUMN risk_likelihood TEXT'],
+    ['risk_impact', 'ALTER TABLE issues ADD COLUMN risk_impact TEXT'],
+    ['risk_score', 'ALTER TABLE issues ADD COLUMN risk_score INTEGER'],
+    ['risk_evaluated_level', 'ALTER TABLE issues ADD COLUMN risk_evaluated_level TEXT'],
+    ['risk_threat', 'ALTER TABLE issues ADD COLUMN risk_threat TEXT'],
+    ['risk_consequence', 'ALTER TABLE issues ADD COLUMN risk_consequence TEXT'],
+    ['risk_strategy', 'ALTER TABLE issues ADD COLUMN risk_strategy TEXT'],
+    ['risk_countermeasure', 'ALTER TABLE issues ADD COLUMN risk_countermeasure TEXT'],
+    ['risk_residual', 'ALTER TABLE issues ADD COLUMN risk_residual TEXT'],
+    ['risk_analyst', 'ALTER TABLE issues ADD COLUMN risk_analyst TEXT'],
+    ['risk_analyzed_at', 'ALTER TABLE issues ADD COLUMN risk_analyzed_at TEXT'],
+  ];
+  for (const [column, ddl] of RISK_ANALYSIS_COLUMNS) {
+    addColumnIfMissing('issues', column, ddl, '风险分析 0005');
+  }
+
+  // 重大风险隐患清单内置种子版本：0=未入驻；从旧库恢复时补列后仍为 0，下次启动入驻一次
+  addColumnIfMissing('system_settings', 'major_risk_seed_version',
+    'ALTER TABLE system_settings ADD COLUMN major_risk_seed_version INTEGER NOT NULL DEFAULT 0', '兼容旧库');
 
   // 系统设置创建时间
   // 注意：SQLite 的 `ALTER TABLE ADD COLUMN` **只接受常量默认值**，
@@ -1433,5 +1608,66 @@ async function initCommandLibrary(): Promise<void> {
     log.info('核查命令库初始化完成');
   } catch (error) {
     log.error('核查命令库初始化失败:', error);
+  }
+}
+
+/**
+ * 重大风险隐患清单入驻：首次启动写入用户提供的 32 条内置清单。
+ *
+ * 幂等策略（对齐 standardDataVersion）：system_settings.major_risk_seed_version < 当前版本时
+ * 才补种，补完写回版本号。用户导入自己的清单（全量替换）或删除条目后不会被重新覆盖；
+ * 清单内容变更时提升 MAJOR_RISK_SEED_VERSION，只补缺失的 builtin-* 条目，不覆盖用户编辑。
+ */
+async function initMajorRiskCatalog(): Promise<void> {
+  const dbInstance = getDb();
+  try {
+    const { getMajorRiskCatalogSeeds, MAJOR_RISK_SEED_VERSION } = await import('./seeds/major-risk-catalog');
+    const [settings] = await dbInstance.select().from(schema.systemSettings).limit(1);
+    const current = Number(settings?.majorRiskSeedVersion ?? 0);
+    if (current >= MAJOR_RISK_SEED_VERSION) {
+      log.info(`重大风险隐患清单已入驻(v${current})，跳过 seed 加载`);
+      return;
+    }
+
+    const seeds = getMajorRiskCatalogSeeds();
+    const existingRows = await dbInstance
+      .select({ id: schema.majorRiskCatalog.id })
+      .from(schema.majorRiskCatalog);
+    const existingIds = new Set(existingRows.map(r => r.id));
+    const missing = seeds.filter(s => !existingIds.has(s.id));
+
+    const now = new Date().toISOString();
+    if (missing.length > 0) {
+      const rows = missing.map(s => ({
+        id: s.id,
+        code: s.code,
+        title: s.title,
+        category: s.category || null,
+        criteria: s.criteria || null,
+        keywords: s.keywords || null,
+        source: s.source || null,
+        sortOrder: s.sortOrder,
+        enabled: 1,
+        createdAt: now,
+        updatedAt: now,
+      }));
+      dbInstance.transaction((tx) => {
+        for (let i = 0; i < rows.length; i += 50) {
+          tx.insert(schema.majorRiskCatalog)
+            .values(rows.slice(i, i + 50))
+            .onConflictDoNothing({ target: schema.majorRiskCatalog.id })
+            .run();
+        }
+      });
+    }
+
+    if (settings?.id) {
+      await dbInstance.update(schema.systemSettings)
+        .set({ majorRiskSeedVersion: MAJOR_RISK_SEED_VERSION, updatedAt: now })
+        .where(eq(schema.systemSettings.id, settings.id));
+    }
+    log.info(`重大风险隐患清单入驻完成: 本次新增 ${missing.length} 条（种子共 ${seeds.length} 条）`);
+  } catch (error) {
+    log.error('重大风险隐患清单入驻失败:', error);
   }
 }

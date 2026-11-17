@@ -31,7 +31,7 @@
     <!-- 顶部工具栏 -->
     <div class="top-toolbar">
       <div class="toolbar-left">
-        <!-- 3-Step Phase Indicator -->
+        <!-- 4-Step Phase Indicator -->
         <div class="phase-steps" data-guide="check-phase">
           <div class="phase-step completed" @click="goToPhase('assets')">
             <span class="step-num">1</span>
@@ -43,9 +43,19 @@
             <span class="step-text">现场核查</span>
           </div>
           <div class="step-connector" />
-          <div class="phase-step" @click="goToPhase('issues')">
+          <div class="phase-step" @click="goToPhase('risk-analysis')">
             <span class="step-num">3</span>
-            <span class="step-text">问题汇总</span>
+            <span class="step-text">风险分析</span>
+          </div>
+          <div class="step-connector" />
+          <div class="phase-step" @click="goToPhase('issues')">
+            <span class="step-num">4</span>
+            <span class="step-text">整改建议</span>
+          </div>
+          <div class="step-connector" />
+          <div class="phase-step" @click="goToPhase('major-risk')">
+            <span class="step-num">5</span>
+            <span class="step-text">重大风险隐患</span>
           </div>
         </div>
       </div>
@@ -1132,7 +1142,7 @@ async function syncIssues() {
     if (res.success) {
       const count = res.data?.count || 0;
       if (count > 0) {
-        ElMessage.success(`已同步 ${count} 个问题到问题清单（含不符合项和部分符合项）`);
+        ElMessage.success(`已同步 ${count} 个问题到整改建议（含不符合项和部分符合项）`);
       } else {
         ElMessage.info('没有新的问题需要同步');
       }

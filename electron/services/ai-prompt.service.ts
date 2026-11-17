@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import log from 'electron-log';
 
 // 提示词功能键白名单
-export const PROMPT_KEYS = ['analyze_record', 'batch_match', 'rectify_suggestion', 'issue_desc', 'report_overview', 'report_rectification', 'knowledge_qa', 'command_recommend', 'asset_identify', 'asset_missing', 'dashboard_insight', 'standard_diff_explain', 'standard_compliance_gap'] as const;
+export const PROMPT_KEYS = ['analyze_record', 'batch_match', 'rectify_suggestion', 'issue_desc', 'risk_analysis', 'risk_level', 'major_risk', 'report_overview', 'report_rectification', 'knowledge_qa', 'command_recommend', 'asset_identify', 'asset_missing', 'dashboard_insight', 'standard_diff_explain', 'standard_compliance_gap'] as const;
 export type PromptKey = (typeof PROMPT_KEYS)[number];
 
 export const MAX_PROMPT_LENGTH = 20000;
@@ -175,6 +175,128 @@ export const BUILTIN_PROMPTS: PromptDefinition[] = [
 - "日志审计功能未开启，无法追溯安全事件"
 
 请直接返回问题描述文本，不要JSON格式，不要解释。`,
+  },
+  {
+    key: 'risk_analysis',
+    name: '问题风险分析',
+    description: '根据问题信息生成一段「可能导致XXXX的风险」的分析结果文本（返回纯文本）',
+    variables: [
+      { name: '问题标题', description: '问题的标题' },
+      { name: '安全域', description: '问题所属安全域' },
+      { name: '控制点', description: '问题所属控制点' },
+      { name: '控制项', description: '问题所属控制项名称' },
+      { name: '测评对象', description: '问题关联的测评对象/资产名称' },
+      { name: '问题描述', description: '问题的详细描述' },
+      { name: '初判等级', description: '问题清单中的初判风险等级' },
+      { name: '整改建议', description: '已有的整改建议（可作为分析参考）' },
+    ],
+    builtinTemplate: `你是一名专业的网络安全等级保护测评专家。请根据以下问题信息，写一段简短的「风险分析结果」。
+
+问题标题：{{问题标题}}
+安全域：{{安全域}}
+控制点：{{控制点}}
+控制项：{{控制项}}
+测评对象：{{测评对象}}
+问题描述：{{问题描述}}
+初判等级：{{初判等级}}
+整改建议：{{整改建议}}
+
+要求：
+- 只写一段分析结果，说明该问题"可能导致什么样的风险"，例如："可能导致账号口令被暴力破解、未授权人员获得系统访问权限的风险。"
+- 以"可能导致……的风险"这类句式组织，紧扣问题描述中给出的事实，点明受影响的资产/数据与可能后果
+- 严格依据事实分析，不得编造不存在的资产、威胁或后果；信息不足时基于等保通用实践给出合理推断，并用"需结合现场复核"的审慎口径
+- 语言专业、客观、简洁，控制在 120 字以内
+- 直接返回分析结果文本，不要 JSON、不要 Markdown、不要编号或任何解释说明。`,
+  },
+  {
+    key: 'risk_level',
+    name: '高风险判定指引自动定级',
+    description: '依据网络安全等级保护高风险判定指引，判定问题的风险等级（返回 level/matchedId/reason JSON）',
+    variables: [
+      { name: '问题标题', description: '问题的标题' },
+      { name: '安全域', description: '问题所属安全域' },
+      { name: '控制点', description: '问题所属控制点' },
+      { name: '控制项', description: '问题所属控制项名称' },
+      { name: '测评对象', description: '问题关联的测评对象/资产名称' },
+      { name: '问题描述', description: '问题的详细描述' },
+      { name: '整改建议', description: '已有的整改建议（可作为参考）' },
+      { name: '现有等级', description: '问题清单中现有的初判风险等级' },
+      { name: '判定指引候选', description: '从等保测评高风险指引库中召回的候选条目' },
+    ],
+    builtinTemplate: `你是一名资深网络安全等级保护测评专家。请依据给定的《等保测评高风险指引库》候选条目，对下面的测评问题进行风险等级判定。
+
+待判定问题：
+问题标题：{{问题标题}}
+安全域：{{安全域}}
+控制点：{{控制点}}
+控制项：{{控制项}}
+测评对象：{{测评对象}}
+问题描述：{{问题描述}}
+整改建议：{{整改建议}}
+现有等级：{{现有等级}}
+
+高风险判定指引候选条目：
+{{判定指引候选}}
+
+判定规则：
+1. 只有当问题描述中的事实与某条指引的「问题场景」实质一致，且现场不存在该条目列出的「可能缓解措施」时，才判为 high（高风险）。
+2. 若事实基本符合高风险场景，但存在指引列出的缓解措施、或受影响范围明显有限，按实际效果判为 medium（中风险）；仅有轻微影响且已有其他有效防护时可判 low（低风险）。
+3. 若没有任何候选条目与问题事实实质匹配，不得判 high；根据影响范围与可利用性判 medium 或 low；现场信息明显不足时保留「现有等级」。
+4. matchedId 必须原样取自候选条目的 ID；未匹配到任何条目时填空字符串 ""，严禁编造 ID。
+5. reason 用 40～90 字说明判定依据：命中了哪条场景、是否具备缓解措施、为何升降级；不要复述整段指引。
+
+只输出一个 JSON 对象，不要 Markdown 围栏、不要解释：
+{"level":"high或medium或low","matchedId":"条目ID或空字符串","reason":"判定依据"}`,
+  },
+  {
+    key: 'major_risk',
+    name: '重大风险隐患识别与分析',
+    description: '结合重大风险隐患清单与现场测评记录，按相关性/严重性/高发性三要素各写一段并判定（返回 JSON）',
+    variables: [
+      { name: '问题标题', description: '问题的标题' },
+      { name: '安全域', description: '问题所属安全域' },
+      { name: '控制点', description: '问题所属控制点' },
+      { name: '控制项', description: '问题所属控制项名称' },
+      { name: '测评对象', description: '问题关联的测评对象/资产名称' },
+      { name: '问题描述', description: '来自风险分析页的问题描述' },
+      { name: '初判等级', description: '问题清单中的初判风险等级' },
+      { name: '整改建议', description: '已有的整改建议（可参考）' },
+      { name: '清单候选', description: '从重大风险隐患清单中召回的候选条目' },
+      { name: '现场测评记录', description: '检索到的现场测评记录片段（含问题相关记录与全系统防护措施/网络环境相关记录）' },
+    ],
+    builtinTemplate: `你是一名资深网络安全等级保护测评专家。请依据给定的《重大风险隐患清单》候选条目和现场测评记录，判断下面这条问题是否属于重大风险隐患。
+
+待判定问题：
+问题标题：{{问题标题}}
+安全域：{{安全域}}
+控制点：{{控制点}}
+控制项：{{控制项}}
+测评对象：{{测评对象}}
+问题描述：{{问题描述}}
+初判等级：{{初判等级}}
+整改建议：{{整改建议}}
+
+《重大风险隐患清单》候选条目：
+{{清单候选}}
+
+相关现场测评记录（含问题相关记录与该系统其他防护措施、网络环境相关记录，是全系统视角）：
+{{现场测评记录}}
+
+判定原则（须同时满足以下三要素，才判定为重大风险隐患）：
+- 相关性原则：该问题是测评中发现的、可能导致系统面临高风险的安全问题，且针对该问题未采取任一缓解措施。
+- 严重性原则：安全事件一旦发生将造成严重后果，包括导致业务中断、重要数据泄露或被篡改、获得系统管理权限或业务权限等。
+- 高发性原则：在实际运行中由该问题导致的安全事件发生概率较大。
+
+分析要求（先事实、后判断，每段都要落到现场记录中的具体证据上）：
+1. 相关性一段：先简述测评中发现的问题事实（系统现状、架构或配置，依据问题描述与现场记录），再与清单候选条目的判定情形实质比对（引用清单编号），最后结合现场记录判断该项是否已采取任一风险缓解措施；未采取缓解措施且与清单实质吻合的，明确说明满足相关性。
+2. 严重性一段：假设该问题被利用，结合系统整体环境分析可能造成的后果（核心数据被窃取/篡改/删除、业务中断、获得管理或业务权限、横向移动等）。必须考虑全系统现场记录反映的环境因素——例如系统是否连接互联网/是否内部专网、账号是否专人专用、边界防护是否到位——若整体环境显著削弱了危害可达性，应如实说明严重性可能不成立。
+3. 高发性一段：必须综合全系统现场测评记录中已部署的防护措施（如防火墙严格访问控制策略、WAF、入侵检测/态势感知、审计监测、加密、网络隔离、专人专用账号等）与本次测评是否发现实际攻击或泄露痕迹，分析该问题被主动利用或导致安全事件的概率是否较大；防护有效且未发现被利用迹象的，应明确说明"风险被主动利用的可能性较低，不满足高发性判定"。
+4. 每一要素单独写一段话（各 100～250 字），语言专业、客观；严禁臆造现场记录中不存在的事实，记录未覆盖的信息不要编造。
+5. verdict 取值：major=属于（三要素同时满足且有清单条目实质吻合）；non_major=不属于（任一要素不满足）；pending=现场信息严重不足、无法判断。严禁编造清单编号；catalogId 必须原样取自候选条目编号，未命中填空字符串 ""，catalogTitle 填对应条目标题。
+6. conclusion 严格按以下句式：逐项说明"满足/不满足"哪些要素，再给出触发结论。示例："经综合以上分析，该问题满足相关性、严重性，不满足高发性，未触发重大风险隐患。"；三要素均满足时写："经综合以上分析，该问题三项要素均满足，判定为重大风险隐患。"
+
+只输出一个 JSON 对象，不要 Markdown 围栏、不要解释：
+{"catalogId":"条目编号或空字符串","catalogTitle":"条目标题或空字符串","relevance":"相关性一段话","severity":"严重性一段话","frequency":"高发性一段话","verdict":"major或non_major或pending","conclusion":"综合判定理由"}`,
   },
   {
     key: 'report_overview',

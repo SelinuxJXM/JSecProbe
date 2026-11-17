@@ -29,6 +29,68 @@ function decryptApiKey(stored: string): string {
   }
   return result;
 }
+
+/**
+ * 报告「4.3 风险分析」用的行视图。
+ * 风险分析是问题清单式的：每条问题只填一段「分析结果」（可能导致XXXX的风险），
+ * 存在 issues 行的 risk_consequence 列（复用 0005 迁移已有列）；问题初判等级取
+ * issues.risk_level。gatherReportData 取到的 issues 已自带这些字段，Word / HTML
+ * 两条链都直接从 problems 列表提取，不影响单系统报告与项目合册的既有取数逻辑。
+ */
+interface ReportRiskItem {
+  title: string;
+  controlName: string;
+  level: string;
+  result: string;
+}
+
+function collectRiskAnalysis(issues: any[]): ReportRiskItem[] {
+  const LEVEL_TEXT: Record<string, string> = { high: '高', medium: '中', low: '低' };
+  return (issues || [])
+    .filter((i: any) => !!i.riskAnalyzedAt && !!String(i.riskConsequence || '').trim())
+    .map((i: any) => ({
+      title: String(i.issueTitle || ''),
+      controlName: String(i.controlName || ''),
+      level: LEVEL_TEXT[i.riskLevel] || '—',
+      result: String(i.riskConsequence || ''),
+    }));
+}
+
+/**
+ * 报告「重大风险隐患识别与分析」用的行视图。
+ * 一条问题对应一份分析：三要素各一段 + 最终判定，命中清单条目名一并带上。
+ * 只纳入 verdict 为 major / non_major 的已判定条目；pending 不进报告。
+ */
+interface ReportMajorRiskItem {
+  title: string;
+  catalogTitle: string;
+  relevance: string;
+  severity: string;
+  frequency: string;
+  verdictText: string;
+  conclusion: string;
+}
+
+function collectMajorRisk(issues: any[], analyses: any[]): ReportMajorRiskItem[] {
+  const byIssue = new Map<string, any>();
+  for (const a of analyses || []) byIssue.set(a.issueId, a);
+  const VERDICT_TEXT: Record<string, string> = { major: '属于重大风险隐患', non_major: '不属于', pending: '—' };
+  const items: ReportMajorRiskItem[] = [];
+  for (const issue of issues || []) {
+    const a = byIssue.get(issue.id);
+    if (!a || (a.verdict !== 'major' && a.verdict !== 'non_major')) continue;
+    items.push({
+      title: String(issue.issueTitle || ''),
+      catalogTitle: String(a.catalogTitle || '未命中清单条目'),
+      relevance: String(a.relevance || ''),
+      severity: String(a.severity || ''),
+      frequency: String(a.frequency || ''),
+      verdictText: VERDICT_TEXT[a.verdict] || '—',
+      conclusion: String(a.conclusion || ''),
+    });
+  }
+  return items;
+}
 import {
   Document,
   Paragraph,
@@ -216,9 +278,31 @@ interface ReportOptions {
   aiEnhanced?: boolean;
 }
 
+/**
+ * 项目级合册报告参数：以「项目分组」为单位，把项目综述与其下每个系统的分册
+ * 装订成一份文档。groupId 对应 project_groups.id（projects.group_id）。
+ */
+export interface ProjectReportOptions {
+  format: 'pdf' | 'docx';
+  template: 'standard' | 'detailed' | 'simple';
+  includeSections: string[];
+  groupId: string;
+  savePath: string;
+  // AI 增强会逐分册调用（每个系统各一次），系统较多时耗时明显增加
+  aiEnhanced?: boolean;
+}
+
+/** 合册取数结果：分组台账 + 名下全部系统的单系统报告数据 */
+interface ProjectReportData {
+  group: any;
+  systems: ReportData[];
+}
+
 interface ReportData {
   project: any;
   issues: any[];
+  /** 重大风险隐患分析结论（按 issueId 索引），供「重大风险隐患识别与分析」章节使用 */
+  majorRiskAnalyses: any[];
   summary: any;
   assets: any[];
   assessmentStats: any;
@@ -312,6 +396,63 @@ export class ReportService {
     }
   }
 
+  /**
+   * 生成项目级合册报告：项目综述 + 各系统分册装订成一份文档。
+   *
+   * 与 generateReport 完全独立的入口 —— 单系统报告的取数、模板与渲染逻辑一律不动，
+   * 这里只负责「按分组取到 N 份 ReportData」再交给两条合册渲染链。
+   */
+  async generateProjectReport(options: ProjectReportOptions): Promise<string> {
+    const reportData = await this.gatherProjectReportData(options.groupId);
+
+    const outputDir = path.dirname(options.savePath);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    const projectName = reportData.group?.name || '未知项目';
+    const timestamp = new Date().toISOString().slice(0, 10);
+
+    log.info(
+      `[项目合册报告] 开始生成: ${projectName}，${reportData.systems.length} 个分册，` +
+      `格式 ${options.format}${options.aiEnhanced ? '（AI 增强，逐分册调用）' : ''}`
+    );
+
+    if (options.format === 'docx') {
+      return this.generateProjectWordReport(reportData, options.savePath, projectName, timestamp, options);
+    }
+    return this.generateProjectPdfReport(reportData, options.savePath, projectName, timestamp, options);
+  }
+
+  /** 按分组取台账 + 名下全部系统的单系统报告数据（全量，不受列表分页/筛选影响） */
+  private async gatherProjectReportData(groupId: string): Promise<ProjectReportData> {
+    const db = getDb();
+    const [group] = await db
+      .select()
+      .from(schema.projectGroups)
+      .where(eq(schema.projectGroups.id, groupId))
+      .limit(1);
+    if (!group) {
+      throw new Error('项目不存在或已被删除');
+    }
+
+    // 按创建时间升序，保证分册顺序稳定；归档系统同样纳入（合册是交付物，不做隐式过滤）
+    const systemRows = await db
+      .select({ id: schema.projects.id })
+      .from(schema.projects)
+      .where(eq(schema.projects.groupId, groupId))
+      .orderBy(asc(schema.projects.createdAt));
+    if (systemRows.length === 0) {
+      throw new Error('该项目下暂无系统，请先在「系统列表」创建系统后再生成合册报告');
+    }
+
+    const systems: ReportData[] = [];
+    for (const row of systemRows) {
+      systems.push(await this.gatherReportData(row.id));
+    }
+    return { group, systems };
+  }
+
   // 按项目 standardId 加载域 ID→名称映射
   // 优先 standards.domains_meta，fallback 模块级 DOMAIN_ID_TO_NAME（国标十域）
   private async loadDomainNameMap(standardId: string): Promise<Record<string, string>> {
@@ -379,6 +520,10 @@ export class ReportService {
 
     const issues = await db.select().from(schema.issues).where(eq(schema.issues.projectId, projectId));
 
+    // 重大风险隐患分析结论：与 issues 同源按项目取，报告章节据此筛选已判定条目
+    const majorRiskAnalyses = await db.select().from(schema.majorRiskAnalysis)
+      .where(eq(schema.majorRiskAnalysis.projectId, projectId));
+
     // 风险等级为字符串枚举（high/medium/low），数据库按字典序排序会得到 medium > low > high，
     // 导致高风险问题被排到列表底部。改为按风险权重在内存中降序排序，确保高风险置顶。
     const RISK_WEIGHT: Record<string, number> = { high: 3, medium: 2, low: 1 };
@@ -411,6 +556,7 @@ export class ReportService {
     return {
       project,
       issues,
+      majorRiskAnalyses,
       summary: {
         total: totalIssues,
         highRisk,
@@ -676,6 +822,15 @@ export class ReportService {
     timestamp: string,
     options: ReportOptions
   ): Promise<string> {
+    const children = await this.buildWordContent(data, options.template, timestamp, options);
+    return this.packWordDocument(children, savePath);
+  }
+
+  /**
+   * 把段落/表格数组打包成 docx 文件。单系统报告与项目合册共用同一套字体、页眉页脚，
+   * 页脚的 PageNumber.TOTAL_PAGES 因此覆盖整册，装订后页码连续、不按分册重置。
+   */
+  private async packWordDocument(children: (Paragraph | Table)[], savePath: string): Promise<string> {
     const doc = new Document({
       styles: {
         default: {
@@ -843,7 +998,7 @@ export class ReportService {
               ],
             }),
           },
-          children: await this.buildWordContent(data, options.template, timestamp, options),
+          children,
         },
       ],
     });
@@ -853,13 +1008,256 @@ export class ReportService {
     return savePath;
   }
 
-  private async buildWordContent(data: ReportData, template: string, timestamp: string, options: ReportOptions): Promise<(Paragraph | Table)[]> {
+  private async generateProjectWordReport(
+    data: ProjectReportData,
+    savePath: string,
+    projectName: string,
+    timestamp: string,
+    options: ProjectReportOptions
+  ): Promise<string> {
+    const children = await this.buildProjectWordContent(data, projectName, timestamp, options);
+    const out = await this.packWordDocument(children, savePath);
+    log.info(`[项目合册报告] Word 合册已生成: ${out}`);
+    return out;
+  }
+
+  /** 跨系统汇总口径：项目综述的表格与结论文字共用这一份聚合结果 */
+  private aggregateProjectSummary(systems: ReportData[]): {
+    assets: number;
+    assessmentTotal: number;
+    avgComplianceRate: number;
+    highRisk: number;
+    mediumRisk: number;
+    lowRisk: number;
+    issues: number;
+    narrative: string;
+  } {
+    let assets = 0;
+    let assessmentTotal = 0;
+    let highRisk = 0;
+    let mediumRisk = 0;
+    let lowRisk = 0;
+    let issues = 0;
+    let rateSum = 0;
+    for (const s of systems) {
+      assets += s.assets?.length ?? 0;
+      assessmentTotal += Number(s.assessmentStats?.total) || 0;
+      highRisk += Number(s.summary?.highRisk) || 0;
+      mediumRisk += Number(s.summary?.mediumRisk) || 0;
+      lowRisk += Number(s.summary?.lowRisk) || 0;
+      issues += Number(s.summary?.total) || 0;
+      rateSum += Number(s.summary?.complianceRate) || 0;
+    }
+    const count = systems.length || 1;
+    const avgComplianceRate = Math.round((rateSum / count) * 10) / 10;
+
+    const riskRank = systems
+      .map((s, i) => ({
+        name: s.project?.systemName || s.project?.name || `系统 ${i + 1}`,
+        total: Number(s.summary?.total) || 0,
+      }))
+      .sort((a, b) => b.total - a.total);
+    const worst = riskRank[0];
+    const worstText = worst && worst.total > 0
+      ? `其中「${worst.name}」的问题数最多（${worst.total} 个），`
+      : '';
+
+    const narrative =
+      `本项目共纳入 ${systems.length} 个被测系统，累计登记资产 ${assets} 台/套，` +
+      `覆盖测评项 ${assessmentTotal} 项，各系统平均符合率 ${avgComplianceRate}%。` +
+      `本次测评共发现安全问题 ${issues} 个，其中高风险 ${highRisk} 个、中风险 ${mediumRisk} 个、` +
+      `低风险 ${lowRisk} 个。${worstText}` +
+      `建议优先对高风险问题开展整改并复测，中风险问题限期闭环，低风险问题纳入日常运维持续改进。` +
+      `各系统详细的测评结果、问题清单与整改建议见后续分册。`;
+
+    return { assets, assessmentTotal, avgComplianceRate, highRisk, mediumRisk, lowRisk, issues, narrative };
+  }
+
+  /** 项目状态中文名（合册综述表格用） */
+  private projectStatusLabel(status: unknown): string {
+    const map: Record<string, string> = {
+      draft: '草稿',
+      in_progress: '进行中',
+      active: '进行中',
+      completed: '已完成',
+      archived: '已归档',
+    };
+    return map[String(status || '')] || String(status || '-');
+  }
+
+  /** 合册 Word 正文：总封面 → 总目录 → 项目综述 → 各分册（扉页 + 正文） */
+  private async buildProjectWordContent(
+    data: ProjectReportData,
+    _projectName: string,
+    timestamp: string,
+    options: ProjectReportOptions
+  ): Promise<(Paragraph | Table)[]> {
+    const content: (Paragraph | Table)[] = [];
+    const { group, systems } = data;
+    const agg = this.aggregateProjectSummary(systems);
+
+    // 封面 / 扉页用的居中文字段落
+    const centered = (text: string, size: number, opts: { bold?: boolean; italics?: boolean; before?: number; after?: number } = {}) =>
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { before: opts.before ?? 0, after: opts.after ?? 200 },
+        indent: { left: 0, right: 0 },
+        children: [createMixedFontRun(text, { size, bold: opts.bold, italics: opts.italics })],
+      });
+
+    // ===== 总封面 =====
+    content.push(centered('等级保护测评项目综合报告', 56, { bold: true, before: 1800, after: 400 }));
+    content.push(centered('Level Protection Assessment Project Report', 28, { italics: true, after: 500 }));
+    const coverInfos = [
+      `项目名称：${group?.name || '-'}`,
+      `项目编号：${group?.projectNo || '-'}`,
+      `被测单位：${group?.assessedUnit || '-'}`,
+      `测评周期：${group?.startDate || '-'} 至 ${group?.endDate || '-'}`,
+      `系统数量：${systems.length} 个`,
+      `报告日期：${timestamp}`,
+    ];
+    for (const info of coverInfos) content.push(centered(info, 28));
+    content.push(new Paragraph({ children: [new PageBreak()] }));
+
+    // ===== 总目录 =====
+    content.push(createHeadingParagraph({ text: '目  录', level: 'heading1' }));
+    const tocLine = (text: string, indent = 0) =>
+      new Paragraph({
+        spacing: { before: 100, after: 100, line: LINE_SPACING },
+        indent: { left: indent },
+        tabStops: [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX }],
+        children: [createMixedFontRun(text, {})],
+      });
+    content.push(tocLine('一、项目综述'));
+    content.push(tocLine('二、系统分册'));
+    systems.forEach((s, i) => {
+      const name = s.project?.systemName || s.project?.name || `系统 ${i + 1}`;
+      content.push(tocLine(`第 ${i + 1} 分册　${name}（第 ${s.project?.level || '-'} 级 · ${s.standard.code}）`, 480));
+    });
+    content.push(new Paragraph({ children: [new PageBreak()] }));
+
+    // ===== 一、项目综述 =====
+    content.push(createHeadingParagraph({ text: '一、项目综述', level: 'heading1' }));
+    content.push(createHeadingParagraph({ text: '1.1 项目基本信息', level: 'heading2' }));
+    content.push(
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          this.createTableRow('项目名称', group?.name || '-', '项目编号', group?.projectNo || '-'),
+          this.createTableRow('被测单位', group?.assessedUnit || '-', '客户名称', group?.customerName || '-'),
+          this.createTableRow('测评负责人', group?.assessor || '-', '测评周期', `${group?.startDate || '-'} 至 ${group?.endDate || '-'}`),
+          this.createTableRow('项目状态', this.projectStatusLabel(group?.status), '系统数量', `${systems.length} 个`),
+        ],
+      })
+    );
+    if (group?.description) {
+      content.push(createBodyParagraph({ text: `项目说明：${group.description}`, spacingAfter: 200 }));
+    }
+
+    content.push(createHeadingParagraph({ text: '1.2 系统构成与测评概况', level: 'heading2' }));
+    const overviewRows: TableRow[] = [
+      this.createHeaderRow('序号', '系统名称', '等级', '测评标准', '资产数', '测评项', '符合率'),
+    ];
+    systems.forEach((s, i) => {
+      overviewRows.push(
+        this.createTableRow(
+          String(i + 1),
+          s.project?.systemName || s.project?.name || '-',
+          `第 ${s.project?.level || '-'} 级`,
+          s.standard.code,
+          `${s.assets?.length ?? 0}`,
+          `${Number(s.assessmentStats?.total) || 0}`,
+          `${Number(s.summary?.complianceRate) || 0}%`
+        )
+      );
+    });
+    overviewRows.push(
+      this.createTableRow('合计', '—', '—', '—', `${agg.assets}`, `${agg.assessmentTotal}`, `${agg.avgComplianceRate}%`)
+    );
+    content.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: overviewRows }));
+
+    content.push(createHeadingParagraph({ text: '1.3 问题分布与综合评价', level: 'heading2' }));
+    const riskRows: TableRow[] = [
+      this.createHeaderRow('序号', '系统名称', '高风险', '中风险', '低风险', '合计'),
+    ];
+    systems.forEach((s, i) => {
+      riskRows.push(
+        this.createTableRow(
+          String(i + 1),
+          s.project?.systemName || s.project?.name || '-',
+          `${Number(s.summary?.highRisk) || 0}`,
+          `${Number(s.summary?.mediumRisk) || 0}`,
+          `${Number(s.summary?.lowRisk) || 0}`,
+          `${Number(s.summary?.total) || 0}`
+        )
+      );
+    });
+    riskRows.push(
+      this.createTableRow('合计', '—', `${agg.highRisk}`, `${agg.mediumRisk}`, `${agg.lowRisk}`, `${agg.issues}`)
+    );
+    content.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: riskRows }));
+    content.push(createBodyParagraph({ text: agg.narrative, spacingAfter: 200 }));
+
+    // ===== 二、系统分册 =====
+    content.push(new Paragraph({ children: [new PageBreak()] }));
+    content.push(createHeadingParagraph({ text: '二、系统分册', level: 'heading1' }));
+    content.push(
+      createBodyParagraph({
+        text: `本报告共 ${systems.length} 个分册，每个分册对应一个被测系统的完整测评结果，章节自「一、报告概述」起独立编号。`,
+        spacingAfter: 200,
+      })
+    );
+
+    for (let i = 0; i < systems.length; i++) {
+      const s = systems[i];
+      const systemName = s.project?.systemName || s.project?.name || `系统 ${i + 1}`;
+
+      // 分册扉页：与上一分册 / 综述强制分页，避免装订在同一页
+      content.push(new Paragraph({ children: [new PageBreak()] }));
+      content.push(centered(`第 ${i + 1} 分册`, 48, { bold: true, before: 1600, after: 300 }));
+      content.push(centered(systemName, 36, { bold: true, after: 500 }));
+      for (const info of [
+        `项目名称：${group?.name || '-'}`,
+        `被测单位：${s.project?.assessedUnit || group?.assessedUnit || '-'}`,
+        `安全等级：第 ${s.project?.level || '-'} 级`,
+        `测评标准：${s.standard.code} · ${s.standard.name}`,
+      ]) {
+        content.push(centered(info, 28));
+      }
+      content.push(new Paragraph({ children: [new PageBreak()] }));
+
+      // 分册正文：复用单系统 Word 内容，但跳过其自带封面/目录（frontMatter=false）
+      const volumeOptions: ReportOptions = {
+        format: options.format,
+        template: options.template,
+        includeSections: options.includeSections,
+        projectId: s.project?.id || '',
+        savePath: options.savePath,
+        aiEnhanced: options.aiEnhanced,
+      };
+      const volumeContent = await this.buildWordContent(s, options.template, timestamp, volumeOptions, false);
+      content.push(...volumeContent);
+    }
+
+    return content;
+  }
+
+  private async buildWordContent(
+    data: ReportData,
+    template: string,
+    timestamp: string,
+    options: ReportOptions,
+    frontMatter: boolean = true
+  ): Promise<(Paragraph | Table)[]> {
     const content: (Paragraph | Table)[] = [];
     const { project, issues, summary, assets, standard } = data;
 
     const isSimple = template === 'simple';
     const isDetailed = template === 'detailed';
 
+    // frontMatter=false 用于项目合册的「分册」：总封面/总目录已在册首统一给出，
+    // 各分册直接从「一、报告概述」开始，避免每册重复一份封面和目录。
+    if (frontMatter) {
     // 封面标题
     content.push(
       new Paragraph({
@@ -1030,6 +1428,7 @@ export class ReportService {
 
       content.push(new Paragraph({ children: [new PageBreak()] }));
     }
+    } // end if (frontMatter)
 
     // 一、报告概述
     content.push(
@@ -1209,6 +1608,54 @@ export class ReportService {
         ],
       });
       content.push(domainTable);
+    }
+
+    // 4.3 风险分析：问题清单式，每条问题一段「分析结果」（issues.risk_consequence）。
+    // 独立的 'riskAnalysis' 章节开关控制；没有已分析问题时空章节跳过。
+    if (options.includeSections.includes('riskAnalysis')) {
+      const riskItems = collectRiskAnalysis(issues);
+      if (riskItems.length > 0) {
+        content.push(createHeadingParagraph({ text: '4.3 风险分析', level: 'heading2', spacingBefore: 300 }));
+        content.push(createBodyParagraph({
+          text: `针对测评发现的问题逐条开展风险分析，说明每项问题可能导致的风险。本次共完成 ${riskItems.length} 个问题的风险分析，结果如下。`,
+          spacingAfter: 200,
+        }));
+        content.push(new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          rows: [
+            this.createHeaderRow('序号', '问题标题', '初判等级', '问题分析'),
+            ...riskItems.map((r, idx) => this.createTableRow(
+              `${idx + 1}`, r.title, r.level, r.result
+            )),
+          ],
+        }));
+      }
+    }
+
+    // 4.4 重大风险隐患识别与分析：一条问题一段，相关性/严重性/高发性各一段话 + 最终判定。
+    // 独立 'majorRisk' 章节开关控制；没有已判定条目时跳过空章节。
+    if (options.includeSections.includes('majorRisk')) {
+      const majorItems = collectMajorRisk(issues, (data as any).majorRiskAnalyses || []);
+      if (majorItems.length > 0) {
+        content.push(createHeadingParagraph({ text: '4.4 重大风险隐患识别与分析', level: 'heading2', spacingBefore: 300 }));
+        content.push(createBodyParagraph({
+          text: `依据《重大风险隐患清单》，结合现场测评记录，按相关性、严重性、高发性三要素对测评发现的问题逐条开展重大风险隐患识别与分析。本次纳入 ${majorItems.length} 条已判定问题，结果如下。`,
+          spacingAfter: 200,
+        }));
+        majorItems.forEach((item, idx) => {
+          content.push(createBodyParagraph({
+            text: `${idx + 1}. 问题：${item.title}`,
+            bold: true,
+            spacingBefore: 200,
+            spacingAfter: 100,
+          }));
+          content.push(createBodyParagraph({ text: `命中清单条目：${item.catalogTitle}`, spacingAfter: 100 }));
+          if (item.relevance) content.push(createBodyParagraph({ text: `相关性：${item.relevance}`, spacingAfter: 100 }));
+          if (item.severity) content.push(createBodyParagraph({ text: `严重性：${item.severity}`, spacingAfter: 100 }));
+          if (item.frequency) content.push(createBodyParagraph({ text: `高发性：${item.frequency}`, spacingAfter: 100 }));
+          content.push(createBodyParagraph({ text: `最终判定：${item.verdictText}${item.conclusion ? `。综合结论：${item.conclusion}` : ''}`, spacingAfter: 200 }));
+        });
+      }
     }
 
     // 五、总体分析评价
@@ -2207,15 +2654,21 @@ export class ReportService {
     timestamp: string,
     options: ReportOptions
   ): Promise<string> {
+    const isSimple = options.template === 'simple';
+    const isDetailed = options.template === 'detailed';
+    const htmlContent = await this.generateHtmlContent(data, projectName, timestamp, options, isSimple, isDetailed);
+    return this.renderHtmlToPdf(htmlContent, savePath);
+  }
+
+  /**
+   * 把一份完整 HTML 文档渲染成 PDF。单系统报告与项目合册共用同一个隐藏窗口与打印参数，
+   * 避免两条渲染链出现版式差异；临时 HTML 在 finally 中必删（正文含单位与问题细节）。
+   */
+  private async renderHtmlToPdf(htmlContent: string, savePath: string): Promise<string> {
     const mainWindow = getMainWindow();
     if (!mainWindow) {
       throw new Error('无法获取主窗口');
     }
-
-    const isSimple = options.template === 'simple';
-    const isDetailed = options.template === 'detailed';
-
-    const htmlContent = await this.generateHtmlContent(data, projectName, timestamp, options, isSimple, isDetailed);
 
     const { BrowserWindow } = require('electron');
     const hiddenWindow = new BrowserWindow({
@@ -2273,6 +2726,181 @@ export class ReportService {
         // 临时文件删除失败不影响报告已生成的结果
       }
     }
+  }
+
+  private async generateProjectPdfReport(
+    data: ProjectReportData,
+    savePath: string,
+    projectName: string,
+    timestamp: string,
+    options: ProjectReportOptions
+  ): Promise<string> {
+    const htmlContent = await this.buildProjectHtmlContent(data, projectName, timestamp, options);
+    const out = await this.renderHtmlToPdf(htmlContent, savePath);
+    log.info(`[项目合册报告] PDF 合册已生成: ${out}`);
+    return out;
+  }
+
+  /** 从完整 HTML 文档拆出 <style> 与 <body> 内容，供合册重组（首尾为固定模板，匹配稳定） */
+  private splitHtmlDocument(full: string): { style: string; body: string } {
+    const style = full.match(/<style>[\s\S]*?<\/style>/)?.[0] ?? '';
+    const body = full.match(/<body>([\s\S]*?)<\/body>/)?.[1] ?? '';
+    return { style, body };
+  }
+
+  /**
+   * 合册 HTML：一份文档 = 总封面 + 总目录 + 项目综述 + 各分册（扉页 + 正文）。
+   * 分册正文复用现有 generateHtmlContent，但去掉各自的 cover/toc，样式只保留一份。
+   * 所有用户可控字段统一走 escapeHtml。
+   */
+  private async buildProjectHtmlContent(
+    data: ProjectReportData,
+    _projectName: string,
+    timestamp: string,
+    options: ProjectReportOptions
+  ): Promise<string> {
+    const { group, systems } = data;
+    const agg = this.aggregateProjectSummary(systems);
+    const isSimple = options.template === 'simple';
+    const isDetailed = options.template === 'detailed';
+
+    // ---- 各分册正文 ----
+    const volumeSections: string[] = [];
+    let sharedStyle = '';
+    for (let i = 0; i < systems.length; i++) {
+      const s = systems[i];
+      const volumeOptions: ReportOptions = {
+        format: options.format,
+        template: options.template,
+        // 册首已统一给出封面与目录，分册不再重复
+        includeSections: options.includeSections.filter(x => x !== 'cover' && x !== 'toc'),
+        projectId: s.project?.id || '',
+        savePath: options.savePath,
+        aiEnhanced: options.aiEnhanced,
+      };
+      const full = await this.generateHtmlContent(
+        s, s.project?.name || '', timestamp, volumeOptions, isSimple, isDetailed
+      );
+      const { style, body } = this.splitHtmlDocument(full);
+      if (!sharedStyle) sharedStyle = style;
+
+      const systemName = s.project?.systemName || s.project?.name || `系统 ${i + 1}`;
+      volumeSections.push(`
+    <div class="page-break"></div>
+    <div class="volume-cover">
+      <h1>第 ${i + 1} 分册</h1>
+      <h2>${escapeHtml(systemName)}</h2>
+      <p>项目名称：${escapeHtml(group?.name) || '-'}</p>
+      <p>被测单位：${escapeHtml(s.project?.assessedUnit || group?.assessedUnit) || '-'}</p>
+      <p>安全等级：第 ${escapeHtml(s.project?.level) || '-'} 级</p>
+      <p>测评标准：${escapeHtml(s.standard.code) || '-'} · ${escapeHtml(s.standard.name) || '-'}</p>
+    </div>
+    <div class="page-break"></div>
+    ${body}`);
+    }
+
+    // ---- 项目综述的两张汇总表 ----
+    const overviewTableRows = systems.map((s, i) => `
+      <tr>
+        <td class="text-center">${i + 1}</td>
+        <td>${escapeHtml(s.project?.systemName || s.project?.name) || '-'}</td>
+        <td class="text-center">第 ${escapeHtml(s.project?.level) || '-'} 级</td>
+        <td>${escapeHtml(s.standard.code) || '-'}</td>
+        <td class="text-center">${s.assets?.length ?? 0}</td>
+        <td class="text-center">${Number(s.assessmentStats?.total) || 0}</td>
+        <td class="text-center">${Number(s.summary?.complianceRate) || 0}%</td>
+      </tr>`).join('');
+    const riskTableRows = systems.map((s, i) => `
+      <tr>
+        <td class="text-center">${i + 1}</td>
+        <td>${escapeHtml(s.project?.systemName || s.project?.name) || '-'}</td>
+        <td class="text-center">${Number(s.summary?.highRisk) || 0}</td>
+        <td class="text-center">${Number(s.summary?.mediumRisk) || 0}</td>
+        <td class="text-center">${Number(s.summary?.lowRisk) || 0}</td>
+        <td class="text-center">${Number(s.summary?.total) || 0}</td>
+      </tr>`).join('');
+
+    const tocVolumes = systems.map((s, i) => {
+      const name = s.project?.systemName || s.project?.name || `系统 ${i + 1}`;
+      return `      <div class="toc-item project-toc-item">第 ${i + 1} 分册　${escapeHtml(name)}（第 ${escapeHtml(s.project?.level) || '-'} 级 · ${escapeHtml(s.standard.code) || '-'}）</div>`;
+    }).join('\n');
+
+    let html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  ${sharedStyle}
+  <style>
+    .volume-cover { text-align: center; padding-top: 120px; }
+    .volume-cover h1 { font-size: 30px; margin: 0 0 30px 0; text-indent: 0; }
+    .volume-cover h2 { font-size: 22px; border: none; margin: 20px 0 40px 0; text-indent: 0; }
+    .volume-cover p { text-indent: 0; font-size: 16px; margin: 12px 0; }
+    .project-toc-item { padding-left: 2em; }
+  </style>
+</head>
+<body>`;
+
+    // 总封面
+    html += `
+    <div class="cover">
+      <h1>等级保护测评项目综合报告</h1>
+      <p>项目名称：${escapeHtml(group?.name) || '-'}</p>
+      <p>项目编号：${escapeHtml(group?.projectNo) || '-'}</p>
+      <p>被测单位：${escapeHtml(group?.assessedUnit) || '-'}</p>
+      <p>测评周期：${escapeHtml(group?.startDate) || '-'} 至 ${escapeHtml(group?.endDate) || '-'}</p>
+      <p>系统数量：${systems.length} 个</p>
+      <p>报告日期：${timestamp}</p>
+    </div>
+    <div class="page-break"></div>`;
+
+    // 总目录
+    html += `
+    <h2>目录</h2>
+    <div class="toc project-toc">
+      <div class="toc-item">一、项目综述</div>
+      <div class="toc-item">二、系统分册</div>
+${tocVolumes}
+    </div>
+    <div class="page-break"></div>`;
+
+    // 一、项目综述
+    html += `
+    <h2>一、项目综述</h2>
+    <h3>1.1 项目基本信息</h3>
+    <table>
+      <tr><th width="18%">项目名称</th><td>${escapeHtml(group?.name) || '-'}</td><th width="18%">项目编号</th><td>${escapeHtml(group?.projectNo) || '-'}</td></tr>
+      <tr><th>被测单位</th><td>${escapeHtml(group?.assessedUnit) || '-'}</td><th>客户名称</th><td>${escapeHtml(group?.customerName) || '-'}</td></tr>
+      <tr><th>测评负责人</th><td>${escapeHtml(group?.assessor) || '-'}</td><th>项目状态</th><td>${escapeHtml(this.projectStatusLabel(group?.status))}</td></tr>
+      <tr><th>测评周期</th><td>${escapeHtml(group?.startDate) || '-'} 至 ${escapeHtml(group?.endDate) || '-'}</td><th>系统数量</th><td>${systems.length} 个</td></tr>
+    </table>`;
+    if (group?.description) {
+      html += `    <p>项目说明：${escapeHtml(group.description)}</p>`;
+    }
+
+    html += `
+    <h3>1.2 系统构成与测评概况</h3>
+    <table>
+      <tr><th>序号</th><th>系统名称</th><th>等级</th><th>测评标准</th><th>资产数</th><th>测评项</th><th>符合率</th></tr>
+${overviewTableRows}
+      <tr><td class="text-center">合计</td><td>—</td><td class="text-center">—</td><td>—</td><td class="text-center">${agg.assets}</td><td class="text-center">${agg.assessmentTotal}</td><td class="text-center">${agg.avgComplianceRate}%</td></tr>
+    </table>
+    <h3>1.3 问题分布与综合评价</h3>
+    <table>
+      <tr><th>序号</th><th>系统名称</th><th>高风险</th><th>中风险</th><th>低风险</th><th>合计</th></tr>
+${riskTableRows}
+      <tr><td class="text-center">合计</td><td>—</td><td class="text-center">${agg.highRisk}</td><td class="text-center">${agg.mediumRisk}</td><td class="text-center">${agg.lowRisk}</td><td class="text-center">${agg.issues}</td></tr>
+    </table>
+    <p>${escapeHtml(agg.narrative)}</p>
+    <div class="page-break"></div>
+    <h2>二、系统分册</h2>
+    <p>本报告共 ${systems.length} 个分册，每个分册对应一个被测系统的完整测评结果，章节自「一、报告概述」起独立编号。</p>`;
+
+    html += volumeSections.join('\n');
+    html += `
+  </body>
+</html>`;
+
+    return html;
   }
 
   private async generateHtmlContent(
@@ -2334,8 +2962,8 @@ export class ReportService {
       <h1>等级保护现场测评结果分析报告</h1>
       <!-- 改造：行业标准徽章（彩色圆角标签 + 标准代号） -->
       <div>
-        <span class="standard-badge" style="background:#${standard.badgeColor}">${standard.badgeLabel}</span>
-        <span class="standard-code">${standard.code} · ${standard.name}</span>
+        <span class="standard-badge" style="background:#${standard.badgeColor}">${escapeHtml(standard.badgeLabel)}</span>
+        <span class="standard-code">${escapeHtml(standard.code)} · ${escapeHtml(standard.name)}</span>
       </div>
       <p>项目名称：${escapeHtml(project?.name) || '-'}</p>
       <p>被测单位：${escapeHtml(project?.assessedUnit) || '-'}</p>
@@ -2384,9 +3012,9 @@ export class ReportService {
     <h2>二、项目概况</h2>
     <table>
       <tr><th width="25%">项目</th><th width="25%">内容</th><th width="25%">项目</th><th width="25%">内容</th></tr>
-      <tr><td>项目名称</td><td>${project?.name || '-'}</td><td>项目编号</td><td>${project?.projectNo || '-'}</td></tr>
-      <tr><td>被测单位</td><td>${project?.assessedUnit || '-'}</td><td>系统名称</td><td>${project?.systemName || '-'}</td></tr>
-      <tr><td>安全等级</td><td>第 ${project?.level || '-'} 级</td><td>测评标准</td><td>${standard.code}（${standard.standardType === 'industry' ? `${standard.industry || '行业'}行标` : '国标'}）</td></tr>
+      <tr><td>项目名称</td><td>${escapeHtml(project?.name) || '-'}</td><td>项目编号</td><td>${escapeHtml(project?.projectNo) || '-'}</td></tr>
+      <tr><td>被测单位</td><td>${escapeHtml(project?.assessedUnit) || '-'}</td><td>系统名称</td><td>${escapeHtml(project?.systemName) || '-'}</td></tr>
+      <tr><td>安全等级</td><td>第 ${escapeHtml(project?.level) || '-'} 级</td><td>测评标准</td><td>${escapeHtml(standard.code) || '-'}（${standard.standardType === 'industry' ? `${escapeHtml(standard.industry) || '行业'}行标` : '国标'}）</td></tr>
       <tr><td>资产数量</td><td>${assets.length} 台/套</td><td>-</td><td>-</td></tr>
     </table>
     <div class="page-break"></div>`;
@@ -2425,7 +3053,46 @@ export class ReportService {
           html += `<tr><td>${escapeHtml(d.name)}</td><td>${d.count} 个</td><td>${level}</td></tr>`;
         }
       }
-      html += `</table><div class="page-break"></div>`;
+      html += `</table>`;
+
+      // 4.3 风险分析：与 Word 链同源（issues.risk_consequence），由独立章节开关控制。
+      // 所有来自问题清单的用户字段一律 escapeHtml，避免破坏表格结构或注入 HTML。
+      if (options.includeSections.includes('riskAnalysis')) {
+        const riskItems = collectRiskAnalysis(issues);
+        if (riskItems.length > 0) {
+          html += `
+    <h3>4.3 风险分析</h3>
+    <p>针对测评发现的问题逐条开展风险分析，说明每项问题可能导致的风险。本次共完成 ${riskItems.length} 个问题的风险分析，结果如下。</p>
+    <table>
+      <tr><th>序号</th><th>问题标题</th><th>初判等级</th><th>问题分析</th></tr>`;
+          for (let i = 0; i < riskItems.length; i++) {
+            const r = riskItems[i];
+            html += `<tr><td>${i + 1}</td><td>${escapeHtml(r.title)}</td><td>${escapeHtml(r.level)}</td><td>${escapeHtml(r.result)}</td></tr>`;
+          }
+          html += `</table>`;
+        }
+      }
+
+      // 4.4 重大风险隐患识别与分析：与 Word 链同源，三要素各一段话 + 最终判定。
+      if (options.includeSections.includes('majorRisk')) {
+        const majorItems = collectMajorRisk(issues, (data as any).majorRiskAnalyses || []);
+        if (majorItems.length > 0) {
+          html += `<h3>4.4 重大风险隐患识别与分析</h3>`;
+          html += `<p>依据《重大风险隐患清单》，结合现场测评记录，按相关性、严重性、高发性三要素对测评发现的问题逐条开展重大风险隐患识别与分析。本次纳入 ${majorItems.length} 条已判定问题，结果如下。</p>`;
+          for (let i = 0; i < majorItems.length; i++) {
+            const m = majorItems[i];
+            html += `<div style="margin:0.8em 0;">`;
+            html += `<p style="margin:0.3em 0;"><strong>${i + 1}. 问题：</strong>${escapeHtml(m.title)}</p>`;
+            html += `<p style="margin:0.3em 0;">命中清单条目：${escapeHtml(m.catalogTitle)}</p>`;
+            if (m.relevance) html += `<p style="margin:0.3em 0;">相关性：${escapeHtml(m.relevance)}</p>`;
+            if (m.severity) html += `<p style="margin:0.3em 0;">严重性：${escapeHtml(m.severity)}</p>`;
+            if (m.frequency) html += `<p style="margin:0.3em 0;">高发性：${escapeHtml(m.frequency)}</p>`;
+            html += `<p style="margin:0.3em 0;">最终判定：<strong>${escapeHtml(m.verdictText)}</strong>${m.conclusion ? `。综合结论：${escapeHtml(m.conclusion)}` : ''}</p>`;
+            html += `</div>`;
+          }
+        }
+      }
+      html += `<div class="page-break"></div>`;
     }
 
     // 总体分析评价
@@ -2436,7 +3103,7 @@ export class ReportService {
         ? (await this.generateAiOverview(data)) || this.generateOverallAnalysis(data)
         : this.generateOverallAnalysis(data);
       for (const para of overallAnalysis) {
-        html += `<p style="margin: 0.5em 0;">${para}</p>`;
+        html += `<p style="margin: 0.5em 0;">${escapeHtml(para)}</p>`;
       }
       html += `<div class="page-break"></div>`;
     }
@@ -2513,9 +3180,9 @@ export class ReportService {
         ? (await this.generateAiRectification(data, isDetailed)) || this.generateRectificationPlan(data, isDetailed)
         : this.generateRectificationPlan(data, isDetailed);
       for (const section of rectificationPlan) {
-        html += `<h3>${section.title}</h3>`;
+        html += `<h3>${escapeHtml(section.title)}</h3>`;
         for (const para of section.content) {
-          html += `<p style="margin: 5px 0;">${para}</p>`;
+          html += `<p style="margin: 5px 0;">${escapeHtml(para)}</p>`;
         }
       }
       html += `<div class="page-break"></div>`;
@@ -2533,7 +3200,7 @@ export class ReportService {
         for (let i = 0; i < assets.length; i++) {
           const asset = assets[i];
           const categoryName = ASSET_CATEGORY_NAMES[asset.category] || asset.category || '-';
-          html += `<tr><td class="text-center">${i + 1}</td><td>${asset.name || '-'}</td><td>${categoryName}</td><td>${asset.os || '-'}</td><td>${asset.ip || '-'}</td></tr>`;
+          html += `<tr><td class="text-center">${i + 1}</td><td>${escapeHtml(asset.name) || '-'}</td><td>${escapeHtml(categoryName) || '-'}</td><td>${escapeHtml(asset.os) || '-'}</td><td>${escapeHtml(asset.ip) || '-'}</td></tr>`;
         }
         html += `</table>`;
       }

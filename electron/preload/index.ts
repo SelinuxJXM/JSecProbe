@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
-import type { AiChatStreamChunk, User, ApiBridge } from '../../shared/types';
+import type { AiChatStreamChunk, User, ApiBridge, RiskLevelJudgment, RiskLevelJudgeResult } from '../../shared/types';
 
 const ipc = <T = any>(channel: string) => (...args: any[]): Promise<T> => ipcRenderer.invoke(channel, ...args);
 
@@ -36,6 +36,38 @@ const externalLinkService: ApiBridge['externalLink'] = {
   export: ipc('externalLink:export'),
 };
 
+/** 项目分组：与 externalLink 一样用 ApiBridge 反向约束，避免主进程加了通道 preload 漏注册 */
+const projectGroupService: ApiBridge['projectGroup'] = {
+  list: ipc('projectGroup:list'),
+  get: ipc('projectGroup:get'),
+  create: ipc('projectGroup:create'),
+  update: ipc('projectGroup:update'),
+  remove: ipc('projectGroup:remove'),
+};
+
+/** 风险分析：同样用 ApiBridge 反向约束，避免主进程加了通道 preload 漏注册 */
+const riskAnalysisService: ApiBridge['riskAnalysis'] = {
+  list: ipc('riskAnalysis:list'),
+  save: ipc('riskAnalysis:save'),
+  clear: ipc('riskAnalysis:clear'),
+  generateDraft: ipc('riskAnalysis:generateDraft'),
+  exportExcel: ipc('riskAnalysis:exportExcel'),
+};
+
+/** 重大风险隐患识别与分析：清单 + 三要素判定 */
+const majorRiskService: ApiBridge['majorRisk'] = {
+  list: ipc('majorRisk:list'),
+  save: ipc('majorRisk:save'),
+  clear: ipc('majorRisk:clear'),
+  exportExcel: ipc('majorRisk:exportExcel'),
+  catalogList: ipc('majorRisk:catalogList'),
+  catalogSave: ipc('majorRisk:catalogSave'),
+  catalogRemove: ipc('majorRisk:catalogRemove'),
+  catalogImport: ipc('majorRisk:catalogImport'),
+  matchCatalog: ipc('majorRisk:matchCatalog'),
+  searchRecords: ipc('majorRisk:searchRecords'),
+};
+
 const aiService = {
   chat: ipc<{ content: string; suggestions: string[]; modelName?: string; switched?: boolean }>('ai:chat'),
   chatStream: ipc<any>('ai:chatStream'),
@@ -50,6 +82,20 @@ const aiService = {
   cancelIssueDescription: ipc<{ canceled: boolean }>('ai:cancelIssueDescription'),
   batchAnalyzeIssues: ipc<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }>; canceled?: boolean }>('ai:batchAnalyzeIssues'),
   cancelBatchIssueAnalysis: ipc<{ canceled: boolean }>('ai:cancelBatchIssueAnalysis'),
+  analyzeRisk: ipc<{ result: string }>('ai:analyzeRisk'),
+  cancelRiskAnalysis: ipc<{ canceled: boolean }>('ai:cancelRiskAnalysis'),
+  batchAnalyzeRisks: ipc<{
+    results: Array<{
+      issueId: string;
+      draft?: { result: string };
+      success: boolean;
+      error?: string;
+    }>;
+    canceled?: boolean;
+  }>('ai:batchAnalyzeRisks'),
+  judgeRiskLevel: ipc<RiskLevelJudgment>('ai:judgeRiskLevel'),
+  batchJudgeRiskLevels: ipc<{ results: RiskLevelJudgeResult[]; canceled: boolean }>('ai:batchJudgeRiskLevels'),
+  cancelRiskLevelJudge: ipc<{ canceled: boolean }>('ai:cancelRiskLevelJudge'),
   searchKnowledge: ipc<{ content: string; modelName?: string; referencedDocs: Array<{ id: string; title: string }> }>('ai:searchKnowledge'),
   recommendCommands: ipc<{ commands: any[]; aiMethods: any[] }>('ai:recommendCommands'),
   identifyAssets: ipc<{ assets: any[] }>('ai:identifyAssets'),
@@ -101,6 +147,32 @@ const aiService = {
     ipcRenderer.on('ai:batchIssueProgress', handler);
     return () => ipcRenderer.removeListener('ai:batchIssueProgress', handler);
   },
+  onBatchRiskProgress: (callback: (data: { stage: string; message: string; percent: number; current: number; total: number }) => void) => {
+    const handler = (_e: IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on('ai:batchRiskProgress', handler);
+    return () => ipcRenderer.removeListener('ai:batchRiskProgress', handler);
+  },
+  analyzeMajorRisk: ipc<{ catalogId: string; catalogTitle: string; relevance: string; severity: string; frequency: string; verdict: string; conclusion: string }>('ai:analyzeMajorRisk'),
+  cancelMajorRiskAnalysis: ipc<{ canceled: boolean }>('ai:cancelMajorRiskAnalysis'),
+  batchAnalyzeMajorRisks: ipc<{
+    results: Array<{
+      issueId: string;
+      draft?: { catalogId: string; catalogTitle: string; relevance: string; severity: string; frequency: string; verdict: string; conclusion: string };
+      success: boolean;
+      error?: string;
+    }>;
+    canceled?: boolean;
+  }>('ai:batchAnalyzeMajorRisks'),
+  onBatchMajorRiskProgress: (callback: (data: { stage: string; message: string; percent: number; current: number; total: number }) => void) => {
+    const handler = (_e: IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on('ai:batchMajorRiskProgress', handler);
+    return () => ipcRenderer.removeListener('ai:batchMajorRiskProgress', handler);
+  },
+  onBatchRiskLevelProgress: (callback: (data: { stage: string; message: string; percent: number; current: number; total: number }) => void) => {
+    const handler = (_e: IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on('ai:batchRiskLevelProgress', handler);
+    return () => ipcRenderer.removeListener('ai:batchRiskLevelProgress', handler);
+  },
 };
 
 const api = {
@@ -138,6 +210,8 @@ const api = {
           id: string; name: string; systemName: string; level: number; status: string;
           createdAt: string; assetCount: number; recordCount: number; issueCount: number; taskCount: number;
         }>;
+        /** 新版归档携带的项目分组台账；旧版归档无此字段 */
+        groups?: Array<{ id: string; name: string; projectNo?: string }>;
         counts: Record<string, number>;
         includeStandards: boolean; credentialsIncluded: boolean; encrypted: boolean;
       };
@@ -148,12 +222,17 @@ const api = {
     importArchive: ipc<{
       success: boolean;
       imported: Array<{ id: string; name: string; mode: 'new' | 'overwrite' | 'copy' }>;
+      /** 本次导入还原出的项目分组（系统数用于前端提示） */
+      groups?: Array<{ id: string; name: string; systemCount: number }>;
       skipped: string[];
       restoredFiles: number;
       missingFiles: number;
       warnings: string[];
     }>('project:importArchive'),
   },
+  projectGroup: projectGroupService,
+  riskAnalysis: riskAnalysisService,
+  majorRisk: majorRiskService,
   asset: {
     list: ipc<any>('asset:list'),
     create: ipc<any>('asset:create'),
@@ -217,11 +296,10 @@ const api = {
     batchRemove: ipc<void>('issue:batchRemove'),
     batchUpdateStatus: ipc<void>('issue:batchUpdateStatus'),
     updateEvidence: ipc<void>('issue:updateEvidence'),
-    importExcel: ipc<{ count: number }>('issue:importExcel'),
-    downloadTemplate: ipc<string>('issue:downloadTemplate'),
   },
   report: {
     generate: ipc<{ filePath: string }>('report:generate'),
+    generateProject: ipc<{ filePath: string }>('report:generateProject'),
   },
   knowledge: {
     listCategories: ipc<any>('knowledge:listCategories'),

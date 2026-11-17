@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     v-model="visible"
-    title="生成项目报告"
+    :title="scope === 'group' ? '生成项目合册报告' : '生成项目报告'"
     width="640px"
     :close-on-click-modal="false"
     destroy-on-close
@@ -78,7 +78,10 @@
         <div class="section-title">
           <span class="section-icon"><el-icon><Files /></el-icon></span>
           <span>包含章节</span>
-          <span class="section-hint">已选 {{ config.includeSections.length }}/10</span>
+          <span class="section-hint">已选 {{ config.includeSections.length }}/12</span>
+        </div>
+        <div v-if="scope === 'group'" class="group-tip">
+          合册册首固定包含项目综述与总目录；下方章节开关作用于每个系统分册。
         </div>
         <el-checkbox-group v-model="config.includeSections" class="section-selector">
           <el-checkbox value="cover" class="section-option">
@@ -98,6 +101,12 @@
           </el-checkbox>
           <el-checkbox value="results" class="section-option">
             <span class="section-name">测评结果汇总</span>
+          </el-checkbox>
+          <el-checkbox value="riskAnalysis" class="section-option">
+            <span class="section-name">风险分析</span>
+          </el-checkbox>
+          <el-checkbox value="majorRisk" class="section-option">
+            <span class="section-name">重大风险隐患识别与分析</span>
           </el-checkbox>
           <el-checkbox value="analysis" class="section-option">
             <span class="section-name">总体分析评价</span>
@@ -127,7 +136,9 @@
             inactive-text="使用内置模板生成"
             class="ai-switch"
           />
-          <div class="ai-hint">启用后，将基于实际测评数据通过 AI 生成更贴合项目的总体分析评价和整改建议章节</div>
+          <div class="ai-hint">
+            启用后，将基于实际测评数据通过 AI 生成更贴合项目的总体分析评价和整改建议章节<template v-if="scope === 'group'">；合册会为每个系统分别调用一次 AI，系统较多时耗时较长</template>。
+          </div>
         </div>
       </div>
 
@@ -163,8 +174,10 @@ import { Document, Files, Tickets, MagicStick, FolderOpened } from '@element-plu
 
 const visible = ref(false);
 const generating = ref(false);
-const projectId = ref('');
+/** 报告目标 id：单系统模式为 projects.id，合册模式为 project_groups.id */
+const targetId = ref('');
 const projectName = ref('');
+const scope = ref<'project' | 'group'>('project');
 const savePath = ref('');
 
 const config = reactive({
@@ -178,6 +191,8 @@ const config = reactive({
     'projectInfo',
     'methodology',
     'results',
+    'riskAnalysis',
+    'majorRisk',
     'analysis',
     'issues',
     'recommendations',
@@ -185,15 +200,18 @@ const config = reactive({
   ],
 });
 
-function open(id: string, name: string) {
-  projectId.value = id;
+/** scope='group' 时生成项目合册（项目综述 + 各系统分册），id 传 project_groups.id */
+function open(id: string, name: string, reportScope: 'project' | 'group' = 'project') {
+  targetId.value = id;
   projectName.value = name;
+  scope.value = reportScope;
   savePath.value = '';
   visible.value = true;
 }
 
 async function handleSelectSavePath() {
-  const defaultFileName = `测评报告_${projectName.value || '项目'}_${new Date().toISOString().slice(0, 10)}${config.format === 'docx' ? '.docx' : '.pdf'}`;
+  const label = scope.value === 'group' ? '测评合册报告' : '测评报告';
+  const defaultFileName = `${label}_${projectName.value || '项目'}_${new Date().toISOString().slice(0, 10)}${config.format === 'docx' ? '.docx' : '.pdf'}`;
 
   const res = await window.api.dialog.showSaveDialog({
     defaultPath: defaultFileName,
@@ -221,17 +239,19 @@ async function handleGenerate() {
 
   generating.value = true;
   try {
-    const res = await window.api.report.generate({
+    const payload = {
       format: config.format,
       template: config.template,
       aiEnhanced: config.aiEnhanced,
       includeSections: [...config.includeSections],
-      projectId: projectId.value,
       savePath: savePath.value,
-    });
+    };
+    const res = scope.value === 'group'
+      ? await window.api.report.generateProject({ ...payload, groupId: targetId.value })
+      : await window.api.report.generate({ ...payload, projectId: targetId.value });
 
     if (res.success && res.data) {
-      ElMessage.success('报告生成成功');
+      ElMessage.success(scope.value === 'group' ? '合册报告生成成功' : '报告生成成功');
       visible.value = false;
       window.api.shell.openPath(res.data.filePath);
     } else {
@@ -287,6 +307,12 @@ defineExpose({ open });
   font-size: 12px;
   font-weight: 400;
   color: #9ca3af;
+}
+
+.group-tip {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary, #8b95a7);
 }
 
 .format-selector {

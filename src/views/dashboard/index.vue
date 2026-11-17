@@ -13,7 +13,7 @@
           </div>
           <div class="stat-content">
             <div class="stat-value">{{ stats.projectCount }}</div>
-            <div class="stat-label">项目总数</div>
+            <div class="stat-label">测评系统数</div>
           </div>
         </div>
       </el-col>
@@ -45,12 +45,12 @@
       <el-col :span="16">
         <div class="card p-md">
           <div class="card-header">
-            <span class="card-title">最近项目</span>
+            <span class="card-title">最近系统</span>
             <el-button type="primary" link @click="$router.push('/projects')">查看全部</el-button>
           </div>
           <el-table :data="recentProjects" style="width: 100%" v-loading="loading">
-            <el-table-column prop="name" label="项目名称" />
-            <el-table-column prop="systemName" label="系统名称" />
+            <el-table-column prop="name" label="系统名称" />
+            <el-table-column prop="assessedUnit" label="被测单位" />
             <el-table-column prop="level" label="等级" width="80">
               <template #default="{ row }">
                 <el-tag size="small">第{{ row.level }}级</el-tag>
@@ -74,7 +74,7 @@
       <el-col :span="8">
         <div class="card p-md">
           <div class="card-header">
-            <span class="card-title">项目状态分布</span>
+            <span class="card-title">系统状态分布</span>
           </div>
           <v-chart class="chart" :option="statusChartOption" autoresize />
         </div>
@@ -85,7 +85,7 @@
       <el-col :span="16">
         <div class="card p-md">
           <div class="card-header">
-            <span class="card-title">项目创建趋势（近 6 个月）</span>
+            <span class="card-title">系统创建趋势（近 6 个月）</span>
           </div>
           <v-chart v-if="hasTrendData" class="chart" :option="trendChartOption" autoresize />
           <el-empty v-else description="暂无数据" :image-size="80" />
@@ -136,7 +136,7 @@
       <el-col :span="16">
         <div class="card p-md">
           <div class="card-header">
-            <span class="card-title">项目等级分布</span>
+            <span class="card-title">系统等级分布</span>
           </div>
           <v-chart class="chart" :option="levelChartOption" autoresize />
         </div>
@@ -384,7 +384,7 @@ const trendChartOption = computed(() => ({
       itemStyle: { color: '#1B5FD9', borderRadius: [4, 4, 0, 0] },
     },
     {
-      name: '累计项目',
+      name: '累计系统',
       type: 'line',
       yAxisIndex: 1,
       data: trendData.value.cumulative,

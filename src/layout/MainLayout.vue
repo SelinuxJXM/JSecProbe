@@ -37,9 +37,17 @@
               <el-icon><SidebarIcon name="clipboard" /></el-icon>
               <template #title>现场核查</template>
             </el-menu-item>
+            <el-menu-item index="/projects/risk-analysis">
+              <el-icon><SidebarIcon name="risk" /></el-icon>
+              <template #title>风险分析</template>
+            </el-menu-item>
             <el-menu-item index="/projects/issues">
               <el-icon><SidebarIcon name="shield" /></el-icon>
-              <template #title>问题清单</template>
+              <template #title>整改建议</template>
+            </el-menu-item>
+            <el-menu-item index="/projects/major-risk">
+              <el-icon><SidebarIcon name="major-risk" /></el-icon>
+              <template #title>重大风险隐患</template>
             </el-menu-item>
           </el-sub-menu>
           
@@ -499,9 +507,12 @@ const activeMenu = computed(() => {
   // 匹配项目子路由（如 /projects/xxx/assets）
   if (path.startsWith('/projects/') && /\/assets(\/|$)/.test(path)) return '/projects/assets';
   if (path.startsWith('/projects/') && /\/assessment(\/|$)/.test(path)) return '/projects/assessment';
+  if (path.startsWith('/projects/') && /\/risk-analysis(\/|$)/.test(path)) return '/projects/risk-analysis';
   if (path.startsWith('/projects/') && /\/issues(\/|$)/.test(path)) return '/projects/issues';
-  // 项目列表页
+  if (path.startsWith('/projects/') && /\/major-risk(\/|$)/.test(path)) return '/projects/major-risk';
+  // 项目列表页 / 项目下的系统列表页：都归到「项目首页」这一项
   if (path === '/projects/list' || path === '/projects') return '/projects/list';
+  if (path.startsWith('/projects/') && /\/systems(\/|$)/.test(path)) return '/projects/list';
   return path;
 });
 
@@ -525,7 +536,16 @@ async function loadCurrentProjectName() {
     const res = await window.api.project.get(pid);
     // 快速切换项目时，丢弃已过期的响应
     if (token !== nameRequestToken) return;
-    currentProjectName.value = res.success && res.data ? (res.data.name || res.data.customerName || '') : '';
+    if (res.success && res.data) {
+      currentProjectName.value = res.data.name || res.data.customerName || '';
+      return;
+    }
+    currentProjectName.value = '';
+    // localStorage 可能残留已被删除的项目 ID：project:get 查不到会抛「项目不存在」，
+    // 每次进页面都刷一条 error 日志，下游页面还会拿着脏 ID 继续查库。
+    // 面包屑是启动时最早消费这个 ID 的地方，在这里一次性清理，
+    // 清空后 watch 会再触发一次 loadCurrentProjectName，但 pid 为空会直接返回。
+    if (appStore.currentProjectId === pid) appStore.clearCurrentProject();
   } catch {
     if (token === nameRequestToken) currentProjectName.value = '';
   }

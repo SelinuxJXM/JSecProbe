@@ -10,6 +10,8 @@ export interface IpcResponse<T = unknown> {
 
 export interface Project {
   id: string;
+  /** 所属项目分组；历史升级数据由启动兜底自动回填 */
+  groupId?: string;
   name: string;
   projectNo?: string;
   systemName: string;
@@ -39,10 +41,50 @@ export interface ProjectListParams {
   status?: string;
   level?: number;
   excludeArchived?: boolean;
+  /** 只列某个项目分组下的系统；不传则列全部 */
+  groupId?: string;
 }
 
 export interface ProjectListResult {
   list: Project[];
+  total: number;
+}
+
+/**
+ * 项目分组（委托 / 合同批次）。
+ * 一个分组下可挂多个系统，每个系统对应 `projects` 表的一行，
+ * 系统构成 / 现场测评 / 问题清单的数据隔离仍由该行的 id（project_id）承担。
+ */
+export interface ProjectGroup {
+  id: string;
+  name: string;
+  projectNo?: string;
+  assessedUnit?: string;
+  customerName?: string;
+  assessor?: string;
+  startDate?: string;
+  endDate?: string;
+  description?: string;
+  status: 'draft' | 'in_progress' | 'completed' | 'archived';
+  sortOrder: number;
+  /** 该分组下的系统数（由后端聚合） */
+  systemCount: number;
+  /** 各系统测评进度的平均值（由后端聚合） */
+  progress: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectGroupListParams {
+  page: number;
+  pageSize: number;
+  keyword?: string;
+  status?: string;
+  excludeArchived?: boolean;
+}
+
+export interface ProjectGroupListResult {
+  list: ProjectGroup[];
   total: number;
 }
 
@@ -258,8 +300,234 @@ export interface Issue {
   fixedDate?: string;
   assessor?: string;
   evidenceFiles?: string;
+  /** 风险分析结论（可选，未分析时为 undefined / null） */
+  riskLikelihood?: RiskLevel3;
+  riskImpact?: RiskLevel3;
+  riskScore?: number;
+  riskEvaluatedLevel?: RiskLevel3;
+  riskThreat?: string;
+  riskConsequence?: string;
+  riskStrategy?: RiskStrategy;
+  riskCountermeasure?: string;
+  riskResidual?: string;
+  riskAnalyst?: string;
+  riskAnalyzedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 风险三级枚举：可能性、影响程度、分析后结论等级共用 */
+export type RiskLevel3 = 'high' | 'medium' | 'low';
+/** 风险处置策略：降低 / 转移 / 规避 / 接受 */
+export type RiskStrategy = 'mitigate' | 'transfer' | 'avoid' | 'accept';
+
+/**
+ * 风险分析行：issues 行 + 风险分析结果的合成视图。
+ * 风险分析只对每条问题给出一段「分析结果」文本（形如"可能导致XXXX的风险"），
+ * 不做可能性×影响矩阵、风险值或结论等级评定；问题本身的初判等级仍来自问题清单。
+ */
+export interface IssueRiskAnalysis {
+  issueId: string;
+  projectId: string;
+  issueTitle: string;
+  issueDescription: string;
+  securityDomain: string;
+  controlPoint: string;
+  controlName: string;
+  assetName?: string;
+  /** 问题清单里的原始风险等级（初判，仅用于展示与统计） */
+  riskLevel: RiskLevel3;
+  status: string;
+  rectificationSuggestion?: string;
+  /** 分析结果文本：可能导致XXXX的风险 */
+  result?: string;
+  analyst?: string;
+  analyzedAt?: string;
+}
+
+export interface RiskAnalysisSavePayload {
+  issueId: string;
+  projectId: string;
+  /** 分析结果文本，形如"可能导致XXXX的风险" */
+  result: string;
+  analyst?: string;
+}
+
+export interface RiskAnalysisSummary {
+  total: number;
+  analyzed: number;
+  pending: number;
+  /** 按问题初判风险等级统计（与问题清单口径一致） */
+  high: number;
+  medium: number;
+  low: number;
+}
+
+export interface RiskAnalysisListResult {
+  list: IssueRiskAnalysis[];
+  summary: RiskAnalysisSummary;
+}
+
+/** AI 生成的风险分析结果草稿（仅一段文本，落库统一走 riskAnalysis:save） */
+export interface RiskAiDraft {
+  result: string;
+}
+
+/** 批量风险分析进度推送（ai:batchRiskProgress 事件） */
+export interface RiskBatchProgress {
+  stage: string;
+  message: string;
+  percent: number;
+  current: number;
+  total: number;
+}
+
+/** AI 依据等保高风险判定指引给出的定级结论 */
+export interface RiskLevelJudgment {
+  level: 'high' | 'medium' | 'low';
+  /** 命中的指引条目 ID；未匹配到任何条目时为空字符串 */
+  matchedId: string;
+  /** 命中的指引条目标题，便于前端展示依据 */
+  matchedTitle?: string;
+  /** 判定依据（40～90 字） */
+  reason: string;
+}
+
+/** 单条 / 批量风险等级判定输入 */
+export interface RiskLevelJudgeParams {
+  issueId?: string;
+  issueTitle: string;
+  issueDescription: string;
+  securityDomain: string;
+  controlPoint: string;
+  controlName: string;
+  assetName?: string;
+  rectificationSuggestion?: string;
+  currentLevel?: string;
+}
+
+/** 批量定级结果项 */
+export interface RiskLevelJudgeResult {
+  issueId: string;
+  judgment?: RiskLevelJudgment;
+  success: boolean;
+  error?: string;
+}
+
+/* ============================================================================
+ * 重大风险隐患识别与分析
+ * 清单（majorRiskCatalog）全局共用；分析结论（majorRiskAnalysis）一条问题一份。
+ * ==========================================================================*/
+
+/** 重大风险隐患清单条目（用户提供内容后导入/编辑，全局共用） */
+export interface MajorRiskCatalogItem {
+  id: string;
+  code?: string;
+  title: string;
+  category?: string;
+  criteria?: string;
+  keywords?: string;
+  source?: string;
+  sortOrder: number;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 最终判定：属于重大风险隐患 / 不属于 / 待判定 */
+export type MajorRiskVerdict = 'major' | 'non_major' | 'pending';
+
+/** 一条问题的三要素分析结果（视图行：issues 字段 + 分析字段） */
+export interface MajorRiskRow {
+  issueId: string;
+  projectId: string;
+  issueTitle: string;
+  issueDescription: string;
+  securityDomain: string;
+  controlPoint: string;
+  controlName: string;
+  assetName?: string;
+  riskLevel: RiskLevel3;
+  status: string;
+  /** 命中的清单条目 id（快照名一并给，清单条目被删也能显示依据） */
+  catalogId?: string;
+  catalogTitle?: string;
+  /** 相关性：与清单条目的关联程度，一段话 */
+  relevance?: string;
+  /** 严重性：危害后果的严重程度，一段话 */
+  severity?: string;
+  /** 高发性：问题反复出现的可能性，一段话 */
+  frequency?: string;
+  verdict: MajorRiskVerdict;
+  conclusion?: string;
+  analyst?: string;
+  analyzedAt?: string;
+  reviewedAt?: string;
+  source: 'ai' | 'manual';
+}
+
+export interface MajorRiskSummary {
+  total: number;
+  analyzed: number;
+  pending: number;
+  major: number;
+  nonMajor: number;
+  /** 清单条目总数（启用的） */
+  catalogCount: number;
+}
+
+export interface MajorRiskListResult {
+  list: MajorRiskRow[];
+  summary: MajorRiskSummary;
+}
+
+/** 保存/复核一条分析结果（后端带归属校验与字段白名单） */
+export interface MajorRiskSavePayload {
+  issueId: string;
+  projectId: string;
+  catalogId?: string;
+  catalogTitle?: string;
+  relevance?: string;
+  severity?: string;
+  frequency?: string;
+  verdict: MajorRiskVerdict;
+  conclusion?: string;
+  analyst?: string;
+  source?: 'ai' | 'manual';
+}
+
+/** AI 生成的三要素草稿（不写库，前端回填后走 majorRisk:save 落库） */
+export interface MajorRiskAiDraft {
+  catalogId: string;
+  catalogTitle: string;
+  relevance: string;
+  severity: string;
+  frequency: string;
+  verdict: MajorRiskVerdict;
+  conclusion: string;
+}
+
+/** 单条 AI 识别输入：问题描述来自风险分析页，附现场记录检索片段 */
+export interface MajorRiskAiParams {
+  issueId: string;
+  projectId: string;
+  issueTitle: string;
+  issueDescription: string;
+  securityDomain: string;
+  controlPoint: string;
+  controlName: string;
+  assetName?: string;
+  riskLevel?: string;
+  rectificationSuggestion?: string;
+}
+
+/** 批量识别进度推送（ai:batchMajorRiskProgress 事件） */
+export interface MajorRiskBatchProgress {
+  stage: string;
+  message: string;
+  percent: number;
+  current: number;
+  total: number;
 }
 
 export interface IssueSummary {
@@ -649,6 +917,14 @@ export interface ApiBridge {
       strategy: ProjectArchiveConflictStrategy;
     }) => Promise<IpcResponse<ProjectArchiveImportResult>>;
   };
+  /** 项目分组：一个项目下可包含多个独立测评的系统 */
+  projectGroup: {
+    list: (params: ProjectGroupListParams) => Promise<IpcResponse<ProjectGroupListResult>>;
+    get: (id: string) => Promise<IpcResponse<ProjectGroup>>;
+    create: (data: Partial<ProjectGroup>) => Promise<IpcResponse<ProjectGroup>>;
+    update: (id: string, data: Partial<ProjectGroup>) => Promise<IpcResponse<ProjectGroup>>;
+    remove: (id: string) => Promise<IpcResponse<void>>;
+  };
   asset: {
     list: (params: AssetListParams) => Promise<IpcResponse<AssetListResult>>;
     create: (data: Partial<Asset>) => Promise<IpcResponse<Asset>>;
@@ -744,8 +1020,29 @@ export interface ApiBridge {
     batchRemove: (ids: string[]) => Promise<IpcResponse<void>>;
     batchUpdateStatus: (ids: string[], status?: string, riskLevel?: string) => Promise<IpcResponse<void>>;
     updateEvidence: (id: string, evidenceFiles: string[]) => Promise<IpcResponse<void>>;
-    importExcel: (projectId: string, filePath: string) => Promise<IpcResponse<{ count: number; errors?: string[] }>>;
-    downloadTemplate: (projectId: string) => Promise<IpcResponse<string>>;
+  };
+  /** 风险分析：读写 issues 行上的 risk_* 列，一条问题一份分析结论 */
+  riskAnalysis: {
+    list: (params: { projectId: string }) => Promise<IpcResponse<RiskAnalysisListResult>>;
+    save: (payload: RiskAnalysisSavePayload) => Promise<IpcResponse<IssueRiskAnalysis>>;
+    clear: (issueId: string) => Promise<IpcResponse<void>>;
+    generateDraft: (projectId: string) => Promise<IpcResponse<{ count: number }>>;
+    exportExcel: (projectId: string) => Promise<IpcResponse<string>>;
+  };
+  /** 重大风险隐患识别与分析：全局清单 + 一条问题一份三要素判定 */
+  majorRisk: {
+    list: (params: { projectId: string }) => Promise<IpcResponse<MajorRiskListResult>>;
+    save: (payload: MajorRiskSavePayload) => Promise<IpcResponse<MajorRiskRow>>;
+    clear: (issueId: string) => Promise<IpcResponse<void>>;
+    exportExcel: (projectId: string) => Promise<IpcResponse<string>>;
+    catalogList: () => Promise<IpcResponse<MajorRiskCatalogItem[]>>;
+    catalogSave: (item: Partial<MajorRiskCatalogItem> & { id?: string }) => Promise<IpcResponse<MajorRiskCatalogItem>>;
+    catalogRemove: (id: string) => Promise<IpcResponse<void>>;
+    catalogImport: (items: Array<Partial<MajorRiskCatalogItem>>) => Promise<IpcResponse<{ count: number; replaced: boolean }>>;
+    /** AI 识别前按当前问题从清单召回的候选条目（供展示"命中依据"） */
+    matchCatalog: (params: MajorRiskAiParams) => Promise<IpcResponse<MajorRiskCatalogItem[]>>;
+    /** AI 识别时一并检索的现场测评记录片段 */
+    searchRecords: (params: { projectId: string; issueId?: string; keyword?: string }) => Promise<IpcResponse<Array<{ id: string; itemId: string; assetName: string; result: string; findings: string; evidence: string; commandOutput: string }>>>;
   };
   report: {
     generate: (options: {
@@ -753,6 +1050,15 @@ export interface ApiBridge {
       template: 'standard' | 'detailed' | 'simple';
       includeSections: string[];
       projectId: string;
+      savePath: string;
+      aiEnhanced?: boolean;
+    }) => Promise<IpcResponse<{ filePath: string }>>;
+    /** 项目级合册报告：项目综述 + 各系统分册装订，groupId 为 project_groups.id */
+    generateProject: (options: {
+      format: 'pdf' | 'docx';
+      template: 'standard' | 'detailed' | 'simple';
+      includeSections: string[];
+      groupId: string;
       savePath: string;
       aiEnhanced?: boolean;
     }) => Promise<IpcResponse<{ filePath: string }>>;
@@ -850,6 +1156,42 @@ export interface ApiBridge {
     cancelIssueDescription: () => Promise<IpcResponse<{ canceled: boolean }>>;
     batchAnalyzeIssues: (params: { issues: Array<{ issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; itemId?: string }>; projectId?: string }) => Promise<IpcResponse<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }>; canceled?: boolean }>>;
     cancelBatchIssueAnalysis: () => Promise<IpcResponse<{ canceled: boolean }>>;
+    analyzeRisk: (params: {
+      issueId?: string;
+      issueTitle: string;
+      issueDescription: string;
+      securityDomain: string;
+      controlPoint: string;
+      controlName: string;
+      assetName?: string;
+      riskLevel?: string;
+      rectificationSuggestion?: string;
+    }) => Promise<IpcResponse<RiskAiDraft>>;
+    cancelRiskAnalysis: () => Promise<IpcResponse<{ canceled: boolean }>>;
+    batchAnalyzeRisks: (params: { issues: Array<{
+      issueId: string;
+      issueTitle: string;
+      issueDescription: string;
+      securityDomain: string;
+      controlPoint: string;
+      controlName: string;
+      assetName?: string;
+      riskLevel?: string;
+      rectificationSuggestion?: string;
+    }> }) => Promise<IpcResponse<{ results: Array<{ issueId: string; draft?: RiskAiDraft; success: boolean; error?: string }>; canceled?: boolean }>>;
+    onBatchRiskProgress: (callback: (data: RiskBatchProgress) => void) => () => void;
+    /** 重大风险隐患：三要素识别（相关性/严重性/高发性 + 最终判定 + 现场记录检索） */
+    analyzeMajorRisk: (params: MajorRiskAiParams) => Promise<IpcResponse<MajorRiskAiDraft>>;
+    cancelMajorRiskAnalysis: () => Promise<IpcResponse<{ canceled: boolean }>>;
+    batchAnalyzeMajorRisks: (params: { issues: MajorRiskAiParams[] }) => Promise<IpcResponse<{
+      results: Array<{ issueId: string; draft?: MajorRiskAiDraft; success: boolean; error?: string }>;
+      canceled?: boolean;
+    }>>;
+    onBatchMajorRiskProgress: (callback: (data: MajorRiskBatchProgress) => void) => () => void;
+    judgeRiskLevel: (params: RiskLevelJudgeParams) => Promise<IpcResponse<RiskLevelJudgment>>;
+    batchJudgeRiskLevels: (params: { issues: RiskLevelJudgeParams[] }) => Promise<IpcResponse<{ results: RiskLevelJudgeResult[]; canceled: boolean }>>;
+    cancelRiskLevelJudge: () => Promise<IpcResponse<{ canceled: boolean }>>;
+    onBatchRiskLevelProgress: (callback: (data: RiskBatchProgress) => void) => () => void;
     searchKnowledge: (params: { question: string }) => Promise<IpcResponse<{ content: string; modelName?: string; referencedDocs: Array<{ id: string; title: string }> }>>;
     recommendCommands: (params: { controlPoint?: string; controlName?: string; requirement?: string; assetLabel?: string; brand?: string; os?: string; deviceType?: string }) => Promise<IpcResponse<{
       commands: Array<Record<string, any> & { reason?: string; source?: 'library' }>;

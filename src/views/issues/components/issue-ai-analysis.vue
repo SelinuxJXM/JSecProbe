@@ -586,7 +586,7 @@ defineExpose({
 // ==================== 5步流程指示器 ====================
 .flow-steps-container {
   padding: 16px 0 20px;
-  border-bottom: 1px solid #E5E7EB;
+  border-bottom: 1px solid var(--color-border-light);
   margin-bottom: 20px;
 }
 
@@ -608,8 +608,8 @@ defineExpose({
     width: 28px;
     height: 28px;
     border-radius: 50%;
-    background: #E5E7EB;
-    color: #9CA3AF;
+    background: var(--color-border-light);
+    color: var(--color-text-tertiary);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -620,7 +620,7 @@ defineExpose({
 
   .step-label {
     font-size: 11px;
-    color: #9CA3AF;
+    color: var(--color-text-tertiary);
     white-space: nowrap;
     transition: color 0.3s;
   }
@@ -629,14 +629,14 @@ defineExpose({
     opacity: 1;
 
     .step-icon {
-      background: #1B5FD9;
+      background: var(--color-primary);
       color: #fff;
       box-shadow: 0 0 0 4px rgba(27, 95, 217, 0.2);
       animation: stepPulse 1.5s ease infinite;
     }
 
     .step-label {
-      color: #1B5FD9;
+      color: var(--color-primary);
       font-weight: 600;
     }
   }
@@ -645,12 +645,12 @@ defineExpose({
     opacity: 0.7;
 
     .step-icon {
-      background: #10B981;
+      background: var(--color-success);
       color: #fff;
     }
 
     .step-label {
-      color: #10B981;
+      color: var(--color-success);
     }
   }
 }
@@ -658,13 +658,13 @@ defineExpose({
 .step-connector {
   width: 32px;
   height: 2px;
-  background: #E5E7EB;
+  background: var(--color-border-light);
   margin: 0 4px;
   margin-bottom: 22px;
   transition: background 0.3s ease;
 
   &.active {
-    background: #10B981;
+    background: var(--color-success);
   }
 }
 
@@ -683,7 +683,7 @@ defineExpose({
   .loading-spinner {
     width: 48px;
     height: 48px;
-    border: 3px solid #E5E7EB;
+    border: 3px solid var(--color-border-light);
     border-top-color: var(--color-primary, #1B5FD9);
     border-radius: 50%;
     animation: spin 1s linear infinite;
@@ -691,13 +691,13 @@ defineExpose({
 
   .loading-text {
     margin-top: 16px;
-    color: #6B7280;
+    color: var(--color-text-secondary);
     font-size: 14px;
   }
 
   .loading-elapsed {
     margin-top: 6px;
-    color: #9CA3AF;
+    color: var(--color-text-tertiary);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
   }
@@ -808,6 +808,17 @@ defineExpose({
 }
 
 .ai-batch-dialog {
+  :deep(.el-dialog__header) {
+    text-align: center;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    margin: 0;
+    padding: 16px 20px;
+  }
+
+  .el-dialog__body {
+    padding: 20px 24px;
+  }
+
   .ai-dialog-header {
     .ai-dialog-header-actions {
       display: flex;
@@ -862,13 +873,13 @@ html:not(.dark) .ai-issue-dialog {
 
     .stage-text {
       font-size: 13px;
-      color: #374151;
+      color: var(--color-text-primary);
       font-weight: 500;
     }
 
     .percent-text {
       font-size: 13px;
-      color: #1B5FD9;
+      color: var(--color-primary);
       font-weight: 700;
     }
   }
@@ -876,7 +887,7 @@ html:not(.dark) .ai-issue-dialog {
 
 .ai-progress-bar {
   height: 14px;
-  background: #E5E7EB;
+  background: var(--color-border-light);
   border-radius: var(--radius-md);
   overflow: hidden;
 }
@@ -889,11 +900,11 @@ html:not(.dark) .ai-issue-dialog {
 }
 
 .ai-progress-bar.stage-error .ai-progress-fill {
-  background: #DC2626;
+  background: var(--color-danger);
 }
 
 .ai-progress-bar.stage-done .ai-progress-fill {
-  background: #10B981;
+  background: var(--color-success);
 }
 
 // ==================== 时间和统计信息 ====================
@@ -903,9 +914,9 @@ html:not(.dark) .ai-issue-dialog {
   gap: 24px;
   margin-top: 12px;
   padding: 10px 16px;
-  background: #F9FAFB;
+  background: var(--color-bg-page);
   border-radius: var(--radius-md);
-  border: 1px solid #E5E7EB;
+  border: 1px solid var(--color-border-light);
 }
 
 .meta-item {
@@ -917,30 +928,30 @@ html:not(.dark) .ai-issue-dialog {
 
 .meta-label {
   font-size: 11px;
-  color: #9CA3AF;
+  color: var(--color-text-tertiary);
 }
 
 .meta-value {
   font-size: 13px;
-  color: #374151;
+  color: var(--color-text-primary);
   font-weight: 600;
 }
 
 // ==================== 问题列表进度 ====================
 .issue-list-progress {
   margin-top: 16px;
-  border: 1px solid #E5E7EB;
+  border: 1px solid var(--color-border-light);
   border-radius: var(--radius-md);
   overflow: hidden;
 }
 
 .issue-list-header {
   padding: 10px 16px;
-  background: #F9FAFB;
+  background: var(--color-bg-page);
   font-size: 12px;
   font-weight: 600;
-  color: #374151;
-  border-bottom: 1px solid #E5E7EB;
+  color: var(--color-text-primary);
+  border-bottom: 1px solid var(--color-border-light);
 }
 
 .issue-list-container {
@@ -958,42 +969,42 @@ html:not(.dark) .ai-issue-dialog {
   transition: background 0.2s;
 
   &:hover {
-    background: #F9FAFB;
+    background: var(--color-bg-page);
   }
 
   &.done {
     .issue-status-icon {
-      color: #10B981;
+      color: var(--color-success);
     }
   }
 
   &.processing {
-    background: #EFF6FF;
+    background: var(--color-primary-subtle);
 
     .issue-status-icon {
-      color: #1B5FD9;
+      color: var(--color-primary);
     }
 
     .issue-name {
-      color: #1B5FD9;
+      color: var(--color-primary);
       font-weight: 500;
     }
   }
 
   &.failed {
     .issue-status-icon {
-      color: #DC2626;
+      color: var(--color-danger);
     }
 
     .issue-name {
-      color: #DC2626;
+      color: var(--color-danger);
       text-decoration: line-through;
     }
   }
 
   &.pending {
     .issue-name {
-      color: #9CA3AF;
+      color: var(--color-text-tertiary);
     }
   }
 }
@@ -1015,7 +1026,7 @@ html:not(.dark) .ai-issue-dialog {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #D1D5DB;
+  background: var(--color-text-quaternary);
 }
 
 .issue-name {
@@ -1023,7 +1034,7 @@ html:not(.dark) .ai-issue-dialog {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #374151;
+  color: var(--color-text-primary);
 }
 
 // ==================== 完成统计 ====================
@@ -1033,9 +1044,9 @@ html:not(.dark) .ai-issue-dialog {
   gap: 24px;
   margin-top: 16px;
   padding: 12px 16px;
-  background: #F0FDF4;
+  background: var(--color-success-light);
   border-radius: var(--radius-md);
-  border: 1px solid #BBF7D0;
+  border: 1px solid rgba(24, 169, 87, 0.35);
 }
 
 .summary-item {
@@ -1046,11 +1057,11 @@ html:not(.dark) .ai-issue-dialog {
   font-weight: 600;
 
   &.success {
-    color: #059669;
+    color: var(--color-success);
   }
 
   &.failed {
-    color: #DC2626;
+    color: var(--color-danger);
   }
 }
 
@@ -1066,12 +1077,12 @@ html:not(.dark) .ai-issue-dialog {
 }
 
 .summary-item.success .summary-icon {
-  background: #059669;
+  background: var(--color-success);
   color: #fff;
 }
 
 .summary-item.failed .summary-icon {
-  background: #DC2626;
+  background: var(--color-danger);
   color: #fff;
 }
 
@@ -1087,7 +1098,7 @@ html:not(.dark) .ai-issue-dialog {
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #1B5FD9;
+    background: var(--color-primary);
     animation: dotBounce 1.4s ease-in-out infinite;
 
     &:nth-child(2) { animation-delay: 0.16s; }
@@ -1096,7 +1107,7 @@ html:not(.dark) .ai-issue-dialog {
 
   .loading-hint-text {
     font-size: 12px;
-    color: #6B7280;
+    color: var(--color-text-secondary);
     margin-left: 8px;
   }
 }

@@ -11,7 +11,7 @@
           <div class="summary-grid">
             <div class="summary-cell">
               <span class="summary-value">{{ projectCount }}</span>
-              <span class="summary-label">项目</span>
+              <span class="summary-label">系统</span>
             </div>
             <div class="summary-cell">
               <span class="summary-value">{{ counts.assets || 0 }}</span>
@@ -35,10 +35,16 @@
             {{ formatTime(preview.manifest.createdAt) }} 导出
             <span v-if="preview.encrypted" class="enc-tag">已加密</span>
           </div>
+          <div v-if="preview.manifest.groups?.length" class="group-meta">
+            所属项目：{{ groupNames }}（{{ preview.manifest.groups.length }} 个项目 / {{ projectCount }} 个系统，导入后将保持该层级）
+          </div>
+          <div v-else class="group-meta muted">
+            该归档不含项目分组信息，导入后每个系统会各自成为一个项目
+          </div>
         </div>
 
         <div class="section">
-          <span class="section-title">包含的项目</span>
+          <span class="section-title">包含的系统</span>
           <div class="project-list">
             <div v-for="p in preview.projects" :key="p.id" class="import-item">
               <div class="import-main">
@@ -54,26 +60,26 @@
         </div>
 
         <div v-if="conflictCount > 0" class="section">
-          <span class="section-title">本机已存在 {{ conflictCount }} 个项目，如何处理？</span>
+          <span class="section-title">本机已存在 {{ conflictCount }} 个系统，如何处理？</span>
           <label class="radio-item">
             <input type="radio" value="copy" v-model="strategy" />
             <div class="radio-text">
               <span class="radio-label">另存为副本<span class="tag-recommend">推荐</span></span>
-              <span class="radio-desc">保留现有项目，导入的项目名称后加「（导入副本）」。最安全。</span>
+              <span class="radio-desc">保留现有系统，导入的系统名称后加「（导入副本）」。最安全。</span>
             </div>
           </label>
           <label class="radio-item">
             <input type="radio" value="overwrite" v-model="strategy" />
             <div class="radio-text">
               <span class="radio-label">覆盖现有项目</span>
-              <span class="radio-desc">先删除本机的同名项目及其全部数据，再用归档内容重建。此操作不可撤销。</span>
+              <span class="radio-desc">先删除本机的同名系统及其全部数据，再用归档内容重建。此操作不可撤销。</span>
             </div>
           </label>
           <label class="radio-item">
             <input type="radio" value="skip" v-model="strategy" />
             <div class="radio-text">
               <span class="radio-label">跳过这些项目</span>
-              <span class="radio-desc">只导入本机不存在的项目。</span>
+              <span class="radio-desc">只导入本机不存在的系统。</span>
             </div>
           </label>
         </div>
@@ -124,6 +130,8 @@ export interface ArchivePreview {
     appVersion: string;
     createdAt: string;
     projects: PreviewProject[];
+    /** 新版归档携带的项目分组台账；旧版归档无此字段 */
+    groups?: Array<{ id: string; name: string; projectNo?: string }>;
     counts: Record<string, number>;
     includeStandards: boolean;
     credentialsIncluded: boolean;
@@ -155,6 +163,12 @@ watch(
 );
 
 const projectCount = computed(() => props.preview?.projects?.length ?? 0);
+const groupNames = computed(() =>
+  (props.preview?.manifest?.groups || [])
+    .map(g => g.name)
+    .slice(0, 3)
+    .join('、') + ((props.preview?.manifest?.groups?.length || 0) > 3 ? '…' : ''),
+);
 const counts = computed(() => props.preview?.manifest?.counts ?? {});
 const warningList = computed(() => props.preview?.warnings ?? []);
 const conflictCount = computed(
@@ -281,6 +295,16 @@ function confirm() {
 .pack-meta {
   font-size: 12px;
   color: var(--color-text-tertiary, #8b95a7);
+}
+
+.group-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary, #4a5568);
+
+  &.muted {
+    color: var(--color-text-tertiary, #8b95a7);
+  }
 }
 
 .enc-tag {

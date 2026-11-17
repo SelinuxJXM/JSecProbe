@@ -73,7 +73,7 @@ export function writeGuideState(state: Partial<GuideState>): void {
 // ==================== 页面首访提示 ====================
 
 /** 已接入首访提示的页面键，重置入口按这份清单清理 */
-export const PAGE_HINT_KEYS = ['system-composition', 'onsite-verification', 'issues'] as const;
+export const PAGE_HINT_KEYS = ['system-composition', 'onsite-verification', 'risk-analysis', 'issues', 'major-risk'] as const;
 export type PageHintKey = (typeof PAGE_HINT_KEYS)[number];
 
 export function isHintSeen(key: PageHintKey): boolean {

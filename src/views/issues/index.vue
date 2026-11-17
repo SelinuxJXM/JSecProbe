@@ -7,7 +7,7 @@
         <el-icon><HomeFilled /></el-icon>
         <span class="customer-name">{{ project?.name || '未选择项目' }}</span>
         <el-icon><DArrowRight /></el-icon>
-        <span class="current-page">问题汇总</span>
+        <span class="current-page">整改建议</span>
       </div>
       <div class="phase-indicators">
         <div class="phase-pill" @click="goToPhase('assets')">
@@ -18,29 +18,29 @@
           <span class="pill-num">2</span>
           现场核查
         </div>
-        <div class="phase-pill active">
+        <div class="phase-pill" @click="goToPhase('risk-analysis')">
           <span class="pill-num">3</span>
-          问题汇总
+          风险分析
+        </div>
+        <div class="phase-pill active">
+          <span class="pill-num">4</span>
+          整改建议
+        </div>
+        <div class="phase-pill" @click="goToPhase('major-risk')">
+          <span class="pill-num">5</span>
+          重大风险隐患
         </div>
       </div>
     </div>
 
     <div class="page-header">
       <div>
-        <div class="page-header-title">问题汇总</div>
+        <div class="page-header-title">整改建议</div>
         <div class="page-header-desc">查看和管理测评发现的问题</div>
       </div>
       <div class="page-header-actions">
-        <el-button type="primary" data-guide="issue-generate" :icon="Refresh" :loading="generating" @click="handleGenerate">
-          {{ generating ? '生成中...' : '从测评记录生成' }}
-        </el-button>
-        <el-button :icon="Plus" @click="handleAdd">新增问题</el-button>
-        <el-button :icon="Upload" :loading="importing" @click="handleImport">
-          {{ importing ? '导入中...' : '导入问题' }}
-        </el-button>
-        <el-button :icon="Document" @click="handleDownloadTemplate">下载导入模板</el-button>
         <el-button type="success" :icon="Download" :loading="exporting" @click="handleExport">
-          {{ exporting ? '导出中...' : '导出问题清单' }}
+          {{ exporting ? '导出中...' : '导出整改建议' }}
         </el-button>
         <el-button type="warning" data-guide="report-generate" :icon="Document" @click="handleGenerateReport">
           生成项目报告
@@ -51,11 +51,11 @@
     <!-- 首访提示：只在该页面首次进入时出现，关闭后不再打扰 -->
     <PageHint
       hint-key="issues"
-      title="第一次看问题汇总？看这三点"
+      title="第一次填整改建议？看这三点"
       :tips="[
-        '先点「从测评记录生成」，系统会把现场核查中判定为不符合 / 部分符合的项自动转成问题清单，不用手抄。',
-        '汇总后可统一编辑风险等级与整改建议，也能「导出问题清单」发给客户确认。',
-        '清单定稿后点「生成项目报告」，按配置好的章节模板一键输出测评报告。',
+        '本页自动同步「风险分析」页录入的问题——问题描述、安全域、测评对象、控制点、测评项、风险等级均以那边为准，这里不重复录入。',
+        '本页只负责整改跟踪：填写整改建议、整改描述、更新状态；这些改动会即时保存。',
+        '整改建议定稿后点「生成项目报告」，按配置好的章节模板一键输出测评报告。',
       ]"
     />
 
@@ -113,7 +113,7 @@
       </div>
     </div>
 
-    <div class="card p-md" style="margin-bottom: 128px">
+    <div class="card p-md" style="margin-bottom: 128px" data-guide="issue-summary">
       <el-form :inline="true" :model="filterForm" class="mb-sm">
         <el-form-item label="关键词">
           <el-input
@@ -153,15 +153,6 @@
       <div class="table-toolbar">
         <div class="toolbar-left">
           <el-button
-            type="danger"
-            :icon="Delete"
-            size="small"
-            :disabled="selectedRows.length === 0"
-            @click="handleBatchDelete"
-          >
-            批量删除 ({{ selectedRows.length }})
-          </el-button>
-          <el-button
             type="warning"
             :icon="Edit"
             size="small"
@@ -176,13 +167,6 @@
             </el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="describe">
-                  <el-icon class="dropdown-item-icon"><EditPen /></el-icon>
-                  批量分析问题描述
-                  <span class="dropdown-scope-hint">
-                    {{ selectedRows.length > 0 ? `(选中${selectedRows.length}个)` : '(全部)' }}
-                  </span>
-                </el-dropdown-item>
                 <el-dropdown-item command="suggestion">
                   <el-icon class="dropdown-item-icon"><Opportunity /></el-icon>
                   批量分析整改建议
@@ -248,17 +232,11 @@
         </el-table-column>
         <el-table-column label="操作" width="260" fixed="right" align="center">
           <template #default="{ row }">
-            <el-tooltip content="编辑问题" placement="top" :show-after="500">
+            <el-tooltip content="编辑整改信息" placement="top" :show-after="500">
               <el-button link type="primary" size="small" :icon="Edit" @click="handleEdit(row)" />
-            </el-tooltip>
-            <el-tooltip content="AI生成问题描述" placement="top" :show-after="500">
-              <el-button link type="primary" size="small" :icon="Reading" @click="handleAiDescribe(row)" />
             </el-tooltip>
             <el-tooltip content="AI生成整改建议" placement="top" :show-after="500">
               <el-button link type="success" size="small" :icon="MagicStick" @click="handleAiAnalyze(row)" />
-            </el-tooltip>
-            <el-tooltip content="删除问题" placement="top" :show-after="500">
-              <el-button link type="danger" size="small" :icon="Delete" @click="handleDelete(row)" />
             </el-tooltip>
           </template>
         </el-table-column>
@@ -268,20 +246,27 @@
     <!-- 问题详情/编辑弹窗 -->
     <el-dialog
       v-model="detailVisible"
-      title="编辑问题"
+      title="编辑整改信息"
       width="750px"
       destroy-on-close
     >
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 16px"
+        title="问题描述、安全域、测评对象、控制点、测评项、风险等级由「风险分析」页同步，此处只读；请填写下方整改信息。"
+      />
       <el-form :model="formData" label-width="100px">
         <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="问题标题">
-              <el-input v-model="formData.issueTitle" :disabled="!isEdit" />
+              <el-input v-model="formData.issueTitle" disabled />
             </el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="风险等级">
-              <el-select v-model="formData.riskLevel" style="width: 100%" :disabled="!isEdit">
+              <el-select v-model="formData.riskLevel" style="width: 100%" disabled>
                 <el-option label="高风险" value="high" />
                 <el-option label="中风险" value="medium" />
                 <el-option label="低风险" value="low" />
@@ -292,19 +277,19 @@
         <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="安全域">
-              <el-input v-model="formData.securityDomain" :disabled="!isEdit" />
+              <el-input v-model="formData.securityDomain" disabled />
             </el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="控制点">
-              <el-input v-model="formData.controlPoint" :disabled="!isEdit" />
+              <el-input v-model="formData.controlPoint" disabled />
             </el-form-item>
           </el-col>
         </el-row>
         <el-row :gutter="16">
           <el-col :span="12">
-            <el-form-item label="控制项">
-              <el-input v-model="formData.controlName" :disabled="!isEdit" />
+            <el-form-item label="测评项">
+              <el-input v-model="formData.controlName" disabled />
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -343,7 +328,7 @@
             v-model="formData.issueDescription"
             type="textarea"
             :rows="3"
-            :disabled="!isEdit"
+            disabled
           />
         </el-form-item>
         <el-form-item label="整改建议">
@@ -378,13 +363,6 @@
       destroy-on-close
     >
       <el-form label-width="100px">
-        <el-form-item label="风险等级">
-          <el-select v-model="batchNewRiskLevel" placeholder="请选择风险等级（不修改则留空）" style="width: 100%" clearable>
-            <el-option label="高风险" value="high" />
-            <el-option label="中风险" value="medium" />
-            <el-option label="低风险" value="low" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="状态">
           <el-select v-model="batchNewStatus" placeholder="请选择状态（不修改则留空）" style="width: 100%" clearable>
             <el-option label="待整改" value="pending" />
@@ -409,22 +387,14 @@
       :standard-id="project?.standardId"
       @apply-suggestion="handleApplySuggestion"
     />
-    <IssueDescriptionAnalysis
-      ref="issueDescriptionAnalysisRef"
-      :get-issue-domain-id="getIssueDomainId"
-      :project-id="projectId"
-      :standard-id="project?.standardId"
-      @apply-description="handleApplyDescription"
-    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, onMounted, computed } from 'vue';
 import { useRoute } from 'vue-router';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import {
-  Plus,
   Download,
   Refresh,
   Search,
@@ -437,18 +407,13 @@ import {
   DArrowRight,
   ArrowLeft,
   ArrowDown,
-  Delete,
   Edit,
   MagicStick,
-  Reading,
-  Upload,
-  EditPen,
   Opportunity,
 } from '@element-plus/icons-vue';
 import type { Issue, IssueSummary } from '../../../shared/types';
 import ReportConfigDialog from './report-config-dialog.vue';
 import IssueAiAnalysis from './components/issue-ai-analysis.vue';
-import IssueDescriptionAnalysis from './components/issue-description-analysis.vue';
 import PageHint from '@/components/PageHint/index.vue';
 import { useProjectNav } from '@/composables/useProjectNav';
 
@@ -458,7 +423,6 @@ const { goToPhase, goBack } = useProjectNav(projectId);
 const project = ref<any>(null);
 const reportDialogRef = ref<InstanceType<typeof ReportConfigDialog> | null>(null);
 const issueAiAnalysisRef = ref<InstanceType<typeof IssueAiAnalysis> | null>(null);
-const issueDescriptionAnalysisRef = ref<InstanceType<typeof IssueDescriptionAnalysis> | null>(null);
 
 // goToPhase / goBack 由 useProjectNav 提供（问题管理 / 现场核查 / 系统构成三处共用同一实现）
 
@@ -532,7 +496,6 @@ const formData = reactive<Partial<Issue>>({
 
 const batchStatusVisible = ref(false);
 const batchNewStatus = ref('');
-const batchNewRiskLevel = ref('');
 
 // 改造：问题页安全域动态化（按项目标准加载；fallback 为国标十域）
 const FALLBACK_DOMAIN_ID_MAP: Record<string, { name: string; domainType?: string }> = {
@@ -709,26 +672,6 @@ function handleSortChange({ prop, order }: { prop: string; order: string }) {
   loadIssues();
 }
 
-function handleAdd() {
-  isEdit.value = true;
-  Object.assign(formData, {
-    issueTitle: '',
-    riskLevel: 'medium',
-    securityDomain: '安全计算环境',
-    controlPoint: '',
-    controlName: '',
-    status: 'pending',
-    issueDescription: '',
-    rectificationSuggestion: '',
-    rectificationDeadline: '',
-    responsiblePerson: '',
-    fixedDescription: '',
-    fixedDate: '',
-    assessor: '',
-  });
-  detailVisible.value = true;
-}
-
 function handleEdit(row: Issue) {
   isEdit.value = true;
   Object.assign(formData, row);
@@ -761,30 +704,29 @@ async function handleSave() {
 
   saving.value = true;
   try {
-    const submitData = { ...formData };
-    if (formData.id) {
-      const res = await window.api.issue.update(formData.id, submitData);
-      if (res.success) {
-        ElMessage.success('更新成功');
-        detailVisible.value = false;
-        loadIssues();
-        loadSummary();
-      } else {
-        ElMessage.error(res.error?.message || '更新失败');
-      }
+    // 只回写整改跟踪字段；问题描述/安全域/测评对象/控制点/测评项/风险等级
+    // 由「风险分析」页同步，此处不回写，避免覆盖那边的最新改动
+    const submitData = {
+      status: formData.status,
+      rectificationSuggestion: formData.rectificationSuggestion,
+      rectificationDeadline: formData.rectificationDeadline,
+      responsiblePerson: formData.responsiblePerson,
+      fixedDescription: formData.fixedDescription,
+      fixedDate: formData.fixedDate,
+      assessor: formData.assessor,
+    };
+    if (!formData.id) {
+      ElMessage.error('缺少问题ID，无法保存');
+      return;
+    }
+    const res = await window.api.issue.update(formData.id, submitData);
+    if (res.success) {
+      ElMessage.success('更新成功');
+      detailVisible.value = false;
+      loadIssues();
+      loadSummary();
     } else {
-      const res = await window.api.issue.create({
-        ...submitData,
-        projectId: projectId.value,
-      });
-      if (res.success) {
-        ElMessage.success('创建成功');
-        detailVisible.value = false;
-        loadIssues();
-        loadSummary();
-      } else {
-        ElMessage.error(res.error?.message || '创建失败');
-      }
+      ElMessage.error(res.error?.message || '更新失败');
     }
   } catch (error: any) {
     ElMessage.error(error?.message || '操作失败');
@@ -793,71 +735,22 @@ async function handleSave() {
   }
 }
 
-async function handleDelete(row: Issue) {
-  try {
-    await ElMessageBox.confirm('确定要删除这个问题吗？', '确认删除', {
-      type: 'warning',
-    });
-    const res = await window.api.issue.remove(row.id);
-    if (res.success) {
-      ElMessage.success('删除成功');
-      loadIssues();
-      loadSummary();
-    } else {
-      ElMessage.error(res.error?.message || '删除失败');
-    }
-  } catch (error: any) {
-    if (error !== 'cancel' && error?.message) {
-      ElMessage.error(error?.message || '删除失败');
-    }
-  }
-}
-
-async function handleBatchDelete() {
-  if (selectedRows.value.length === 0) return;
-  try {
-    await ElMessageBox.confirm(
-      `确定要删除选中的 ${selectedRows.value.length} 个问题吗？`,
-      '批量删除',
-      { type: 'warning' }
-    );
-    const ids = selectedRows.value.map(r => r.id);
-    const res = await window.api.issue.batchRemove(ids);
-    if (res.success) {
-      ElMessage.success(`成功删除 ${ids.length} 个问题`);
-      selectedRows.value = [];
-      loadIssues();
-      loadSummary();
-    } else {
-      ElMessage.error(res.error?.message || '批量删除失败');
-    }
-  } catch (error: any) {
-    if (error !== 'cancel' && error?.message) {
-      ElMessage.error(error?.message || '批量删除失败');
-    }
-  }
-}
-
 function handleBatchStatus() {
   if (selectedRows.value.length === 0) return;
   batchNewStatus.value = '';
-  batchNewRiskLevel.value = '';
   batchStatusVisible.value = true;
 }
 
 async function confirmBatchStatus() {
-  if (!batchNewStatus.value && !batchNewRiskLevel.value) {
-    ElMessage.warning('请至少选择风险等级或状态中的一项');
+  if (!batchNewStatus.value) {
+    ElMessage.warning('请选择状态');
     return;
   }
   try {
     const ids = selectedRows.value.map(r => r.id);
-    const res = await window.api.issue.batchUpdateStatus(ids, batchNewStatus.value || undefined, batchNewRiskLevel.value || undefined);
+    const res = await window.api.issue.batchUpdateStatus(ids, batchNewStatus.value, undefined);
     if (res.success) {
-      const updateParts: string[] = [];
-      if (batchNewRiskLevel.value) updateParts.push('风险等级');
-      if (batchNewStatus.value) updateParts.push('状态');
-      ElMessage.success(`成功更新 ${ids.length} 个问题的${updateParts.join('和')}`);
+      ElMessage.success(`成功更新 ${ids.length} 个问题的状态`);
       selectedRows.value = [];
       batchStatusVisible.value = false;
       loadIssues();
@@ -870,39 +763,8 @@ async function confirmBatchStatus() {
   }
 }
 
-// 生成 / 导出 / 导入都是要跑一段时间的操作，原先没有 loading，
-// 界面看起来像假死，用户会重复点按钮
-const generating = ref(false);
+// 导出要跑一段时间，加 loading 避免用户重复点击
 const exporting = ref(false);
-const importing = ref(false);
-
-async function handleGenerate() {
-  if (generating.value) return;
-  try {
-    await ElMessageBox.confirm(
-      '将从测评记录中自动生成不符合项问题，是否继续？',
-      '生成问题',
-      { type: 'info' }
-    );
-  } catch {
-    return;
-  }
-  generating.value = true;
-  try {
-    const res = await window.api.issue.generateFromRecords(projectId.value);
-    if (res.success && res.data) {
-      ElMessage.success(`成功生成 ${res.data.count} 条问题`);
-      loadIssues();
-      loadSummary();
-    } else {
-      ElMessage.error(res.error?.message || '生成失败');
-    }
-  } catch (error: any) {
-    ElMessage.error(error?.message || '生成失败');
-  } finally {
-    generating.value = false;
-  }
-}
 
 async function handleExport() {
   if (summary.value.total === 0) {
@@ -923,44 +785,6 @@ async function handleExport() {
   }
 }
 
-// 下载导入模板
-async function handleDownloadTemplate() {
-  const res = await window.api.issue.downloadTemplate(projectId.value);
-  if (res.success && res.data) {
-    ElMessage.success('模板下载成功');
-  } else if (res.error?.message !== '用户取消') {
-    ElMessage.error(res.error?.message || '下载模板失败');
-  }
-}
-
-async function handleImport() {
-  if (!window.api) return;
-  const res = await window.api.dialog.showOpenDialog({
-    title: '选择要导入的Excel文件',
-    filters: [{ name: 'Excel文件', extensions: ['xlsx', 'xls'] }],
-    properties: ['openFile'],
-  });
-  if (!res.success || res.data?.canceled || !res.data?.filePaths || res.data.filePaths.length === 0) return;
-
-  if (importing.value) return;
-  importing.value = true;
-  try {
-    const importRes = await window.api.issue.importExcel(projectId.value, res.data.filePaths[0]);
-    if (importRes.success && importRes.data) {
-      const msg = importRes.data.errors?.length
-        ? `成功导入 ${importRes.data.count} 条，${importRes.data.errors.length} 条失败`
-        : `成功导入 ${importRes.data.count} 条问题`;
-      ElMessage.success(msg);
-      loadIssues();
-      loadSummary();
-    } else {
-      ElMessage.error(importRes.error?.message || '导入失败');
-    }
-  } finally {
-    importing.value = false;
-  }
-}
-
 async function handleGenerateReport() {
   reportDialogRef.value?.open(projectId.value, project.value?.name || '');
 }
@@ -969,27 +793,21 @@ function handleAiAnalyze(row: Issue) {
   issueAiAnalysisRef.value?.analyzeIssue(row);
 }
 
-function handleAiDescribe(row: Issue) {
-  issueDescriptionAnalysisRef.value?.analyzeIssueDescription(row);
-}
-
 function handleAiBatchCommand(command: string) {
   // 智能切换分析范围：如果有选中行，则分析选中的；否则分析所有
   const targetIssues = selectedRows.value.length > 0 ? selectedRows.value : issueList.value;
-  
+
   if (targetIssues.length === 0) {
     ElMessage.warning('当前没有可分析的问题');
     return;
   }
-  
+
   const scopeText = selectedRows.value.length > 0 ? `选中的 ${selectedRows.value.length} 个` : '全部';
 
   // 批量操作耗时较长，先把范围显式告知用户，避免"点错范围却已经跑了一半"
   ElMessage.info(`开始分析${scopeText}问题（共 ${targetIssues.length} 个）`);
 
-  if (command === 'describe') {
-    issueDescriptionAnalysisRef.value?.batchAnalyzeIssueDescriptions(targetIssues);
-  } else if (command === 'suggestion') {
+  if (command === 'suggestion') {
     issueAiAnalysisRef.value?.batchAnalyzeIssues(targetIssues);
   }
 }
@@ -1000,21 +818,6 @@ async function handleApplySuggestion(issueId: string, suggestion: string) {
     const res = await window.api.issue.update(issueId, { rectificationSuggestion: suggestion });
     if (res.success) {
       ElMessage.success('整改建议已填入');
-      loadIssues();
-    } else {
-      ElMessage.error(res.error?.message || '填入失败');
-    }
-  } catch (error: any) {
-    ElMessage.error(error?.message || '操作失败');
-  }
-}
-
-async function handleApplyDescription(issueId: string, description: string) {
-  if (!window.api) return;
-  try {
-    const res = await window.api.issue.update(issueId, { issueDescription: description });
-    if (res.success) {
-      ElMessage.success('问题描述已填入');
       loadIssues();
     } else {
       ElMessage.error(res.error?.message || '填入失败');

@@ -41,6 +41,12 @@ interface ProjectAutoSaveOptions {
    * composable 不关心页面怎么管 UI 状态。
    */
   onRowCreated?: (row: ProjectRow, created: any) => void;
+  /**
+   * 新建行落库时附加的字段。
+   * 系统列表页用它把「所属项目分组 groupId」带进 project:create，
+   * 而原来的项目列表页不传，行为完全不变。
+   */
+  createExtra?: () => Record<string, any>;
   debounceDelay?: number;
   periodicInterval?: number;
 }
@@ -53,6 +59,7 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
     loadProjects,
     loadStats,
     onRowCreated,
+    createExtra,
     // 8 秒而非 4 秒：计时口径已从「进入编辑态」改为「最后一次修改」，
     // 填一行（名称/系统/单位）要几十秒，4 秒的窗会在用户手还没停时就落库。
     // 数据不会丢：切页/搜索/离开组件前都有 flush 兜底。
@@ -110,6 +117,7 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
                 ? row.extensionTypes.join(',')
                 : undefined,
             level: Number(row.level) || 3,
+            ...(createExtra?.() || {}),
           });
           if (!res.success) {
             failed++;

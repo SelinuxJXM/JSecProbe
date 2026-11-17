@@ -18,9 +18,17 @@
           <span class="pill-num">2</span>
           现场核查
         </div>
-        <div class="phase-pill" @click="goToPhase('issues')">
+        <div class="phase-pill" @click="goToPhase('risk-analysis')">
           <span class="pill-num">3</span>
-          问题汇总
+          风险分析
+        </div>
+        <div class="phase-pill" @click="goToPhase('issues')">
+          <span class="pill-num">4</span>
+          整改建议
+        </div>
+        <div class="phase-pill" @click="goToPhase('major-risk')">
+          <span class="pill-num">5</span>
+          重大风险隐患
         </div>
       </div>
     </div>

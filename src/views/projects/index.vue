@@ -1,12 +1,33 @@
 <template>
   <div class="page-container">
-    <div class="card project-card" @click.self="closeStatusDropdown">
-      <!-- Tab导航栏 -->
+    <div class="page-header">
+      <h1 class="page-title">项目列表</h1>
+      <p class="page-subtitle">
+        一个项目可包含多个被测系统；进入项目后，为每个系统单独填写系统构成、现场核查、风险分析与整改建议
+      </p>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card">
+        <span class="stat-label">未归档项目</span>
+        <strong class="stat-value">{{ stats.activeCount }}</strong>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">已归档项目</span>
+        <strong class="stat-value muted">{{ stats.archivedCount }}</strong>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">系统总数</span>
+        <strong class="stat-value">{{ stats.systemCount }}</strong>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-tabs">
         <button
           class="tab-btn"
           :class="{ active: activeTab === 'active' }"
-          @click="activeTab = 'active'; reloadProjects()"
+          @click="switchTab('active')"
         >
           未归档项目
           <span class="tab-badge">{{ stats.activeCount }}</span>
@@ -14,69 +35,35 @@
         <button
           class="tab-btn"
           :class="{ active: activeTab === 'archived' }"
-          @click="activeTab = 'archived'; reloadProjects()"
+          @click="switchTab('archived')"
         >
           已归档项目
           <span class="tab-badge muted">{{ stats.archivedCount }}</span>
         </button>
       </div>
 
-      <!-- 工具栏 -->
       <div class="toolbar" data-guide="project-toolbar">
         <div class="toolbar-left">
-          <button class="toolbar-btn" @click="handleImport">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            <span>导入</span>
-          </button>
-          <button class="toolbar-btn" title="导出项目完整数据（含资产、测评记录、附件）" @click="exportDialogVisible = true">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            <span>导出</span>
-          </button>
-          <button class="toolbar-btn primary" data-guide="project-create" @click="addEmptyRow">
+          <button class="toolbar-btn primary" data-guide="project-create" @click="openCreate">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             <span>新建项目</span>
+          </button>
+          <button class="toolbar-btn" title="从归档包还原项目（含其下全部系统）" @click="handleImport">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span>导入归档</span>
           </button>
         </div>
         <div class="toolbar-right">
           <div class="search-box">
             <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <input v-model="keyword" type="text" placeholder="搜索项目" class="search-input" @input="onSearch" />
+            <input v-model="keyword" type="text" placeholder="搜索项目名称 / 编号 / 被测单位" class="search-input" @input="onSearch" />
           </div>
-          <button class="icon-btn" title="筛选" @click="showFilter = !showFilter">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-          </button>
-          <button class="icon-btn" title="刷新" @click="loadProjects">
+          <button class="icon-btn" title="刷新" @click="loadAll">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
           </button>
         </div>
       </div>
 
-      <!-- 筛选面板：状态 + 标准体系，作用于当前页已加载数据 -->
-      <div v-if="showFilter" class="filter-panel">
-        <div class="filter-item">
-          <label class="filter-label">状态</label>
-          <select v-model="filterStatus" class="filter-select">
-            <option value="">全部</option>
-            <option value="draft">草稿</option>
-            <option value="in_progress">进行中</option>
-            <option value="completed">已完成</option>
-            <option value="archived">已归档</option>
-          </select>
-        </div>
-        <div class="filter-item">
-          <label class="filter-label">标准体系</label>
-          <select v-model="filterStandard" class="filter-select">
-            <option value="">全部</option>
-            <option v-for="std in standards" :key="std.id" :value="std.id">{{ std.name }}</option>
-          </select>
-        </div>
-        <button class="filter-reset" :disabled="activeFilterCount === 0" @click="resetFilter">清除筛选</button>
-        <span class="filter-summary">
-          筛选出 {{ filteredRows.length }} / {{ projectList.length }} 条
-        </span>
-      </div>
-
-      <!-- 数据表格 -->
       <div class="table-wrapper" v-loading="loading" element-loading-text="正在加载项目列表...">
         <table class="data-table">
           <thead>
@@ -84,77 +71,44 @@
               <th class="col-index">序号</th>
               <th class="col-no">项目编号</th>
               <th class="col-name">项目名称</th>
-              <th class="col-system">系统名称</th>
               <th class="col-unit">被测单位</th>
-              <th class="col-standard">标准体系</th>
-              <th class="col-ext">扩展类型</th>
-              <th class="col-progress">项目进度</th>
+              <th class="col-systems">系统数</th>
+              <th class="col-progress">测评进度</th>
               <th class="col-time">修改时间</th>
               <th class="col-status">状态</th>
               <th class="col-actions">操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(row, index) in filteredRows" :key="row.id" :class="{ active: currentRowIndex === index, new: row.id < 0 }" @click="selectRow(index)" @dblclick="goToDetail(row)">
-              <td class="col-index">{{ row.id < 0 ? '新' : index + 1 }}</td>
-              <td class="col-no">
-                <input v-if="isEditing(row)" v-model="row.projectNo" class="cell-input mono" placeholder="DJCP-001（留空自动生成）" @input="onCellEdit(row)" />
-                <span v-else class="mono-text" :title="row.projectNo">{{ row.projectNo }}</span>
-              </td>
-              <td class="col-name">
-                <input v-if="isEditing(row)" v-model="row.name" class="cell-input" placeholder="项目名称" @input="onCellEdit(row)" />
-                <span v-else :title="row.name">{{ row.name }}</span>
-              </td>
-              <td class="col-system">
-                <input v-if="isEditing(row)" v-model="row.systemName" class="cell-input" placeholder="系统名称" @input="onCellEdit(row)" />
-                <span v-else class="text-secondary" :title="row.systemName">{{ row.systemName }}</span>
-              </td>
-              <td class="col-unit">
-                <input v-if="isEditing(row)" v-model="row.assessedUnit" class="cell-input" placeholder="被测单位" @input="onCellEdit(row)" />
-                <span v-else class="text-secondary" :title="row.assessedUnit">{{ row.assessedUnit }}</span>
-              </td>
-              <td class="col-standard">
-                <!-- 新建项目：动态标准选择器（默认从 systemSettings.defaultStandard 读取） -->
-                <select v-if="row.id < 0" v-model="row.standardId" class="cell-select" @change="onStandardChange(row)">
-                  <option v-for="std in standards" :key="std.id" :value="std.id">{{ std.name }}</option>
-                </select>
-                <!-- 已存在项目编辑：标准不可更改（standardId 不可变，避免 records 孤儿），仅展示实际标准名 -->
-                <span v-else-if="isEditing(row)" class="text-secondary" :title="getStandardName(row.standardId) || row.standardSystem">{{ getStandardName(row.standardId) || row.standardSystem || '—' }}</span>
-                <!-- 显示模式：优先展示实际标准名，回退 standardSystem（兼容旧数据） -->
-                <span v-else class="text-secondary" :title="getStandardName(row.standardId) || row.standardSystem">{{ getStandardName(row.standardId) || row.standardSystem || '—' }}</span>
-              </td>
-              <td class="col-ext">
-                <div v-if="isEditing(row)" class="ext-select-wrapper">
-                  <span class="ext-display" @click="openExtDialog(row)">{{ formatExtDisplay(row.extensionTypes) }}</span>
-                </div>
-                <span v-else class="text-secondary" :title="formatExtDisplay(row.extensionTypes)">{{ formatExtDisplay(row.extensionTypes) }}</span>
+            <tr v-for="(row, index) in rows" :key="row.id" @dblclick="goToSystems(row)">
+              <td class="col-index">{{ (pagination.page - 1) * pagination.pageSize + index + 1 }}</td>
+              <td class="col-no"><span class="mono-text">{{ row.projectNo || '—' }}</span></td>
+              <td class="col-name"><span :title="row.name">{{ row.name }}</span></td>
+              <td class="col-unit"><span class="text-secondary" :title="row.assessedUnit || ''">{{ row.assessedUnit || '—' }}</span></td>
+              <td class="col-systems">
+                <button class="link-btn" @click.stop="goToSystems(row)">{{ row.systemCount }} 个系统</button>
               </td>
               <td class="col-progress">
                 <div class="progress-cell">
-                  <div class="progress-bar" :class="getProgressClass(row.progress)">
+                  <div class="progress-bar" :class="progressClass(row.progress)">
                     <div class="progress-fill" :style="{ width: (row.progress || 0) + '%' }"></div>
                   </div>
-                  <span class="progress-text" :class="getProgressClass(row.progress)">{{ row.progress || 0 }}%</span>
+                  <span class="progress-text">{{ row.progress || 0 }}%</span>
                 </div>
               </td>
-              <td class="col-time">
-                <span class="time-text">{{ formatDate(row.updatedAt) }}</span>
-              </td>
-              <td class="col-status">
-                <div class="status-wrapper" @click.stop>
-                  <span class="status-tag" :class="'status-' + row.status" @click.stop.prevent="openStatusDropdown(row, $event)">
-                    {{ statusLabel(row.status) }}
-                  </span>
-                </div>
-              </td>
+              <td class="col-time"><span class="time-text">{{ formatDateTime(row.updatedAt) }}</span></td>
+              <td class="col-status"><span class="status-tag" :class="'status-' + row.status">{{ statusLabel(row.status) }}</span></td>
               <td class="col-actions">
-                <button class="action-btn enter" @click.stop="goToDetail(row)" title="进入项目">
+                <button class="action-btn enter" @click.stop="goToSystems(row)" title="进入项目 / 管理系统">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
                 </button>
-                <button class="action-btn export" @click.stop="exportSingleProject(row)" title="导出项目归档（含全部数据与附件）">
+                <button class="action-btn export" @click.stop="openGroupExport(row)" title="导出整个项目（含其下全部系统）">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 </button>
-                <button class="action-btn edit" @click.stop="toggleEdit(row)" title="编辑">
+                <button class="action-btn report" @click.stop="openGroupReport(row)" title="生成项目合册报告（项目综述 + 各系统分册）">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
+                </button>
+                <button class="action-btn edit" @click.stop="openEdit(row)" title="编辑">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                 </button>
                 <button class="action-btn archive" @click.stop="toggleArchive(row)" :title="row.status === 'archived' ? '取消归档' : '归档'">
@@ -166,12 +120,11 @@
               </td>
             </tr>
           </tbody>
-          <tbody v-if="!loading && filteredRows.length === 0">
+          <tbody v-if="!loading && rows.length === 0">
             <tr>
-              <td colspan="11" class="empty-cell">
-                <el-empty :description="activeFilterCount > 0 ? '当前筛选条件下无匹配项目' : emptyStateText">
-                  <el-button v-if="activeFilterCount > 0" @click="resetFilter">清除筛选</el-button>
-                  <el-button v-else-if="activeTab === 'active' && !keyword" type="primary" @click="addEmptyRow">新建第一个项目</el-button>
+              <td colspan="9" class="empty-cell">
+                <el-empty :description="emptyText">
+                  <el-button v-if="activeTab === 'active' && !keyword" type="primary" @click="openCreate">新建第一个项目</el-button>
                 </el-empty>
               </td>
             </tr>
@@ -179,79 +132,78 @@
         </table>
       </div>
 
-      <!-- 底部栏：合并信息、分页、操作 -->
       <div class="pagination-bar">
-        <div class="footer-left">
-          <span class="total-text">共 {{ pagination.total }} 条</span>
-          <span v-if="editedCount > 0" class="edited-badge">{{ editedCount }} 项待保存</span>
-          <span v-if="saveStatus === 'saving'" class="save-status saving">
-            <span class="save-dot"></span>保存中...
-          </span>
-          <span v-else-if="saveStatus === 'saved' && lastSavedTime" class="save-status saved">
-            <span class="save-dot"></span>已保存 {{ formatSaveTime(lastSavedTime) }}
-          </span>
-          <span v-else-if="saveStatus === 'unsaved'" class="save-status unsaved">
-            <span class="save-dot"></span>有未保存的修改
-          </span>
-          <span v-else-if="saveStatus === 'error'" class="save-status error">
-            <span class="save-dot"></span>保存失败
-          </span>
-        </div>
+        <span class="total-text">共 {{ pagination.total }} 条</span>
         <div class="pagination-btns">
-          <button class="page-btn" :disabled="pagination.page <= 1" @click="pagination.page--; reloadProjects()">
+          <button class="page-btn" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
           </button>
-          <button v-for="p in visiblePages" :key="p" class="page-btn" :class="{ active: pagination.page === p }" @click="pagination.page = p; reloadProjects()">
-            {{ p }}
-          </button>
-          <button class="page-btn" :disabled="pagination.page >= totalPages" @click="pagination.page++; reloadProjects()">
+          <span class="page-indicator">{{ pagination.page }} / {{ totalPages }}</span>
+          <button class="page-btn" :disabled="pagination.page >= totalPages" @click="changePage(pagination.page + 1)">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
-          </button>
-        </div>
-        <div class="footer-right">
-          <button class="footer-btn" @click="loadProjects">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            <span>刷新</span>
-          </button>
-          <!-- P3-7：`:loading` 是 Element Plus 的 prop，用在原生 <button> 上不会有任何效果，
-               保存过程中按钮既不变灰也不转圈（此前唯一的反馈是左下角那行"保存中..."）。
-               改用原生语义的 disabled，并让文案随状态变化，保存期间无法重复点击。 -->
-          <button
-            class="footer-btn primary"
-            @click="saveAllChanges"
-            :disabled="saving || editedCount === 0"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
-            <span>{{ saving ? '保存中...' : '保存修改' }}</span>
           </button>
         </div>
       </div>
     </div>
 
-    <!-- 状态切换下拉菜单（全局浮动） -->
-    <div
-      v-if="statusDropdownTarget !== null && statusDropdownRow"
-      class="status-floating-dropdown"
-      :style="{ top: statusDropdownRect.top + 'px', left: statusDropdownRect.left + 'px' }"
-    >
-      <div
-        class="status-option"
-        :class="{ active: statusDropdownRow.status === 'draft' }"
-        @click="changeStatus(statusDropdownRow, 'draft')"
-      >草稿</div>
-      <div
-        class="status-option"
-        :class="{ active: statusDropdownRow.status === 'in_progress' }"
-        @click="changeStatus(statusDropdownRow, 'in_progress')"
-      >进行中</div>
-      <div
-        class="status-option"
-        :class="{ active: statusDropdownRow.status === 'completed' }"
-        @click="changeStatus(statusDropdownRow, 'completed')"
-      >已完成</div>
+    <!-- 新建 / 编辑项目：项目层只填台账信息，系统级信息在系统列表里填 -->
+    <div v-if="dialogVisible" class="dialog-overlay" @click.self="closeDialog">
+      <div class="form-dialog" role="dialog" aria-modal="true">
+        <div class="form-dialog-header">
+          <span>{{ editingId ? '编辑项目' : '新建项目' }}</span>
+          <button class="close-btn" @click="closeDialog" aria-label="关闭">×</button>
+        </div>
+        <div class="form-dialog-body">
+          <div class="form-row">
+            <label class="form-field wide">
+              <span class="form-label">项目名称 <em>*</em></span>
+              <input v-model="form.name" class="form-input" placeholder="如：某单位 2026 年度等级保护测评" maxlength="120" @keyup.enter="submitDialog" />
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="form-field">
+              <span class="form-label">项目编号</span>
+              <input v-model="form.projectNo" class="form-input mono" placeholder="留空自动生成 DJCP-XXX" maxlength="40" />
+            </label>
+            <label class="form-field">
+              <span class="form-label">被测单位</span>
+              <input v-model="form.assessedUnit" class="form-input" placeholder="被测单位名称" maxlength="120" />
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="form-field">
+              <span class="form-label">客户名称</span>
+              <input v-model="form.customerName" class="form-input" placeholder="委托方 / 客户" maxlength="120" />
+            </label>
+            <label class="form-field">
+              <span class="form-label">测评师</span>
+              <input v-model="form.assessor" class="form-input" placeholder="项目负责人" maxlength="60" />
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="form-field">
+              <span class="form-label">开始日期</span>
+              <input v-model="form.startDate" type="date" class="form-input" />
+            </label>
+            <label class="form-field">
+              <span class="form-label">结束日期</span>
+              <input v-model="form.endDate" type="date" class="form-input" />
+            </label>
+          </div>
+          <label class="form-field wide">
+            <span class="form-label">项目说明</span>
+            <textarea v-model="form.description" class="form-textarea" rows="3" placeholder="合同范围、进场安排等（选填）"></textarea>
+          </label>
+          <p class="form-hint">保存后将进入「系统列表」，在那里为项目添加被测系统。标准体系、保护等级、扩展类型按每个系统单独设置。</p>
+        </div>
+        <div class="form-dialog-footer">
+          <button class="dialog-btn" @click="closeDialog">取消</button>
+          <button class="dialog-btn primary" :disabled="saving" @click="submitDialog">{{ saving ? '保存中...' : '保存' }}</button>
+        </div>
+      </div>
     </div>
 
-    <!-- 项目归档：导出 / 导入 -->
+    <!-- 项目归档：整个项目（含其下全部系统）打包 / 还原 -->
     <ProjectExportDialog
       v-model:visible="exportDialogVisible"
       :projects="exportOptions"
@@ -264,26 +216,8 @@
       :busy="archiveBusy"
       @confirm="confirmImport"
     />
-
-    <!-- 扩展类型多选弹窗 -->
-    <div v-if="extDialogVisible" class="dialog-overlay" @click.self="closeExtDialog">
-      <div class="ext-dialog">
-        <div class="ext-dialog-header">
-          <span>选择扩展要求（可多选）</span>
-          <button class="close-btn" @click="closeExtDialog">×</button>
-        </div>
-        <div class="ext-dialog-body">
-          <label v-for="ext in extensionOptions" :key="ext.value" class="ext-checkbox-item">
-            <input type="checkbox" :value="ext.value" v-model="extDialogSelected" />
-            <span>{{ ext.label }}</span>
-          </label>
-        </div>
-        <div class="ext-dialog-footer">
-          <button class="ext-dialog-btn cancel" @click="closeExtDialog">取消</button>
-          <button class="ext-dialog-btn confirm" @click="confirmExtDialog">确定</button>
-        </div>
-      </div>
-    </div>
+    <!-- 项目合册报告：项目综述 + 各系统分册装订 -->
+    <ReportConfigDialog ref="reportDialogRef" />
   </div>
 </template>
 
@@ -291,300 +225,50 @@
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { useAppStore } from '@/stores/app';
 import { formatDateTime } from '@/utils/format';
-import { useProjectAutoSave } from './composables/useProjectAutoSave';
+import type { ProjectGroup, ProjectGroupListParams } from '@shared/types';
 import ProjectExportDialog from './components/ProjectExportDialog.vue';
+import type { ExportPayload, ExportProjectOption } from './components/ProjectExportDialog.vue';
 import ProjectImportDialog from './components/ProjectImportDialog.vue';
+import type { ArchivePreview } from './components/ProjectImportDialog.vue';
+import ReportConfigDialog from '@/views/issues/report-config-dialog.vue';
 
+/**
+ * 项目分组列表页。
+ *
+ * 数据模型：project_groups（项目 / 委托批次） → projects（一个系统） → 资产 / 测评记录 / 问题。
+ * 本页只负责项目级台账；创建成功后直接跳转到系统列表页，让用户接着建系统。
+ */
 const router = useRouter();
-const appStore = useAppStore();
+const rows = ref<ProjectGroup[]>([]);
 const loading = ref(false);
 const saving = ref(false);
-const activeTab = ref('active');
+const activeTab = ref<'active' | 'archived'>('active');
 const keyword = ref('');
-const showFilter = ref(false);
-// 筛选条件（此前 showFilter 只切换自身布尔值、无任何消费者，点击筛选图标毫无效果）
-const filterStatus = ref('');
-const filterStandard = ref('');
-const projectList = ref<any[]>([]);
-const stats = reactive({ activeCount: 0, archivedCount: 0 });
-const currentRowIndex = ref(-1);
+const pagination = reactive({ page: 1, pageSize: 20, total: 0 });
+const stats = reactive({ activeCount: 0, archivedCount: 0, systemCount: 0 });
 
-// 空状态文案按页签与搜索词区分：新建项目为草稿态，不会出现在归档列表，故归档页签/搜索无结果时不引导新建
-const emptyStateText = computed(() => {
+const totalPages = computed(() => Math.max(1, Math.ceil(pagination.total / pagination.pageSize)));
+const emptyText = computed(() => {
   if (activeTab.value === 'archived') {
     return keyword.value ? '未找到匹配的已归档项目' : '暂无已归档项目';
   }
   return keyword.value ? '未找到匹配的项目' : '暂无项目';
 });
 
-// 表格实际渲染的行：在已加载数据上做本地筛选
-const filteredRows = computed(() => {
-  return projectList.value.filter((row: any) => {
-    if (filterStatus.value && row.status !== filterStatus.value) return false;
-    if (filterStandard.value && row.standardId !== filterStandard.value) return false;
-    return true;
-  });
-});
-
-const activeFilterCount = computed(
-  () => (filterStatus.value ? 1 : 0) + (filterStandard.value ? 1 : 0)
-);
-
-function resetFilter() {
-  filterStatus.value = '';
-  filterStandard.value = '';
-}
-
-// 标准库列表（新建项目时动态加载，替代硬编码 standardSystem 下拉框）
-const standards = ref<any[]>([]);
-const defaultStandardId = ref('');
-
-// 根据标准 ID 查询标准名（用于显示，及后端 standardSystem 字段同步）
-function getStandardName(standardId?: string): string {
-  if (!standardId) return '';
-  const std = standards.value.find(s => s.id === standardId);
-  return std?.name || '';
-}
-
-// 加载标准列表 + 设置默认标准 ID（优先 isDefault=true，回退第一个国标或第一项）
-async function loadStandards() {
-  if (!window.api) return;
-  try {
-    const res = await window.api.standard.list();
-    if (res.success && res.data) {
-      standards.value = res.data;
-      const defaultStd = res.data.find((s: any) => s.isDefault);
-      if (defaultStd) {
-        defaultStandardId.value = defaultStd.id;
-      } else {
-        // 回退：isDefault 缺失时取第一个国标，否则第一项
-        const firstNational = res.data.find((s: any) => s.standardType === 'national');
-        defaultStandardId.value = (firstNational || res.data[0])?.id || '';
-      }
-    }
-  } catch (err) {
-    console.error('加载标准列表失败:', err);
-  }
-}
-
-// 新建项目标准选择变更时，同步 standardSystem 字段（用于后端兼容与显示），
-// 并按所选标准的 grade 自动确定项目等级（标准已固定 S/A/G 等级组合，无需手动填写）
-function onStandardChange(row: any) {
-  row.standardSystem = getStandardName(row.standardId);
-  const std = standards.value.find((s: any) => s.id === row.standardId);
-  const grade = std?.level || 3;
-  row.level = grade;
-  row.levelCombo = `S${grade}A${grade}G${grade}`;
-  // 单选类操作：即时判定无需长等待
-  markRowEdited(row);
-}
-
-// ==================== 两个状态，必须分开 ====================
-// editRowIds：纯 UI 的「行处于编辑态」，退出编辑才移除，与是否脏无关。
-// editedRows ：脏行（数据改过），决定要不要落库。
-// 之前两者共用一个数组，导致「点一下编辑」就触发 4 秒倒计时保存，
-// 保存后又被 saveAllChanges 里的整表重载清空，用户填一半就被踢出编辑态。
-const editRowIds = ref<string[]>([]);
-const editedRows = ref<string[]>([]);
-const deletedIds = ref<string[]>([]);
-const editedCount = computed(() => editedRows.value.length + deletedIds.value.length);
-
-function isEditing(row: any): boolean {
-  return row.id < 0 || editRowIds.value.includes(String(row.id));
-}
-
-/** 单元格真正被改动时才标脏并重新计时：计时口径是「最后一次输入」而非「点开编辑」 */
-function onCellEdit(row: any) {
-  const key = String(row.id);
-  if (!editedRows.value.includes(key)) {
-    editedRows.value.push(key);
-  }
-  debounceAutoSave();
-}
-
-/**
- * 离散操作（改状态 / 选标准 / 确认扩展项）不是输入行为，
- * 操作完基本不会再改，用短延迟落库即可。
- */
-function markRowEdited(row: any, quick = true) {
-  const key = String(row.id);
-  if (!editedRows.value.includes(key)) {
-    editedRows.value.push(key);
-  }
-  debounceAutoSave(quick ? quickDebounce : undefined);
-}
-
-/** 轻量刷新：只更新统计与总数，不动列表 DOM */
-async function loadStats() {
-  if (!window.api) return;
-  try {
-    const isActive = activeTab.value === 'active';
-    const countParams: any = {
-      page: 1,
-      pageSize: 1,
-      keyword: keyword.value || undefined,
-    };
-    if (isActive) {
-      countParams.excludeArchived = true;
-    } else {
-      countParams.status = 'archived';
-    }
-    const res = await window.api.project.list(countParams);
-    if (res.success && res.data) pagination.total = res.data.total;
-
-    const activeRes = await window.api.project.list({ page: 1, pageSize: 1, excludeArchived: true });
-    if (activeRes.success && activeRes.data) stats.activeCount = activeRes.data.total;
-    const archivedRes = await window.api.project.list({ page: 1, pageSize: 1, status: 'archived' });
-    if (archivedRes.success && archivedRes.data) stats.archivedCount = archivedRes.data.total;
-  } catch (err) {
-    console.error('刷新项目统计失败:', err);
-  }
-}
-
-/** 临时行落库成功：换真实 id，并保持该行仍处于编辑态，方便继续补填 */
-function handleRowCreated(row: any, created: any) {
-  const tempKey = String(row.id);
-  row.id = created.id;
-  row.projectNo = created.projectNo || row.projectNo;
-  row.standardId = created.standardId || row.standardId;
-  row.progress = created.progress ?? row.progress;
-  row.updatedAt = created.updatedAt || row.updatedAt;
-  editRowIds.value = editRowIds.value.filter(id => id !== tempKey);
-  if (!editRowIds.value.includes(String(row.id))) {
-    editRowIds.value.push(String(row.id));
-  }
-}
-
-// 自动保存
-const quickDebounce = 1200;
-const autoSave = useProjectAutoSave({
-  projectList,
-  editedRows,
-  deletedIds,
-  loadProjects,
-  loadStats,
-  onRowCreated: handleRowCreated,
-});
-const { saveStatus, lastSavedTime, debounceAutoSave, startPeriodicSave, formatSaveTime, cleanup, markClean } = autoSave;
-
-let tempIdCounter = -1;
-
-// 扩展类型选项
-const extensionOptions = [
-  { label: '云计算安全扩展要求', value: '云计算安全扩展要求' },
-  { label: '物联网安全扩展要求', value: '物联网安全扩展要求' },
-  { label: '移动互联安全扩展要求', value: '移动互联安全扩展要求' },
-  { label: '工业控制系统安全扩展要求', value: '工业控制系统安全扩展要求' },
-  { label: '大数据安全扩展要求', value: '大数据安全扩展要求' },
-  { label: '关键信息基础设施安全扩展要求', value: '关键信息基础设施安全扩展要求' },
-];
-
-// 扩展类型多选弹窗
-const extDialogVisible = ref(false);
-const extDialogRow = ref<any>(null);
-const extDialogSelected = ref<string[]>([]);
-
-function openExtDialog(row: any) {
-  extDialogRow.value = row;
-  extDialogSelected.value = row.extensionTypes ? [...row.extensionTypes] : [];
-  extDialogVisible.value = true;
-}
-
-function closeExtDialog() {
-  extDialogVisible.value = false;
-  extDialogRow.value = null;
-  extDialogSelected.value = [];
-}
-
-function confirmExtDialog() {
-  if (extDialogRow.value) {
-    extDialogRow.value.extensionTypes = [...extDialogSelected.value];
-    markRowEdited(extDialogRow.value);
-  }
-  closeExtDialog();
-}
-
-function formatExtDisplay(extTypes: string[] | undefined): string {
-  if (!extTypes || extTypes.length === 0) return '—';
-  if (extTypes.length <= 2) return extTypes.map(t => t.replace('安全扩展要求', '')).join('、');
-  return `${extTypes.slice(0, 2).map(t => t.replace('安全扩展要求', '')).join('、')}等${extTypes.length}项`;
-}
-
-// 状态切换
-const statusDropdownTarget = ref<number | null>(null);
-const statusDropdownRef = ref<HTMLElement | null>(null);
-const statusDropdownRow = ref<any>(null);
-const statusDropdownRect = ref({ top: 0, left: 0 });
-
+const STATUS_LABEL: Record<string, string> = {
+  draft: '草稿',
+  in_progress: '进行中',
+  completed: '已完成',
+  archived: '已归档',
+};
 function statusLabel(status: string): string {
-  const map: Record<string, string> = {
-    draft: '草稿',
-    in_progress: '进行中',
-    completed: '已完成',
-    archived: '已归档',
-  };
-  return map[status] || status;
+  return STATUS_LABEL[status] || status;
 }
-
-function openStatusDropdown(row: any, event: Event) {
-  const target = event.currentTarget as HTMLElement;
-  const rect = target.getBoundingClientRect();
-  statusDropdownRect.value = {
-    top: rect.top + rect.height + 4,
-    left: rect.left,
-  };
-  statusDropdownRow.value = row;
-  statusDropdownTarget.value = row.id;
-}
-
-function changeStatus(row: any, newStatus: string) {
-  if (row.status === newStatus) {
-    closeStatusDropdown();
-    return;
-  }
-  row.status = newStatus;
-  markRowEdited(row);
-  closeStatusDropdown();
-}
-
-function closeStatusDropdown() {
-  statusDropdownTarget.value = null;
-}
-
-// 点击页面其它区域时关闭状态切换下拉，避免下拉常驻不消失
-function handleGlobalClick(e: MouseEvent) {
-  if (statusDropdownTarget.value === null) return;
-  const target = e.target as HTMLElement;
-  if (statusDropdownRef.value && statusDropdownRef.value.contains(target)) return;
-  closeStatusDropdown();
-}
-
-const pagination = reactive({
-  page: 1,
-  pageSize: 20,
-  total: 0,
-});
-
-const totalPages = computed(() => Math.ceil(pagination.total / pagination.pageSize) || 1);
-const visiblePages = computed(() => {
-  const pages: number[] = [];
-  const start = Math.max(1, pagination.page - 1);
-  const end = Math.min(totalPages.value, pagination.page + 1);
-  for (let i = start; i <= end; i++) pages.push(i);
-  return pages;
-});
-
-function getProgressClass(progress: number) {
-  if (progress >= 100) return 'complete';
-  if (progress >= 50) return 'high';
-  if (progress >= 20) return 'medium';
+function progressClass(progress: number): string {
+  if (progress >= 80) return 'high';
+  if (progress >= 40) return 'medium';
   return 'low';
-}
-
-function formatDate(date: string) {
-  return formatDateTime(date, '-');
 }
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -592,211 +276,123 @@ function onSearch() {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     pagination.page = 1;
-    loadProjects();
+    loadRows();
   }, 300);
 }
 
-function selectRow(index: number) {
-  currentRowIndex.value = index;
-}
-
-/**
- * 进入/退出编辑态。
- *
- * 这里**不能**标脏、更不能启动保存倒计时：点「编辑」只是展开输入框，
- * 数据一行字都还没改。保存计时应由 onCellEdit（真正敲键盘）触发。
- * 退出编辑时若期间改过，用短延迟收尾即可。
- */
-function toggleEdit(row: any) {
-  const id = String(row.id);
-  const wasEditing = row.id < 0 || editRowIds.value.includes(id);
-  if (wasEditing) {
-    editRowIds.value = editRowIds.value.filter(x => x !== id);
-    if (editedRows.value.includes(id)) {
-      debounceAutoSave(quickDebounce);
-    }
-  } else {
-    if (!editRowIds.value.includes(id)) {
-      editRowIds.value.push(id);
-    }
-  }
-}
-
-function addEmptyRow() {
-  // 新建项目默认使用 systemSettings.defaultStandard 对应的标准；等级组合由所选标准的 grade 自动确定
-  const defaultStd = standards.value.find((s: any) => s.id === defaultStandardId.value);
-  const defaultGrade = defaultStd?.level || 3;
-  const newRow: any = {
-    id: tempIdCounter--,
-    projectNo: '',
-    name: '',
-    systemName: '',
-    assessedUnit: '',
-    standardId: defaultStandardId.value || '',
-    standardSystem: getStandardName(defaultStandardId.value) || '新国标-正式版',
-    level: defaultGrade,
-    levelCombo: `S${defaultGrade}A${defaultGrade}G${defaultGrade}`,
-    extensionTypes: [] as string[],
-    progress: 0,
-    status: 'draft',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  editRowIds.value.push(String(newRow.id));
-  projectList.value.unshift(newRow);
-  currentRowIndex.value = 0;
-  // 此处不标脏、不触发保存：空行还没有可落库的内容，
-  // 保存时机交给用户敲第一个字（onCellEdit）。
-}
-
-async function loadProjects() {
+async function loadRows(): Promise<void> {
+  if (!window.api?.projectGroup) return;
   loading.value = true;
   try {
-    if (!window.api) return;
-
-    const isActive = activeTab.value === 'active';
-    const listParams: any = {
+    const params: ProjectGroupListParams = {
       page: pagination.page,
       pageSize: pagination.pageSize,
       keyword: keyword.value || undefined,
     };
-    if (isActive) {
-      listParams.excludeArchived = true;
+    if (activeTab.value === 'active') {
+      params.excludeArchived = true;
     } else {
-      listParams.status = 'archived';
+      params.status = 'archived';
     }
-
-    const res = await window.api.project.list(listParams);
+    const res = await window.api.projectGroup.list(params);
     if (res.success && res.data) {
-      projectList.value = res.data.list.map(row => ({
-        ...row,
-        extensionTypes: row.extensionType ? row.extensionType.split(',').filter(Boolean) : [],
-      }));
+      rows.value = res.data.list;
       pagination.total = res.data.total;
-      // 列表整个重建了：行对象已换新，旧的脏标记不再有意义。
-      // 但 editRowIds 保留 —— 搜索/翻页回来同一行还能接着填，不用再点一次编辑。
-      markClean();
-      currentRowIndex.value = -1;
     }
-    await loadStats();
   } finally {
     loading.value = false;
   }
 }
 
-/**
- * 切换页签 / 翻页 / 搜索前的重载入口。
- *
- * 直接调 loadProjects 会在返回时清空 editedRows 与 deletedIds（600 行附近），
- * 防抖窗口内的编辑就这么凭空消失了。这里先落盘再加载。
- */
-async function reloadProjects() {
-  if (autoSave.hasUnsavedChanges.value) {
-    await autoSave.saveAllChanges();
-  }
-  await loadProjects();
-}
-
-async function saveAllChanges() {
-  saving.value = true;
+async function loadStats(): Promise<void> {
+  if (!window.api?.projectGroup) return;
   try {
-    const success = await autoSave.saveAllChanges();
-    if (success) {
-      ElMessage.success('保存成功');
-    } else if (autoSave.hasUnsavedChanges.value) {
-      // 有行没落库（如接口报错）：这里必须说清楚，否则用户以为万事大吉
-      ElMessage.error('部分修改保存失败，请检查内容后重试');
-    } else {
-      ElMessage.info('没有需要保存的修改');
-    }
-  } finally {
-    saving.value = false;
+    const base = { page: 1, pageSize: 1 };
+    const [activeRes, archivedRes, allRes] = await Promise.all([
+      window.api.projectGroup.list({ ...base, excludeArchived: true }),
+      window.api.projectGroup.list({ ...base, status: 'archived' }),
+      // 系统总数需要把各分组的 systemCount 求和；分组数量通常很少，一次拉完即可
+      window.api.projectGroup.list({ page: 1, pageSize: 10000 }),
+    ]);
+    stats.activeCount = activeRes.success && activeRes.data ? activeRes.data.total : 0;
+    stats.archivedCount = archivedRes.success && archivedRes.data ? archivedRes.data.total : 0;
+    stats.systemCount = allRes.success && allRes.data
+      ? allRes.data.list.reduce((sum, g) => sum + (g.systemCount || 0), 0)
+      : 0;
+  } catch (err) {
+    console.error('刷新项目统计失败:', err);
   }
 }
 
-async function handleDelete(row: any) {
-  try {
-    await ElMessageBox.confirm('确定要删除该项目吗？', '确认删除', { type: 'warning' });
-  } catch {
-    return;
-  }
-  if (row.id < 0) {
-    // 尚未落库的新建行：直接移出列表并撤销其待保存标记即可
-    projectList.value = projectList.value.filter(r => r.id !== row.id);
-    editRowIds.value = editRowIds.value.filter(x => x !== String(row.id));
-    editedRows.value = editedRows.value.filter(x => x !== String(row.id));
-    return;
-  }
-
-  // 已存在的项目立即删除，不再塞进待保存队列排队：
-  // 之前点完"删除"行就消失了，但真正落库要等防抖或手动保存，
-  // 用户此刻离开页面删除从未发生，回来项目还在。
-  const snapshot = projectList.value;
-  projectList.value = projectList.value.filter(r => r.id !== row.id);
-  editRowIds.value = editRowIds.value.filter(x => x !== String(row.id));
-  editedRows.value = editedRows.value.filter(x => x !== String(row.id));
-  const res = await window.api.project.remove(String(row.id));
-  if (res.success) {
-    ElMessage.success('项目已删除');
-    await loadProjects();
-  } else {
-    projectList.value = snapshot;
-    ElMessage.error(res.error?.message || '删除失败，请重试');
-  }
+function loadAll(): Promise<void[]> {
+  return Promise.all([loadRows(), loadStats()]);
 }
 
-function goToDetail(row: any) {
-  if (row.id < 0) {
-    ElMessage.warning('请先保存新建项目');
-    return;
-  }
-  appStore.setCurrentProject(row.id);
-  router.push(`/projects/${row.id}/assets`);
+function switchTab(tab: 'active' | 'archived') {
+  activeTab.value = tab;
+  pagination.page = 1;
+  loadAll();
 }
 
-async function toggleArchive(row: any) {
-  if (row.id < 0) {
-    ElMessage.warning('请先保存新建项目');
-    return;
-  }
-  const newStatus = row.status === 'archived' ? 'draft' : 'archived';
-  const action = newStatus === 'archived' ? '归档' : '取消归档';
-  try {
-    await ElMessageBox.confirm(`确定${action}该项目吗？`, '确认操作');
-  } catch {
-    return;
-  }
-  const res = await window.api.project.update(row.id, { status: newStatus });
-  if (res.success) {
-    ElMessage.success(`${action}成功`);
-    loadProjects();
-  } else {
-    ElMessage.error(res.error?.message || `${action}失败`);
-  }
+function changePage(page: number) {
+  if (page < 1 || page > totalPages.value) return;
+  pagination.page = page;
+  loadRows();
 }
 
-// ============ 项目归档：整包导出 / 整包还原 ============
-//
-// 导出的不是"项目字段表"，而是这个项目在本系统里的全部：资产、测评记录、问题、
-// 采集任务与结果、截图证据等附件，以及测评记录依赖的标准与测评项。
-// 换台电脑或交给同事时，用「导入」可原样还原，不需要重新录入。
+function goToSystems(row: ProjectGroup) {
+  router.push(`/projects/${row.id}/systems`);
+}
+
+// ==================== 项目合册报告（项目综述 + 各系统分册） ====================
+const reportDialogRef = ref<InstanceType<typeof ReportConfigDialog> | null>(null);
+
+/** 按项目分组生成合册；后端会取该分组下全量系统，不受分页/筛选影响 */
+function openGroupReport(row: ProjectGroup) {
+  if (!row.systemCount) {
+    ElMessage.warning('该项目下还没有系统，请先进入项目添加系统');
+    return;
+  }
+  reportDialogRef.value?.open(row.id, row.name, 'group');
+}
+
+// ==================== 项目归档：整个项目（分组 + 其下全部系统） ====================
 const exportDialogVisible = ref(false);
+const exportOptions = ref<ExportProjectOption[]>([]);
 const importDialogVisible = ref(false);
-const archiveBusy = ref(false);
-const archivePreview = ref<any>(null);
+const archivePreview = ref<ArchivePreview | null>(null);
 const pendingArchive = ref<{ path: string; password: string } | null>(null);
+const archiveBusy = ref(false);
 
-// 导出候选 = 当前筛选后的可见行（与表格所见一致）
-const exportOptions = computed(() =>
-  filteredRows.value.map((r: any) => ({
-    id: r.id,
-    name: r.name,
-    systemName: r.systemName || '',
-    assetCount: r.assetCount || 0,
-  })),
-);
+/**
+ * 「导出整个项目」按 groupId 取全量系统，不受列表分页、搜索词、归档页签影响。
+ * 系统列表页的导出候选只覆盖当前页，跨页项目必须走这里。
+ */
+async function openGroupExport(row: ProjectGroup) {
+  if (!row.systemCount) {
+    ElMessage.warning('该项目下还没有系统，请先进入项目添加系统');
+    return;
+  }
+  const res = await window.api.project.list({ page: 1, pageSize: 10000, groupId: row.id });
+  if (!res.success || !res.data) {
+    ElMessage.error(res.error?.message || '读取系统列表失败');
+    return;
+  }
+  const list: any[] = res.data.list || [];
+  if (!list.length) {
+    ElMessage.warning('该项目下没有可导出的系统');
+    return;
+  }
+  exportOptions.value = list.map(p => ({
+    id: p.id,
+    name: p.name,
+    systemName: p.systemName || '',
+    assetCount: p.assetCount || 0,
+  }));
+  exportDialogVisible.value = true;
+}
 
-async function confirmExport(payload: any) {
+async function confirmExport(payload: ExportPayload) {
   if (payload.format === 'excel') {
     const res = await window.api.project.exportAll(payload.projectIds);
     if (res.success) {
@@ -819,39 +415,18 @@ async function confirmExport(payload: any) {
     if (res.success) {
       const d: any = res.data || {};
       exportDialogVisible.value = false;
-      const mb = ((d.size || 0) / 1024 / 1024).toFixed(2);
       const missing = d.missingFiles?.length || 0;
       ElMessage({
         type: 'success',
         duration: 4500,
         showClose: true,
-        message: `归档导出成功：${mb} MB，含 ${d.fileCount || 0} 个附件${missing ? `（${missing} 个附件在磁盘上已找不到）` : ''}`,
+        message: `归档导出成功：${((d.size || 0) / 1024 / 1024).toFixed(2)} MB，含 ${payload.projectIds.length} 个系统、${d.fileCount || 0} 个附件${missing ? `（${missing} 个附件在磁盘上已找不到）` : ''}`,
       });
     } else if (res.error?.message !== '用户取消') {
       ElMessage.error(res.error?.message || '导出失败');
     }
   } finally {
     archiveBusy.value = false;
-  }
-}
-
-/** 操作列：单个项目直接打包（默认带标准、不带设备口令） */
-async function exportSingleProject(row: any) {
-  const res = await window.api.project.exportArchive({
-    projectIds: [row.id],
-    includeStandards: true,
-    includeCredentials: false,
-  });
-  if (res.success) {
-    const d: any = res.data || {};
-    ElMessage({
-      type: 'success',
-      duration: 4500,
-      showClose: true,
-      message: `已导出「${row.name}」：${((d.size || 0) / 1024 / 1024).toFixed(2)} MB，含 ${d.fileCount || 0} 个附件`,
-    });
-  } else if (res.error?.message !== '用户取消') {
-    ElMessage.error(res.error?.message || '导出失败');
   }
 }
 
@@ -883,7 +458,7 @@ async function handleImport() {
     ElMessage.error(pv.error?.message || '无法读取该归档包');
     return;
   }
-  archivePreview.value = pv.data;
+  archivePreview.value = pv.data as unknown as ArchivePreview;
   pendingArchive.value = { path: archivePath, password };
   importDialogVisible.value = true;
 }
@@ -905,51 +480,165 @@ async function confirmImport(strategy: 'skip' | 'overwrite' | 'copy') {
     importDialogVisible.value = false;
     archivePreview.value = null;
     pendingArchive.value = null;
-    await loadProjects();
+    await loadAll();
 
+    const names = (d.groups || []).map((g: any) => g.name).slice(0, 2).join('、');
+    const groupText = d.groups?.length
+      ? `${d.groups.length} 个项目（${names}${d.groups.length > 2 ? '…' : ''}）`
+      : '对应项目';
     ElMessage({
       type: 'success',
-      duration: 4500,
+      duration: 5000,
       showClose: true,
       message:
-        `导入完成：${d.imported?.length || 0} 个项目，${d.restoredFiles || 0} 个附件` +
+        `导入完成：${d.imported?.length || 0} 个系统已还原到 ${groupText}，${d.restoredFiles || 0} 个附件` +
         (d.skipped?.length ? `，跳过 ${d.skipped.length} 个` : ''),
     });
-    if (d.warnings?.length) {
-      ElMessageBox.alert(d.warnings.join('\n'), '导入提示', {
-        confirmButtonText: '知道了',
-        customStyle: { whiteSpace: 'pre-wrap' },
-      }).catch(() => {});
-    }
   } finally {
     archiveBusy.value = false;
   }
 }
 
-// Ctrl+S 保存（由 MainLayout 统一派发 app:global-save）
-function onGlobalSave() {
+// ==================== 新建 / 编辑弹窗 ====================
+const dialogVisible = ref(false);
+const editingId = ref('');
+const form = reactive({
+  name: '',
+  projectNo: '',
+  assessedUnit: '',
+  customerName: '',
+  assessor: '',
+  startDate: '',
+  endDate: '',
+  description: '',
+});
+
+function resetForm() {
+  form.name = '';
+  form.projectNo = '';
+  form.assessedUnit = '';
+  form.customerName = '';
+  form.assessor = '';
+  form.startDate = '';
+  form.endDate = '';
+  form.description = '';
+}
+
+function openCreate() {
+  editingId.value = '';
+  resetForm();
+  dialogVisible.value = true;
+}
+
+function openEdit(row: ProjectGroup) {
+  editingId.value = row.id;
+  form.name = row.name || '';
+  form.projectNo = row.projectNo || '';
+  form.assessedUnit = row.assessedUnit || '';
+  form.customerName = row.customerName || '';
+  form.assessor = row.assessor || '';
+  form.startDate = row.startDate || '';
+  form.endDate = row.endDate || '';
+  form.description = row.description || '';
+  dialogVisible.value = true;
+}
+
+function closeDialog() {
+  dialogVisible.value = false;
+}
+
+async function submitDialog() {
+  const name = form.name.trim();
+  if (!name) {
+    ElMessage.warning('请填写项目名称');
+    return;
+  }
   if (saving.value) return;
-  saveAllChanges();
+  saving.value = true;
+  try {
+    const payload = {
+      name,
+      projectNo: form.projectNo,
+      assessedUnit: form.assessedUnit,
+      customerName: form.customerName,
+      assessor: form.assessor,
+      startDate: form.startDate,
+      endDate: form.endDate,
+      description: form.description,
+    };
+    const res = editingId.value
+      ? await window.api.projectGroup.update(editingId.value, payload)
+      : await window.api.projectGroup.create(payload);
+    if (!res.success) {
+      ElMessage.error(res.error?.message || '保存失败，请重试');
+      return;
+    }
+    dialogVisible.value = false;
+    if (!editingId.value && res.data?.id) {
+      // 用户的工作流：创建项目 → 立刻进入创建系统的页面
+      ElMessage.success('项目已创建，请添加被测系统');
+      await router.push(`/projects/${res.data.id}/systems`);
+      return;
+    }
+    ElMessage.success('已保存');
+    await loadAll();
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function toggleArchive(row: ProjectGroup) {
+  const next = row.status === 'archived' ? 'draft' : 'archived';
+  const label = next === 'archived' ? '归档' : '取消归档';
+  try {
+    await ElMessageBox.confirm(`确定${label}项目「${row.name}」吗？`, '确认操作');
+  } catch {
+    return;
+  }
+  const res = await window.api.projectGroup.update(row.id, { status: next as ProjectGroup['status'] });
+  if (res.success) {
+    ElMessage.success(`已${label}`);
+    await loadAll();
+  } else {
+    ElMessage.error(res.error?.message || '操作失败');
+  }
+}
+
+async function handleDelete(row: ProjectGroup) {
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除项目「${row.name}」吗？\n其下 ${row.systemCount} 个系统及全部资产、测评记录、问题清单将一并删除，且不可恢复。`,
+      '确认删除',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
+  const res = await window.api.projectGroup.remove(row.id);
+  if (res.success) {
+    ElMessage.success('项目已删除');
+    await loadAll();
+  } else {
+    ElMessage.error(res.error?.message || '删除失败');
+  }
+}
+
+// Ctrl+S 在弹窗打开时等价于「保存」，与全局保存快捷键保持一致
+function onGlobalSave() {
+  if (dialogVisible.value && !saving.value) void submitDialog();
 }
 
 onMounted(() => {
-  loadStandards();
-  loadProjects();
-  startPeriodicSave();
-  document.addEventListener('click', handleGlobalClick);
+  loadAll();
   window.addEventListener('app:global-save', onGlobalSave);
 });
 
 onUnmounted(() => {
-  cleanup();
   window.removeEventListener('app:global-save', onGlobalSave);
-  // P2-12：搜索防抖定时器此前从未清理，组件卸载后回调仍会触发 loadProjects()，
-  // 对已销毁的组件写入响应式状态，快速切换页面时可能用旧请求结果覆盖新数据。
   if (searchTimer) {
     clearTimeout(searchTimer);
     searchTimer = null;
   }
-  document.removeEventListener('click', handleGlobalClick);
 });
 </script>
 
@@ -960,40 +649,62 @@ onUnmounted(() => {
   min-height: calc(100vh - var(--titlebar-height, 40px) - var(--header-height, 56px));
 }
 
-.project-card {
-  background: var(--color-bg-card);
-  border-radius: var(--radius-lg, 8px);
-  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.04));
-  position: relative;
+.page-header {
+  margin-bottom: 18px;
+
+  .page-title {
+    margin: 0 0 6px;
+    font-size: 20px;
+    font-weight: 500;
+    color: var(--color-text-primary, #1A2332);
+  }
+
+  .page-subtitle {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--color-text-secondary, #4A5568);
+  }
 }
 
-.status-floating-dropdown {
-  position: fixed;
-  z-index: 9999;
+.stat-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.stat-card {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 20px;
   background: var(--color-bg-card, #fff);
-  border: 1px solid var(--color-border-base, #E2E6ED);
-  border-radius: var(--radius-base);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-  padding: 4px;
-  min-width: 88px;
+  border: 1px solid var(--color-border-light, #EEF1F6);
+  border-radius: var(--radius-lg, 8px);
+  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.04));
 
-  .status-option {
-    padding: 6px 12px;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
+  .stat-label {
     font-size: 12px;
-    color: var(--color-text-primary, #111827);
-    transition: background 0.1s;
-
-    &:hover {
-      background: var(--color-bg-hover, #F0F4F9);
-    }
-
-    &.active {
-      font-weight: 600;
-      color: var(--color-primary, #1B5FD9);
-    }
+    color: var(--color-text-secondary, #4A5568);
   }
+
+  .stat-value {
+    font-size: 24px;
+    font-weight: 500;
+    line-height: 1.2;
+    color: var(--color-primary, #1B5FD9);
+
+    &.muted { color: var(--color-text-tertiary, #8B95A7); }
+  }
+}
+
+.card {
+  background: var(--color-bg-card, #fff);
+  border-radius: var(--radius-lg, 8px);
+  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.04));
+  overflow: hidden;
 }
 
 .card-tabs {
@@ -1004,42 +715,34 @@ onUnmounted(() => {
   .tab-btn {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 12px 16px;
+    gap: 8px;
+    padding: 14px 4px;
+    margin-right: 24px;
     border: none;
-    background: transparent;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--color-text-tertiary, #9CA3AF);
     border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    white-space: nowrap;
-    transition: all 0.15s;
+    background: transparent;
+    font-size: 13px;
+    color: var(--color-text-secondary, #4A5568);
+    cursor: pointer;
 
     &.active {
       color: var(--color-primary, #1B5FD9);
       border-bottom-color: var(--color-primary, #1B5FD9);
+      font-weight: 500;
     }
+  }
 
-    .tab-badge {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 20px;
-      height: 18px;
-      padding: 0 6px;
-      border-radius: var(--radius-full);
-      font-size: 11px;
-      font-weight: 600;
-      line-height: 1;
+  .tab-badge {
+    min-width: 20px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-size: 11px;
+    background: var(--color-primary-light, #E8F0FD);
+    color: var(--color-primary, #1B5FD9);
 
-      &.muted {
-        background: var(--color-bg-page, #F5F6FA);
-        color: var(--color-text-tertiary, #9CA3AF);
-      }
-      background: var(--color-primary-light, #E8F0FE);
-      color: var(--color-primary, #1B5FD9);
+    &.muted {
+      background: var(--color-bg-tag, #F0F4F9);
+      color: var(--color-text-tertiary, #8B95A7);
     }
   }
 }
@@ -1048,796 +751,378 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px;
   gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--color-border-light, #EEF1F6);
+}
 
-  .toolbar-left, .toolbar-right {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
+.toolbar-left, .toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
-  .toolbar-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    height: 36px;
-    padding: 0 14px;
-    border: 1px solid var(--color-border-default, #E5E7EB);
-    border-radius: var(--radius-md, 6px);
-    background: var(--color-bg-card);
-    color: var(--color-text-secondary, #4B5563);
-    font-size: 13px;
-    cursor: pointer;
-    transition: all 0.15s;
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border-base, #E2E6ED);
+  border-radius: var(--radius-base, 6px);
+  background: var(--color-bg-card, #fff);
+  color: var(--color-text-secondary, #4A5568);
+  font-size: 12px;
+  cursor: pointer;
 
-    &:hover {
-      border-color: var(--color-primary, #1B5FD9);
-      color: var(--color-primary, #1B5FD9);
-    }
+  &:hover { background: var(--color-bg-hover, #F0F4F9); }
 
-    &.primary {
-      border: none;
-      background: var(--color-primary, #1B5FD9);
-      color: #fff;
+  &.primary {
+    border-color: var(--color-primary, #1B5FD9);
+    background: var(--color-primary, #1B5FD9);
+    color: #fff;
 
-      &:hover {
-        background: var(--color-primary-hover, #1550B8);
-      }
-    }
-  }
-
-  .search-box {
-    position: relative;
-
-    .search-icon {
-      position: absolute;
-      left: 10px;
-      top: 50%;
-      transform: translateY(-50%);
-      color: var(--color-text-tertiary, #9CA3AF);
-    }
-
-    .search-input {
-      height: 32px;
-      padding: 0 12px 0 32px;
-      border: 1px solid var(--color-border-default, #E5E7EB);
-      border-radius: var(--radius-md, 6px);
-      font-size: 12px;
-      color: var(--color-text-primary, #111827);
-      background: var(--color-bg-card);
-      outline: none;
-      width: 200px;
-      transition: border-color 0.15s;
-
-      &:focus {
-        border-color: var(--color-primary, #1B5FD9);
-      }
-    }
-  }
-
-  .icon-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border: 1px solid var(--color-border-default, #E5E7EB);
-    border-radius: var(--radius-md, 6px);
-    background: var(--color-bg-card);
-    cursor: pointer;
-    color: var(--color-text-secondary, #4B5563);
-    transition: all 0.15s;
-
-    &:hover {
-      border-color: var(--color-primary, #1B5FD9);
-      color: var(--color-primary, #1B5FD9);
-    }
+    &:hover { background: var(--color-primary-hover, #2A71E8); }
   }
 }
 
-.filter-panel {
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--color-border-base, #E2E6ED);
+  border-radius: var(--radius-base, 6px);
+  background: var(--color-bg-card, #fff);
+  color: var(--color-text-secondary, #4A5568);
+  cursor: pointer;
+
+  &:hover { background: var(--color-bg-hover, #F0F4F9); }
+}
+
+.search-box {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 16px;
-  flex-wrap: wrap;
-  padding: 12px 16px;
-  border: 1px solid var(--color-border-default, #E5E7EB);
-  border-radius: var(--radius-md, 6px);
-  background: var(--color-bg-card, #FFFFFF);
-  margin-bottom: 12px;
 
-  .filter-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+  .search-icon {
+    position: absolute;
+    left: 10px;
+    color: var(--color-text-tertiary, #8B95A7);
+    pointer-events: none;
   }
 
-  .filter-label {
+  .search-input {
+    width: 240px;
+    height: 32px;
+    padding: 0 10px 0 30px;
+    border: 1px solid var(--color-border-base, #E2E6ED);
+    border-radius: var(--radius-base, 6px);
+    background: var(--color-bg-card, #fff);
+    color: var(--color-text-primary, #1A2332);
     font-size: 12px;
-    color: var(--color-text-secondary, #4B5563);
+    outline: none;
+
+    &:focus { border-color: var(--color-primary, #1B5FD9); }
+    &::placeholder { color: var(--color-text-placeholder, #B0B7C3); }
+  }
+}
+
+.table-wrapper { min-height: 180px; }
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+
+  th, td {
+    padding: 11px 12px;
+    text-align: left;
+    font-size: 12px;
+    border-bottom: 1px solid var(--color-border-light, #EEF1F6);
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .filter-select {
-    height: 30px;
-    min-width: 140px;
-    padding: 0 8px;
-    border: 1px solid var(--color-border-default, #E5E7EB);
-    border-radius: var(--radius-md, 6px);
-    font-size: 12px;
-    color: var(--color-text-primary, #111827);
-    background: var(--color-bg-card, #FFFFFF);
-    outline: none;
-
-    &:focus {
-      border-color: var(--color-primary, #1B5FD9);
-    }
+  th {
+    font-weight: 500;
+    color: var(--color-text-secondary, #4A5568);
+    background: var(--color-bg-subtle, #F5F7FA);
   }
 
-  .filter-reset {
-    height: 30px;
-    padding: 0 12px;
-    border: 1px solid var(--color-border-default, #E5E7EB);
-    border-radius: var(--radius-md, 6px);
-    background: var(--color-bg-card, #FFFFFF);
-    font-size: 12px;
-    color: var(--color-text-secondary, #4B5563);
-    cursor: pointer;
+  td { color: var(--color-text-primary, #1A2332); }
 
-    &:hover:not(:disabled) {
-      border-color: var(--color-primary, #1B5FD9);
-      color: var(--color-primary, #1B5FD9);
-    }
+  tbody tr:hover { background: var(--color-bg-hover, #F0F4F9); }
 
-    &:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-  }
-
-  .filter-summary {
-    font-size: 12px;
-    color: var(--color-text-tertiary, #9CA3AF);
-  }
+  .col-index { width: 56px; }
+  .col-no { width: 120px; }
+  .col-name { width: auto; }
+  .col-unit { width: 150px; }
+  .col-systems { width: 92px; }
+  .col-progress { width: 132px; }
+  .col-time { width: 140px; }
+  .col-status { width: 88px; }
+  // 6 个行内按钮（进入 / 导出 / 合册报告 / 编辑 / 归档 / 删除）：6×26px + 5×4px 间距 + td 左右 padding 24px = 200px，
+  // 留出 10px 余量；宽度不足时最后一个「删除」按钮会被 td 的 overflow:hidden 裁掉。
+  .col-actions { width: 210px; }
 }
 
-.table-wrapper {
-  overflow-x: auto;
+.mono-text { font-family: var(--font-mono, monospace); font-size: 11px; }
+.text-secondary { color: var(--color-text-secondary, #4A5568); }
+.time-text { color: var(--color-text-tertiary, #8B95A7); font-size: 11px; }
 
-  .empty-cell {
-    padding: 48px 0;
-    text-align: center;
-  }
+.link-btn {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-primary, #1B5FD9);
+  font-size: 12px;
+  cursor: pointer;
 
-  .data-table {
-    width: 100%;
-    border-collapse: collapse;
-    table-layout: fixed;
-    /* 下面 11 列固定宽度合计 1746px。此前 min-width 只有 1180px，
-       table-layout: fixed 会把所有列等比压缩到 1180，长文本列（项目名称/系统名称/被测单位）
-       被压到只剩声明宽度的 2/3，内容过早省略。对齐到列宽总和，窄屏交给横向滚动。 */
-    min-width: 1746px;
-
-    thead tr {
-      background: var(--color-bg-hover);
-
-      th {
-        height: 44px;
-        padding: 0 16px;
-        font-size: 12px;
-        font-weight: 500;
-        color: var(--color-text-secondary);
-        text-align: left;
-        border-bottom: 1px solid var(--color-border-default, #E5E7EB);
-        white-space: nowrap;
-
-        &.col-index { width: 56px; }
-        &.col-no { width: 140px; }
-        &.col-name { width: 240px; }
-        &.col-system { width: 220px; }
-        &.col-unit { width: 220px; }
-        &.col-standard { width: 180px; }
-        &.col-ext { width: 140px; }
-        &.col-progress { width: 120px; }
-        &.col-time { width: 140px; }
-        &.col-status { width: 100px; position: sticky; right: 190px; background: var(--color-bg-card, rgba(255, 255, 255, 0.85)); backdrop-filter: blur(8px); z-index: 2; border-left: 1px solid var(--color-border-light, #E5E7EB); border-right: none; }
-        &.col-actions { width: 190px; position: sticky; right: 0; background: var(--color-bg-card, rgba(255, 255, 255, 0.85)); backdrop-filter: blur(8px); z-index: 2; }
-      }
-    }
-
-    tbody tr {
-      height: 44px;
-      cursor: pointer;
-      transition: background 0.12s;
-      background: var(--color-bg-card);
-
-      &:hover {
-        background: var(--color-bg-surface-hover, #FAFBFD);
-      }
-
-      &.active {
-        background: var(--color-primary-lighter, rgba(59, 130, 246, 0.12));
-      }
-
-      &.new {
-        background: var(--color-warning-light, rgba(212, 136, 6, 0.1));
-
-        &:hover {
-          background: var(--color-warning-light, rgba(212, 136, 6, 0.1));
-        }
-      }
-
-      td {
-        padding: 10px 16px;
-        box-sizing: border-box;
-        font-size: 13px;
-        color: var(--color-text-primary, #111827);
-        border-bottom: 1px solid var(--color-border-light, #F0F0F3);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      .col-index {
-        color: var(--color-text-secondary, #4B5563);
-        text-align: center;
-      }
-
-      .col-no {
-        .mono-text {
-          font-family: var(--font-family-mono, monospace);
-          font-size: 11px;
-        }
-      }
-
-      .col-system, .col-unit {
-        color: var(--color-text-secondary, #4B5563);
-      }
-
-      .col-standard {
-        color: var(--color-text-secondary, #4B5563);
-      }
-
-      .col-ext {
-        color: var(--color-text-secondary, #4B5563);
-      }
-
-      .col-progress {
-        .progress-cell {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 0 8px;
-          box-sizing: border-box;
-          width: 100%;
-
-          .progress-bar {
-            flex: 1 1 auto;
-            height: 6px;
-            background: var(--color-primary-light, #E8F0FE);
-            border-radius: var(--radius-sm);
-            min-width: 40px;
-            max-width: 66px;
-
-            .progress-fill {
-              height: 100%;
-              border-radius: var(--radius-sm);
-              transition: width 0.2s;
-            }
-          }
-
-          .progress-text {
-            flex-shrink: 0;
-            flex-grow: 0;
-            font-size: 11px;
-            font-weight: 500;
-            white-space: nowrap;
-            min-width: 32px;
-            text-align: right;
-            line-height: 1;
-
-            &.complete { color: #16A34A; }
-            &.high, &.medium, &.low { color: var(--color-primary, #1B5FD9); }
-          }
-
-          .progress-bar.complete {
-            background: var(--color-success-light);
-            .progress-fill { background: #16A34A; }
-          }
-          .progress-bar.high .progress-fill { background: var(--color-primary, #1B5FD9); }
-          .progress-bar.medium .progress-fill { background: #D97706; }
-          .progress-bar.low .progress-fill { background: #9CA3AF; }
-        }
-      }
-
-      .col-time {
-        color: var(--color-text-tertiary, #9CA3AF);
-        font-size: 12px;
-      }
-
-      .col-status {
-        width: 100px;
-        position: sticky;
-        // 两列均为 sticky 时必须错开停靠位：状态列停在操作列(190px)左侧，
-        // 否则两列都贴 right:0，横向滚动时状态标签被操作按钮整列盖住
-        right: 190px;
-        background: var(--color-bg-card);
-        backdrop-filter: blur(8px);
-        z-index: 2;
-        border-left: 1px solid var(--color-border-light);
-
-        .status-wrapper {
-          position: relative;
-          display: inline-block;
-        }
-
-        .status-tag {
-          display: inline-flex;
-          align-items: center;
-          padding: 2px 10px;
-          border-radius: var(--radius-lg);
-          font-size: 12px;
-          line-height: 20px;
-          cursor: pointer;
-          user-select: none;
-          transition: all 0.15s;
-
-          &.status-draft {
-            background: #F3F4F6;
-            color: #6B7280;
-          }
-
-          &.status-in_progress {
-            background: #E8F0FE;
-            color: #1B5FD9;
-          }
-
-          &.status-completed {
-            background: #E8F5E9;
-            color: #16A34A;
-          }
-
-          &.status-archived {
-            background: #FEF3C7;
-            color: #D97706;
-          }
-        }
-      }
-
-      .col-actions {
-        position: sticky;
-        right: 0;
-        background: var(--color-bg-card);
-        backdrop-filter: blur(8px);
-        z-index: 2;
-        // 注意：td 不能用 display:flex —— 一旦变成 flex 容器就脱离表格行布局，
-        // vertical-align 失效，按钮组不再随行高垂直居中（表现为按钮整体偏上/偏下）。
-        // 恢复 table-cell，用 text-align + inline-flex 按钮实现水平排列。
-        padding: 0 8px;
-        box-sizing: border-box;
-        text-align: center;
-        white-space: nowrap;
-
-        .action-btn {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          vertical-align: middle;
-          margin: 0 3px;
-          width: 28px;
-          height: 28px;
-          border: 1px solid var(--color-border-default, #E5E7EB);
-          border-radius: var(--radius-md, 6px);
-          background: var(--color-bg-card);
-          cursor: pointer;
-          color: var(--color-text-tertiary, #9CA3AF);
-          transition: all 0.15s;
-
-          &:hover {
-            border-color: var(--color-primary, #1B5FD9);
-            color: var(--color-primary, #1B5FD9);
-          }
-
-          &.enter:hover {
-            background: var(--color-primary-light, #E8F0FE);
-          }
-
-          &.edit:hover {
-            background: var(--color-primary-light, #E8F0FE);
-          }
-
-          &.archive:hover {
-            background: var(--color-warning-light);
-            border-color: #D97706;
-            color: #D97706;
-          }
-
-          &.delete:hover {
-            background: var(--color-danger-light);
-            border-color: #DC2626;
-            color: #DC2626;
-          }
-        }
-      }
-    }
-  }
-
-  .cell-input {
-    width: 100%;
-    height: 28px;
-    padding: 0 8px;
-    border: 1px solid var(--color-border-default, #E5E7EB);
-    border-radius: var(--radius-sm, 2px);
-    font-size: 12px;
-    color: var(--color-text-primary, #111827);
-    background: var(--color-bg-card);
-    outline: none;
-
-    &:focus {
-      border-color: var(--color-primary, #1B5FD9);
-      box-shadow: 0 0 0 2px rgba(27, 95, 217, 0.1);
-    }
-  }
-
-  .cell-select {
-    width: 100%;
-    height: 28px;
-    padding: 0 8px;
-    border: 1px solid var(--color-border-default, #E5E7EB);
-    border-radius: var(--radius-sm, 2px);
-    font-size: 12px;
-    color: var(--color-text-primary, #111827);
-    background: var(--color-bg-card);
-    outline: none;
-
-    &:focus {
-      border-color: var(--color-primary, #1B5FD9);
-    }
-  }
-
-  .mono {
-    font-family: var(--font-family-mono, monospace);
-    font-size: 11px;
-  }
-
-  .text-secondary {
-    color: var(--color-text-secondary, #4B5563);
-  }
+  &:hover { text-decoration: underline; }
 }
+
+.progress-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-border-light, #EEF1F6);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--color-primary, #1B5FD9);
+
+  .high & { background: var(--color-success, #18A957); }
+  .medium & { background: var(--color-warning, #D48806); }
+  .low & { background: var(--color-info, #5C6C8C); }
+}
+
+.progress-text {
+  min-width: 32px;
+  font-size: 11px;
+  color: var(--color-text-secondary, #4A5568);
+  text-align: right;
+}
+
+.status-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  background: var(--color-bg-tag, #F0F4F9);
+  color: var(--color-text-secondary, #4A5568);
+
+  &.status-draft { background: var(--color-info-light, #EEF2F8); color: var(--color-info, #5C6C8C); }
+  &.status-in_progress { background: var(--color-primary-light, #E8F0FD); color: var(--color-primary, #1B5FD9); }
+  &.status-completed { background: var(--color-success-light, #E7F8EE); color: var(--color-success, #18A957); }
+  &.status-archived { background: var(--color-bg-tag, #F0F4F9); color: var(--color-text-tertiary, #8B95A7); }
+}
+
+.col-actions {
+  white-space: nowrap;
+  // 最后一列：即使列宽被 table-layout:fixed 压缩，也不裁掉行内按钮
+  overflow: visible;
+}
+
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--color-text-tertiary, #8B95A7);
+  cursor: pointer;
+
+  &:hover { background: var(--color-bg-hover, #F0F4F9); }
+  &:last-child { margin-right: 0; }
+  &.enter:hover { color: var(--color-primary, #1B5FD9); }
+  &.export:hover { color: var(--color-success, #2E7D32); }
+  &.report:hover { color: var(--color-primary, #1B5FD9); }
+  &.edit:hover { color: var(--color-primary, #1B5FD9); }
+  &.archive:hover { color: var(--color-warning, #D48806); }
+  &.delete:hover { color: var(--color-danger, #E53935); }
+}
+
+.empty-cell { padding: 36px 0 !important; text-align: center; }
 
 .pagination-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 12px 20px;
-  border-top: 1px solid var(--color-border-light, #F0F0F3);
-  background: var(--color-bg-base);
-
-  .footer-left {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-shrink: 0;
-
-    .total-text {
-      font-size: 12px;
-      color: var(--color-text-tertiary, #9CA3AF);
-      white-space: nowrap;
-    }
-
-    .edited-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 2px 8px;
-      border-radius: var(--radius-full);
-      background: var(--color-warning-light);
-      color: var(--color-warning);
-      font-size: 11px;
-      font-weight: 500;
-    }
-
-    .save-status {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 2px 8px;
-      border-radius: var(--radius-full);
-      font-size: 11px;
-      font-weight: 500;
-
-      .save-dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        display: inline-block;
-      }
-
-      &.saving {
-        background: var(--color-primary-light);
-        color: var(--color-primary);
-        .save-dot { background: var(--color-primary); animation: pulse 1s infinite; }
-      }
-      &.saved {
-        background: var(--color-success-light);
-        color: var(--color-success);
-        .save-dot { background: var(--color-success); }
-      }
-      &.unsaved {
-        background: var(--color-warning-light);
-        color: var(--color-warning);
-        .save-dot { background: var(--color-warning); }
-      }
-      &.error {
-        background: var(--color-danger-light);
-        color: var(--color-danger);
-        .save-dot { background: var(--color-danger); }
-      }
-    }
-  }
-
-  .pagination-btns {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-
-    .page-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 28px;
-      height: 28px;
-      border: 1px solid var(--color-border-default, #E5E7EB);
-      border-radius: var(--radius-sm, 2px);
-      background: var(--color-bg-card);
-      cursor: pointer;
-      color: var(--color-text-secondary, #4B5563);
-      font-size: 12px;
-      transition: all 0.15s;
-
-      &:hover:not(:disabled) {
-        border-color: var(--color-primary, #1B5FD9);
-        color: var(--color-primary, #1B5FD9);
-      }
-
-      &:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-        color: var(--color-text-tertiary, #9CA3AF);
-      }
-
-      &.active {
-        border-color: var(--color-primary, #1B5FD9);
-        background: var(--color-primary, #1B5FD9);
-        color: #fff;
-        font-weight: 500;
-      }
-    }
-  }
-
-  .footer-right {
-    display: flex;
-    gap: 8px;
-    flex-shrink: 0;
-  }
-
-  .footer-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    height: 28px;
-    padding: 0 10px;
-    border: 1px solid var(--color-border-default, #E5E7EB);
-    border-radius: var(--radius-md, 6px);
-    background: var(--color-bg-card);
-    color: var(--color-text-secondary, #4B5563);
-    font-size: 12px;
-    cursor: pointer;
-    transition: all 0.15s;
-
-    &:hover:not(:disabled) {
-      border-color: var(--color-primary, #1B5FD9);
-      color: var(--color-primary, #1B5FD9);
-    }
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    &.primary {
-      border: none;
-      background: var(--color-primary, #1B5FD9);
-      color: #fff;
-
-      &:hover:not(:disabled) {
-        background: var(--color-primary-hover, #1550B8);
-      }
-
-      &:disabled {
-        background: #9CA3AF;
-      }
-    }
-  }
+  border-top: 1px solid var(--color-border-light, #EEF1F6);
 }
 
-// 扩展类型多选弹窗
+.total-text, .page-indicator {
+  font-size: 12px;
+  color: var(--color-text-secondary, #4A5568);
+}
+
+.pagination-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.page-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--color-border-base, #E2E6ED);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--color-bg-card, #fff);
+  color: var(--color-text-secondary, #4A5568);
+  cursor: pointer;
+
+  &:disabled { opacity: 0.45; cursor: not-allowed; }
+  &:not(:disabled):hover { background: var(--color-bg-hover, #F0F4F9); }
+}
+
 .dialog-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  inset: 0;
+  z-index: 2000;
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  background: rgba(15, 23, 42, 0.45);
 }
 
-.ext-dialog {
-  background: var(--color-bg-card);
-  border-radius: var(--radius-md);
-  width: 420px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+.form-dialog {
+  width: 560px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-card, #fff);
+  border-radius: var(--radius-lg, 8px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
   overflow: hidden;
 }
 
-.ext-dialog-header {
+.form-dialog-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  border-bottom: 1px solid #E5E7EB;
+  border-bottom: 1px solid var(--color-border-light, #EEF1F6);
   font-size: 14px;
-  font-weight: 600;
-  color: #111827;
-
-  .close-btn {
-    background: none;
-    border: none;
-    font-size: 20px;
-    color: #9CA3AF;
-    cursor: pointer;
-    padding: 0;
-    width: 24px;
-    height: 24px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    &:hover {
-      color: #4B5563;
-    }
-  }
+  font-weight: 500;
+  color: var(--color-text-primary, #1A2332);
 }
 
-.ext-dialog-body {
-  padding: 20px;
-  max-height: 400px;
+.close-btn {
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary, #8B95A7);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+
+  &:hover { color: var(--color-text-primary, #1A2332); }
+}
+
+.form-dialog-body {
+  padding: 18px 20px;
   overflow-y: auto;
 }
 
-.ext-checkbox-item {
+.form-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 8px;
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  margin-bottom: 4px;
-
-  &:hover {
-    background: var(--color-bg-hover);
-  }
-
-  input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    cursor: pointer;
-  }
-
-  span {
-    font-size: 14px;
-    color: #374151;
-  }
+  gap: 12px;
+  margin-bottom: 14px;
 }
 
-.ext-dialog-footer {
+.form-field {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+
+  &.wide { width: 100%; margin-bottom: 14px; }
+}
+
+.form-label {
+  font-size: 12px;
+  color: var(--color-text-secondary, #4A5568);
+
+  em { color: var(--color-danger, #E53935); font-style: normal; }
+}
+
+.form-input, .form-textarea {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border-base, #E2E6ED);
+  border-radius: var(--radius-base, 6px);
+  background: var(--color-bg-card, #fff);
+  color: var(--color-text-primary, #1A2332);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  box-sizing: border-box;
+
+  &:focus { border-color: var(--color-primary, #1B5FD9); }
+  &::placeholder { color: var(--color-text-placeholder, #B0B7C3); }
+  &.mono { font-family: var(--font-mono, monospace); }
+}
+
+.form-textarea { resize: vertical; line-height: 1.6; }
+
+.form-hint {
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-base, 6px);
+  background: var(--color-primary-lighter, #F5F8FF);
+  color: var(--color-text-secondary, #4A5568);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.form-dialog-footer {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 8px;
   padding: 12px 20px;
-  border-top: 1px solid #E5E7EB;
-  background: var(--color-bg-base);
+  border-top: 1px solid var(--color-border-light, #EEF1F6);
 }
 
-.ext-dialog-btn {
-  padding: 8px 18px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
+.dialog-btn {
+  height: 32px;
+  padding: 0 16px;
+  border: 1px solid var(--color-border-base, #E2E6ED);
+  border-radius: var(--radius-base, 6px);
+  background: var(--color-bg-card, #fff);
+  color: var(--color-text-secondary, #4A5568);
+  font-size: 12px;
   cursor: pointer;
-  border: none;
-  transition: all 0.15s;
 
-  &.cancel {
-    background: var(--color-bg-card);
-    color: #4B5563;
-    border: 1px solid #D1D5DB;
+  &:disabled { opacity: 0.55; cursor: not-allowed; }
+  &:not(:disabled):hover { background: var(--color-bg-hover, #F0F4F9); }
 
-    &:hover {
-      background: var(--color-bg-hover);
-    }
-  }
-
-  &.confirm {
-    background: #1B5FD9;
+  &.primary {
+    border-color: var(--color-primary, #1B5FD9);
+    background: var(--color-primary, #1B5FD9);
     color: #fff;
 
-    &:hover {
-      background: #1a56c0;
-    }
-  }
-}
-
-.ext-select-wrapper {
-  width: 100%;
-}
-
-.ext-display {
-  display: inline-block;
-  width: 100%;
-  padding: 4px 8px;
-  color: #1B5FD9;
-  cursor: pointer;
-  font-size: 12px;
-
-  &:hover {
-    background: var(--color-primary-light);
-    border-radius: var(--radius-sm);
-  }
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-/* 深色主题覆盖。
-   注意：表格类名是 .data-table（此前写成 .project-table，整段样式从未命中）；
-   且不能用 :deep() 包裹 :root —— :root(html) 永远不可能是组件内元素的后代。
-   直接写祖先选择器，scoped 会把 [data-v] 附加到末尾元素上，可以正常匹配。 */
-:root.dark .data-table tbody tr {
-  background: var(--color-bg-card);
-
-  &:hover {
-    background: var(--color-bg-surface-hover);
-  }
-
-  &.active {
-    background: rgba(59, 130, 246, 0.12);
-  }
-
-  .status-tag {
-    &.status-draft {
-      background: rgba(107, 114, 128, 0.2);
-      color: #9CA3AF;
-    }
-
-    &.status-in_progress {
-      background: rgba(59, 130, 246, 0.2);
-      color: #60A5FA;
-    }
-
-    &.status-completed {
-      background: rgba(22, 163, 74, 0.2);
-      color: #34D399;
-    }
-
-    &.status-archived {
-      background: rgba(217, 119, 6, 0.2);
-      color: #FBBF24;
-    }
+    &:not(:disabled):hover { background: var(--color-primary-hover, #2A71E8); }
   }
 }
 </style>

@@ -1,0 +1,1120 @@
+<template>
+  <!-- 迷你AI进度条（批量分析最小化时显示） -->
+  <div v-if="batchMinimized" class="mini-ai-progress" @click="batchProgress.visible = true; batchMinimized = false">
+    <div class="mini-ai-progress-header">
+      <span class="mini-ai-progress-title"><el-icon><MagicStick /></el-icon> AI分析问题分析中</span>
+      <span class="mini-ai-progress-percent">{{ batchPercentDisplay }}</span>
+    </div>
+    <div class="mini-ai-progress-bar-container">
+      <div class="mini-ai-progress-bar" :style="{ width: batchProgress.percent + '%' }"></div>
+    </div>
+    <div class="mini-ai-progress-message">{{ batchProgress.message }}</div>
+    <div class="mini-ai-progress-restore">点击展开详情</div>
+  </div>
+
+  <!-- AI单条分析弹窗 -->
+  <el-dialog
+    v-model="singleDialogVisible"
+    width="720px"
+    class="ai-issue-dialog"
+    :close-on-click-modal="false"
+    :show-close="false"
+  >
+    <template #header>
+      <div class="ai-dialog-header">
+        <span class="ai-dialog-title"><el-icon><MagicStick /></el-icon> AI问题分析</span>
+        <button class="ai-close-btn" @click="singleDialogVisible = false" title="关闭">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    </template>
+
+    <!-- 5步流程指示器 -->
+    <div v-if="singleLoading" class="flow-steps-container">
+      <div class="flow-steps">
+        <div class="flow-step" :class="{ active: singleStep >= 1, done: singleStep > 1 }">
+          <div class="step-icon">{{ singleStep > 1 ? '✓' : '1' }}</div>
+          <div class="step-label">读取配置</div>
+        </div>
+        <div class="step-connector" :class="{ active: singleStep > 1 }"></div>
+        <div class="flow-step" :class="{ active: singleStep >= 2, done: singleStep > 2 }">
+          <div class="step-icon">{{ singleStep > 2 ? '✓' : '2' }}</div>
+          <div class="step-label">编码输入</div>
+        </div>
+        <div class="step-connector" :class="{ active: singleStep > 2 }"></div>
+        <div class="flow-step" :class="{ active: singleStep >= 3, done: singleStep > 3 }">
+          <div class="step-icon">{{ singleStep > 3 ? '✓' : '3' }}</div>
+          <div class="step-label">提交AI</div>
+        </div>
+        <div class="step-connector" :class="{ active: singleStep > 3 }"></div>
+        <div class="flow-step" :class="{ active: singleStep >= 4, done: singleStep > 4 }">
+          <div class="step-icon">{{ singleStep > 4 ? '✓' : '4' }}</div>
+          <div class="step-label">等待响应</div>
+        </div>
+        <div class="step-connector" :class="{ active: singleStep > 4 }"></div>
+        <div class="flow-step" :class="{ active: singleStep >= 5, done: singleStep > 5 }">
+          <div class="step-icon">{{ singleStep > 5 ? '✓' : '5' }}</div>
+          <div class="step-label">生成建议</div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="singleLoading" class="ai-loading-area">
+      <div class="loading-spinner"></div>
+      <p class="loading-text">{{ singleLoadingText }}</p>
+      <p v-if="singleElapsed > 0" class="loading-elapsed">已等待 {{ singleElapsed }} 秒</p>
+    </div>
+
+    <div v-else-if="singleResult" class="ai-result-area">
+      <div class="result-section">
+        <div class="section-title">问题标题</div>
+        <div class="section-content">{{ currentIssue?.issueTitle || '-' }}</div>
+      </div>
+      <div class="result-section">
+        <div class="section-title">问题分析</div>
+        <div class="section-content conclusion-text">{{ singleResult }}</div>
+      </div>
+    </div>
+
+    <template #footer>
+      <div class="dialog-footer">
+        <el-button @click="singleDialogVisible = false" :disabled="singleLoading">取消</el-button>
+        <el-button v-if="singleLoading" @click="cancelSingleAnalysis" :loading="singleCanceling">中止分析</el-button>
+        <el-button type="primary" :disabled="singleLoading || !singleResult" @click="applySingleResult">
+          确认填入问题分析
+        </el-button>
+      </div>
+    </template>
+  </el-dialog>
+
+  <!-- AI批量分析进度弹窗 -->
+  <el-dialog v-model="batchProgress.visible" width="600px" :close-on-click-modal="false" :show-close="false" :close-on-press-escape="false" class="ai-batch-dialog">
+    <template #header>
+      <div class="ai-dialog-header">
+        <span class="ai-dialog-title"><el-icon><MagicStick /></el-icon> AI批量分析问题分析</span>
+        <div class="ai-dialog-header-actions">
+          <button class="ai-minimize-btn" @click="batchProgress.visible = false; batchMinimized = true" title="最小化">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+          <button class="ai-close-btn" @click="closeBatchDialog" title="关闭">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+    </template>
+    <div class="batch-progress-container">
+      <!-- 总进度条 -->
+      <div class="progress-info">
+        <span class="stage-text">{{ batchProgress.message || '处理中...' }}</span>
+        <span class="percent-text">{{ batchPercentDisplay }}</span>
+      </div>
+      <div class="ai-progress-bar" :class="{ 'stage-error': batchProgress.stage === 'error', 'stage-done': batchProgress.stage === 'done' }">
+        <div class="ai-progress-fill" :style="{ width: batchProgress.percent + '%' }"></div>
+      </div>
+
+      <!-- 时间和统计信息 -->
+      <div class="progress-meta">
+        <div class="meta-item">
+          <span class="meta-label">进度</span>
+          <span class="meta-value">{{ batchProgress.current }} / {{ batchProgress.total }}</span>
+        </div>
+        <div class="meta-item" v-if="batchElapsedTime > 0">
+          <span class="meta-label">已用时间</span>
+          <span class="meta-value">{{ formatTime(batchElapsedTime) }}</span>
+        </div>
+        <div class="meta-item" v-if="batchEstimatedRemaining > 0 && batchProgress.percent < 100">
+          <span class="meta-label">预计剩余</span>
+          <span class="meta-value">{{ formatTime(batchEstimatedRemaining) }}</span>
+        </div>
+      </div>
+
+      <!-- 问题列表进度 -->
+      <div class="issue-list-progress" v-if="batchIssueList.length > 0">
+        <div class="issue-list-header">分析进度列表</div>
+        <div class="issue-list-container">
+          <div
+            v-for="(item, idx) in batchIssueList"
+            :key="item.issueId"
+            class="issue-list-item"
+            :class="{
+              pending: idx > batchProgress.current,
+              processing: idx === batchProgress.current - 1 && batchProgress.percent < 100,
+              done: idx < batchProgress.current - 1 || batchProgress.percent >= 100,
+              failed: item.failed
+            }"
+          >
+            <span class="issue-status-icon">
+              <svg v-if="idx < batchProgress.current - 1 || batchProgress.percent >= 100" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+              <svg v-else-if="idx === batchProgress.current - 1 && batchProgress.percent < 100" class="spin-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>
+              <svg v-else-if="item.failed" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+              <span v-else class="issue-dot"></span>
+            </span>
+            <span class="issue-name">{{ item.issueDescription }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 完成统计 -->
+      <div v-if="batchProgress.stage === 'done' || batchProgress.stage === 'canceled'" class="batch-summary">
+        <div class="summary-item success">
+          <span class="summary-icon">✓</span>
+          <span class="summary-text">成功 {{ batchSuccessCount }} 个</span>
+        </div>
+        <div class="summary-item failed" v-if="batchFailedCount > 0">
+          <span class="summary-icon">✗</span>
+          <span class="summary-text">失败 {{ batchFailedCount }} 个</span>
+        </div>
+      </div>
+
+      <!-- Loading dots -->
+      <div class="loading-hint" v-if="batchProgress.percent < 100 && batchProgress.stage !== 'error'">
+        <span class="loading-dot"></span>
+        <span class="loading-dot"></span>
+        <span class="loading-dot"></span>
+        <span class="loading-hint-text">AI正在分析生成问题分析，请耐心等待...</span>
+      </div>
+    </div>
+    <template #footer>
+      <div class="dialog-footer">
+        <template v-if="batchProgress.stage === 'done' || batchProgress.stage === 'canceled' || batchProgress.stage === 'error'">
+          <el-button
+            :type="batchProgress.stage === 'done' ? 'success' : 'primary'"
+            @click="batchProgress.visible = false"
+          >
+            {{ batchProgress.stage === 'canceled' ? '已中止，关闭' : batchProgress.stage === 'done' ? '完成' : '关闭' }}
+          </el-button>
+        </template>
+        <template v-else>
+          <el-button @click="batchProgress.visible = false; batchMinimized = true">最小化</el-button>
+          <el-button type="danger" plain :loading="batchCanceling" @click="cancelBatchAnalysis">
+            {{ batchCanceling ? '正在中止...' : '中止分析' }}
+          </el-button>
+        </template>
+      </div>
+    </template>
+  </el-dialog>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onBeforeUnmount } from 'vue';
+import { ElMessage } from 'element-plus';
+import { MagicStick } from '@element-plus/icons-vue';
+import type { Issue } from '../../../../shared/types';
+import { formatDuration } from '@/utils/format';
+
+const props = defineProps<{
+  getIssueDomainId: (domainName: string) => string;
+  // Phase 4 行标上下文注入
+  projectId?: string;
+  standardId?: string;
+}>();
+
+const emit = defineEmits<{
+  (e: 'applySuggestion', issueId: string, suggestion: string): void;
+}>();
+
+// ==================== 单条分析状态 ====================
+const singleDialogVisible = ref(false);
+const singleLoading = ref(false);
+const singleResult = ref<string | null>(null);
+const currentIssue = ref<Issue | null>(null);
+const singleStep = ref(0);
+const singleLoadingText = ref('正在读取配置...');
+const singleElapsed = ref(0);
+
+const singleStepTexts = [
+  '正在读取配置...',
+  '正在编码输入数据...',
+  '正在提交给AI分析...',
+  'AI正在分析中，请耐心等待...',
+  '正在生成问题分析...',
+];
+
+let singleElapsedTimer: ReturnType<typeof setInterval> | null = null;
+// 单条分析的用户主动取消标记：取消不等于失败，置位后不弹错误、静默收尾
+let singleCancelRequested = false;
+const singleCanceling = ref(false);
+
+// 主动中止单条「问题分析」分析：中断主进程底层云端请求，取消不算失败。
+async function cancelSingleAnalysis() {
+  if (!window.api) return;
+  singleCanceling.value = true;
+  singleCancelRequested = true;
+  try {
+    await window.api.ai.cancelRiskAnalysis();
+  } catch (err: any) {
+    console.warn('[issue-ai-analysis.cancelSingleAnalysis] 中止请求失败(可忽略):', err.message);
+  } finally {
+    singleCanceling.value = false;
+  }
+}
+
+// ==================== 批量分析状态 ====================
+const batchProgress = ref({
+  visible: false,
+  percent: 0,
+  message: '',
+  stage: '',
+  current: 0,
+  total: 0,
+});
+const batchLoading = ref(false);
+const batchCanceling = ref(false);
+const batchMinimized = ref(false);
+const batchElapsedTime = ref(0);
+const batchEstimatedRemaining = ref(0);
+const batchSuccessCount = ref(0);
+const batchFailedCount = ref(0);
+const batchIssueList = ref<Array<{ issueId: string; issueTitle: string; issueDescription: string; failed: boolean }>>([]);
+
+function closeBatchDialog() {
+  // 分析中直接关掉会让用户误以为任务也被取消了，收进最小化即可
+  if (batchLoading.value) {
+    batchProgress.value.visible = false;
+    batchMinimized.value = true;
+    return;
+  }
+  batchProgress.value.visible = false;
+}
+
+let unsubscribeBatchProgress: (() => void) | null = null;
+let batchStartTime = 0;
+let batchTimerInterval: ReturnType<typeof setInterval> | null = null;
+
+const batchPercentDisplay = computed(() => `${batchProgress.value.percent}%`);
+
+function formatTime(seconds: number): string {
+  return formatDuration(seconds);
+}
+
+// ==================== 单条分析 ====================
+async function analyzeIssue(issue: Issue) {
+  if (!window.api) return;
+
+  if (singleLoading.value) {
+    ElMessage.warning('AI 分析进行中，请稍候');
+    return;
+  }
+
+
+  currentIssue.value = issue;
+  singleDialogVisible.value = true;
+  singleLoading.value = true;
+  singleResult.value = null;
+  singleStep.value = 1;
+  singleLoadingText.value = singleStepTexts[0];
+  singleElapsed.value = 0;
+
+  // 前 3 步（读取配置 / 编码输入 / 提交 AI）是本地动作，用固定节奏推进阶段感。
+  // 第 4 步「等待响应」取决于远端模型，真实耗时 30-60 秒不等，
+  // 因此这里刻意不自动跳到第 5 步 —— 否则进度条早早走满而请求还没回来，
+  // 界面会长时间停在"已完成"的假象上，比不做进度更像卡死。
+  const stepInterval = setInterval(() => {
+    if (singleStep.value < 4 && singleLoading.value) {
+      singleStep.value++;
+      singleLoadingText.value = singleStepTexts[singleStep.value - 1];
+    }
+  }, 800);
+
+  // 进入等待阶段后开始计时，让用户确认请求仍在进行中
+  singleElapsedTimer = setInterval(() => {
+    if (!singleLoading.value) return;
+    singleElapsed.value++;
+    if (singleStep.value >= 4) {
+      singleLoadingText.value = singleStepTexts[3];
+    }
+  }, 1000);
+
+  try {
+    const params = {
+      issueId: issue.id,
+      issueTitle: issue.issueTitle,
+      issueDescription: issue.issueDescription || '',
+      securityDomain: props.getIssueDomainId(issue.securityDomain || ''),
+      controlPoint: issue.controlPoint || '',
+      controlName: issue.controlName || '',
+      assetName: (issue as any).assetName || '',
+      riskLevel: issue.riskLevel,
+      rectificationSuggestion: issue.rectificationSuggestion || '',
+    };
+
+    const res = await window.api.ai.analyzeRisk(params);
+
+
+    singleStep.value = 5;
+    singleLoadingText.value = singleStepTexts[4];
+
+    if (res.success && res.data) {
+      singleResult.value = res.data.result;
+    } else if (singleCancelRequested) {
+      // 取消不等于失败：静默复位，不弹"分析失败"
+    } else {
+      singleResult.value = null;
+      const errMsg = res.error?.message || 'AI分析失败，请稍后重试';
+      console.error('[issue-ai-analysis.analyzeIssue] AI分析失败:', res.error);
+      ElMessage.error(errMsg);
+    }
+  } catch (err: any) {
+    console.error('[issue-ai-analysis.analyzeIssue] IPC调用异常:', err.message);
+    if (!singleCancelRequested) {
+      singleResult.value = null;
+      ElMessage.error('AI分析失败：' + (err.message || '未知错误'));
+    }
+  } finally {
+    clearInterval(stepInterval);
+    if (singleElapsedTimer) {
+      clearInterval(singleElapsedTimer);
+      singleElapsedTimer = null;
+    }
+    if (singleCancelRequested) {
+      singleDialogVisible.value = false;
+      singleResult.value = null;
+    }
+    singleLoading.value = false;
+    singleCancelRequested = false;
+  }
+}
+
+function applySingleResult() {
+  if (!singleResult.value || !currentIssue.value) return;
+  emit('applySuggestion', currentIssue.value.id, singleResult.value);
+  singleDialogVisible.value = false;
+}
+
+// ==================== 批量分析 ====================
+async function cancelBatchAnalysis() {
+  if (!window.api || !batchLoading.value) return;
+  batchCanceling.value = true;
+  try {
+    await window.api.ai.cancelRiskAnalysis();
+    // 中止需要等当前这条跑完才生效，先给即时反馈，避免看起来没反应
+    ElMessage.info('正在中止，当前这条分析完成后即停止');
+  } catch (err: any) {
+    ElMessage.error('中止失败：' + (err.message || '未知错误'));
+  } finally {
+    batchCanceling.value = false;
+  }
+}
+
+async function batchAnalyzeIssues(issues: Issue[]) {
+  if (!window.api || issues.length === 0) return;
+
+  if (batchLoading.value) {
+    ElMessage.warning('批量 AI 分析进行中，请稍候');
+    return;
+  }
+
+
+  batchLoading.value = true;
+  batchProgress.value = { visible: true, percent: 0, message: '准备中...', stage: 'init', current: 0, total: issues.length };
+  batchMinimized.value = false;
+  batchElapsedTime.value = 0;
+  batchEstimatedRemaining.value = 0;
+  batchSuccessCount.value = 0;
+  batchFailedCount.value = 0;
+  batchIssueList.value = issues.map(issue => ({
+    issueId: issue.id,
+    issueTitle: issue.issueTitle,
+    issueDescription: issue.issueDescription || issue.issueTitle,
+    failed: false,
+  }));
+  batchStartTime = Date.now();
+
+  // 启动计时器
+  batchTimerInterval = setInterval(() => {
+    batchElapsedTime.value = Math.floor((Date.now() - batchStartTime) / 1000);
+    if (batchProgress.value.percent > 0 && batchProgress.value.percent < 100) {
+      const estimatedTotal = batchElapsedTime.value / (batchProgress.value.percent / 100);
+      batchEstimatedRemaining.value = Math.max(0, Math.floor(estimatedTotal - batchElapsedTime.value));
+    }
+  }, 1000);
+
+  unsubscribeBatchProgress = window.api.ai.onBatchRiskProgress((data) => {
+    batchProgress.value = { ...batchProgress.value, ...data };
+  });
+
+  try {
+    const params = {
+      issues: issues.map(issue => ({
+        issueId: issue.id,
+        issueTitle: issue.issueTitle,
+        issueDescription: issue.issueDescription || '',
+        securityDomain: props.getIssueDomainId(issue.securityDomain || ''),
+        controlPoint: issue.controlPoint || '',
+        controlName: issue.controlName || '',
+        assetName: (issue as any).assetName || '',
+        riskLevel: issue.riskLevel,
+        rectificationSuggestion: issue.rectificationSuggestion || '',
+      })),
+    };
+
+    const res = await window.api.ai.batchAnalyzeRisks(params);
+
+
+    if (res.success && res.data?.canceled) {
+      // 用户中途中止：已完成的部分照常应用，未完成的保持原样
+      for (const result of res.data.results) {
+        if (result.success && result.draft?.result) {
+          emit('applySuggestion', result.issueId, result.draft.result);
+          batchSuccessCount.value++;
+        } else {
+          batchFailedCount.value++;
+        }
+      }
+      const remain = batchProgress.value.total - batchSuccessCount.value - batchFailedCount.value;
+      ElMessage.info(`已中止分析，完成 ${batchSuccessCount.value} 条${remain > 0 ? `，剩余 ${remain} 条未处理` : ''}`);
+      batchProgress.value = {
+        ...batchProgress.value,
+        stage: 'canceled',
+        message: `已中止，完成 ${batchSuccessCount.value}/${batchProgress.value.total}`,
+        percent: 100,
+      };
+      return;
+    }
+
+    if (res.success && res.data) {
+      for (const result of res.data.results) {
+        if (result.success && result.draft?.result) {
+          emit('applySuggestion', result.issueId, result.draft.result);
+          batchSuccessCount.value++;
+        } else {
+          batchFailedCount.value++;
+          const item = batchIssueList.value.find(i => i.issueId === result.issueId);
+          if (item) item.failed = true;
+        }
+      }
+      if (batchSuccessCount.value === 0 && batchFailedCount.value > 0) {
+        ElMessage.error(`批量分析失败，共 ${batchFailedCount.value} 个问题未生成问题分析`);
+      } else if (batchFailedCount.value > 0) {
+        ElMessage.warning(`分析完成：成功 ${batchSuccessCount.value} 个，失败 ${batchFailedCount.value} 个`);
+      } else {
+        ElMessage.success(`批量分析完成，已生成 ${batchSuccessCount.value} 条问题分析`);
+      }
+    } else {
+      const errMsg = res.error?.message || 'AI批量分析失败，请稍后重试';
+      console.error('[issue-ai-analysis.batchAnalyzeIssues] AI分析失败:', res.error);
+      ElMessage.error(errMsg);
+      batchProgress.value = { ...batchProgress.value, stage: 'error', message: errMsg };
+    }
+  } catch (err: any) {
+    console.error('[issue-ai-analysis.batchAnalyzeIssues] IPC调用异常:', err.message);
+    ElMessage.error('AI批量分析失败：' + (err.message || '未知错误'));
+    batchProgress.value = { ...batchProgress.value, stage: 'error', message: err.message || '分析失败' };
+  } finally {
+    if (unsubscribeBatchProgress) {
+      unsubscribeBatchProgress();
+      unsubscribeBatchProgress = null;
+    }
+    if (batchTimerInterval) {
+      clearInterval(batchTimerInterval);
+      batchTimerInterval = null;
+    }
+    batchLoading.value = false;
+    batchCanceling.value = false;
+  }
+}
+
+onBeforeUnmount(() => {
+  if (unsubscribeBatchProgress) {
+    unsubscribeBatchProgress();
+  }
+  if (batchTimerInterval) {
+    clearInterval(batchTimerInterval);
+  }
+});
+
+defineExpose({
+  analyzeIssue,
+  batchAnalyzeIssues,
+});
+</script>
+
+<style lang="scss">
+.ai-issue-dialog {
+  :deep(.el-dialog__header) {
+    text-align: center;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    margin: 0;
+    padding: 16px 20px;
+  }
+
+  .el-dialog__body {
+    padding: 20px 24px;
+  }
+}
+
+.ai-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 4px;
+
+  .ai-dialog-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+
+    .el-icon {
+      vertical-align: -2px;
+      margin-right: 4px;
+    }
+  }
+
+  .ai-close-btn {
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.8);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.2);
+      color: #fff;
+    }
+  }
+}
+
+// ==================== 5步流程指示器 ====================
+.flow-steps-container {
+  padding: 16px 0 20px;
+  border-bottom: 1px solid var(--color-border-light);
+  margin-bottom: 20px;
+}
+
+.flow-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.flow-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  opacity: 0.4;
+  transition: opacity 0.3s;
+
+  .step-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--color-border-light);
+    color: var(--color-text-tertiary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    transition: all 0.3s ease;
+  }
+
+  .step-label {
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+    white-space: nowrap;
+    transition: color 0.3s;
+  }
+
+  &.active {
+    opacity: 1;
+
+    .step-icon {
+      background: var(--color-primary);
+      color: #fff;
+      box-shadow: 0 0 0 4px rgba(27, 95, 217, 0.2);
+      animation: stepPulse 1.5s ease infinite;
+    }
+
+    .step-label {
+      color: var(--color-primary);
+      font-weight: 600;
+    }
+  }
+
+  &.done {
+    opacity: 0.7;
+
+    .step-icon {
+      background: var(--color-success);
+      color: #fff;
+    }
+
+    .step-label {
+      color: var(--color-success);
+    }
+  }
+}
+
+.step-connector {
+  width: 32px;
+  height: 2px;
+  background: var(--color-border-light);
+  margin: 0 4px;
+  margin-bottom: 22px;
+  transition: background 0.3s ease;
+
+  &.active {
+    background: var(--color-success);
+  }
+}
+
+@keyframes stepPulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(27, 95, 217, 0.2); }
+  50% { box-shadow: 0 0 0 8px rgba(27, 95, 217, 0.1); }
+}
+
+.ai-loading-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 0;
+
+  .loading-spinner {
+    width: 48px;
+    height: 48px;
+    border: 3px solid var(--color-border-light);
+    border-top-color: var(--color-primary, #1B5FD9);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  .loading-text {
+    margin-top: 16px;
+    color: var(--color-text-secondary);
+    font-size: 14px;
+  }
+
+  .loading-elapsed {
+    margin-top: 6px;
+    color: var(--color-text-tertiary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.ai-result-area {
+  .result-section {
+    margin-bottom: 16px;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--color-text-secondary, #4B5563);
+      margin-bottom: 6px;
+    }
+
+    .section-content {
+      font-size: 13px;
+      color: var(--color-text-primary, #1F2937);
+      line-height: 1.6;
+      background: var(--color-bg-page, #F5F6FA);
+      padding: 10px 12px;
+      border-radius: var(--radius-base);
+
+      &.conclusion-text {
+        line-height: 1.8;
+        text-align: justify;
+      }
+    }
+  }
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.mini-ai-progress {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  min-width: 400px;
+  max-width: 600px;
+  width: auto;
+  background: linear-gradient(135deg, #1B5FD9 0%, #3B82F6 100%);
+  color: #fff;
+  padding: 8px 16px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 20px rgba(27, 95, 217, 0.4);
+  transition: all 0.2s ease;
+
+  &:hover {
+    box-shadow: 0 2px 8px rgba(27, 95, 217, 0.3);
+  }
+
+  .mini-ai-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+
+    .mini-ai-progress-title {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .mini-ai-progress-percent {
+      font-size: 14px;
+      font-weight: 700;
+    }
+  }
+
+  .mini-ai-progress-bar-container {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.3);
+    border-radius: var(--radius-xs);
+    overflow: hidden;
+    margin-bottom: 4px;
+
+    .mini-ai-progress-bar {
+      height: 100%;
+      background: #fff;
+      border-radius: var(--radius-xs);
+      transition: width 0.3s ease;
+    }
+  }
+
+  .mini-ai-progress-message {
+    font-size: 11px;
+    opacity: 0.9;
+  }
+
+  .mini-ai-progress-restore {
+    font-size: 10px;
+    opacity: 0.7;
+    text-align: center;
+    margin-top: 2px;
+  }
+}
+
+.ai-batch-dialog {
+  :deep(.el-dialog__header) {
+    text-align: center;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    margin: 0;
+    padding: 16px 20px;
+  }
+
+  .el-dialog__body {
+    padding: 20px 24px;
+  }
+
+  .ai-dialog-header {
+    .ai-dialog-header-actions {
+      display: flex;
+      gap: 4px;
+    }
+
+    .ai-minimize-btn {
+      width: 28px;
+      height: 28px;
+      border: none;
+      background: transparent;
+      color: rgba(255, 255, 255, 0.8);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+
+      &:hover {
+        background: rgba(255, 255, 255, 0.2);
+        color: #fff;
+      }
+    }
+  }
+}
+
+// 浅色模式下按钮颜色适配
+html:not(.dark) .ai-batch-dialog,
+html:not(.dark) .ai-issue-dialog {
+  .ai-dialog-header {
+    .ai-close-btn,
+    .ai-minimize-btn {
+      color: rgba(0, 0, 0, 0.6);
+
+      &:hover {
+        background: rgba(0, 0, 0, 0.08);
+        color: rgba(0, 0, 0, 0.9);
+      }
+    }
+  }
+}
+
+.batch-progress-container {
+  padding: 16px 0;
+
+  .progress-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+
+    .stage-text {
+      font-size: 13px;
+      color: var(--color-text-primary);
+      font-weight: 500;
+    }
+
+    .percent-text {
+      font-size: 13px;
+      color: var(--color-primary);
+      font-weight: 700;
+    }
+  }
+}
+
+.ai-progress-bar {
+  height: 14px;
+  background: var(--color-border-light);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.ai-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #1B5FD9 0%, #3B82F6 100%);
+  border-radius: var(--radius-md);
+  transition: width 0.3s ease;
+}
+
+.ai-progress-bar.stage-error .ai-progress-fill {
+  background: var(--color-danger);
+}
+
+.ai-progress-bar.stage-done .ai-progress-fill {
+  background: var(--color-success);
+}
+
+// ==================== 时间和统计信息 ====================
+.progress-meta {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  margin-top: 12px;
+  padding: 10px 16px;
+  background: var(--color-bg-page);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-light);
+}
+
+.meta-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.meta-label {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.meta-value {
+  font-size: 13px;
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+// ==================== 问题列表进度 ====================
+.issue-list-progress {
+  margin-top: 16px;
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.issue-list-header {
+  padding: 10px 16px;
+  background: var(--color-bg-page);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.issue-list-container {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.issue-list-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  font-size: 12px;
+  transition: background 0.2s;
+
+  &:hover {
+    background: var(--color-bg-page);
+  }
+
+  &.done {
+    .issue-status-icon {
+      color: var(--color-success);
+    }
+  }
+
+  &.processing {
+    background: var(--color-primary-subtle);
+
+    .issue-status-icon {
+      color: var(--color-primary);
+    }
+
+    .issue-name {
+      color: var(--color-primary);
+      font-weight: 500;
+    }
+  }
+
+  &.failed {
+    .issue-status-icon {
+      color: var(--color-danger);
+    }
+
+    .issue-name {
+      color: var(--color-danger);
+      text-decoration: line-through;
+    }
+  }
+
+  &.pending {
+    .issue-name {
+      color: var(--color-text-tertiary);
+    }
+  }
+}
+
+.issue-status-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.spin-svg {
+  animation: spin 1s linear infinite;
+}
+
+.issue-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-quaternary);
+}
+
+.issue-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+
+// ==================== 完成统计 ====================
+.batch-summary {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  margin-top: 16px;
+  padding: 12px 16px;
+  background: var(--color-success-light);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(24, 169, 87, 0.35);
+}
+
+.summary-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+
+  &.success {
+    color: var(--color-success);
+  }
+
+  &.failed {
+    color: var(--color-danger);
+  }
+}
+
+.summary-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.summary-item.success .summary-icon {
+  background: var(--color-success);
+  color: #fff;
+}
+
+.summary-item.failed .summary-icon {
+  background: var(--color-danger);
+  color: #fff;
+}
+
+.loading-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 12px 0;
+
+  .loading-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-primary);
+    animation: dotBounce 1.4s ease-in-out infinite;
+
+    &:nth-child(2) { animation-delay: 0.16s; }
+    &:nth-child(3) { animation-delay: 0.32s; }
+  }
+
+  .loading-hint-text {
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    margin-left: 8px;
+  }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes dotBounce {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; }
+  40% { transform: scale(1); opacity: 1; }
+}
+</style>

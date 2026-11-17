@@ -2,14 +2,14 @@
   <div v-if="visible" class="dialog-overlay" @click.self="close">
     <div class="archive-dialog">
       <div class="archive-dialog-header">
-        <span>导出项目</span>
+        <span>导出归档</span>
         <button class="close-btn" @click="close">×</button>
       </div>
 
       <div class="archive-dialog-body">
         <div class="section">
           <div class="section-head">
-            <span class="section-title">选择项目</span>
+            <span class="section-title">选择系统</span>
             <div class="section-actions">
               <button class="mini-btn" @click="selectAll">全选</button>
               <button class="mini-btn" @click="selected = []">清空</button>
@@ -22,7 +22,7 @@
               <span class="project-meta">{{ p.systemName }}</span>
               <span class="project-count">{{ p.assetCount }} 资产</span>
             </label>
-            <div v-if="projects.length === 0" class="empty-hint">当前条件下没有可导出的项目</div>
+            <div v-if="projects.length === 0" class="empty-hint">当前条件下没有可导出的系统</div>
           </div>
         </div>
 
@@ -32,7 +32,7 @@
             <input type="radio" value="archive" v-model="format" />
             <div class="radio-text">
               <span class="radio-label">完整归档包（.zip）<span class="tag-recommend">推荐</span></span>
-              <span class="radio-desc">项目信息 + 资产 + 测评记录 + 问题清单 + 采集结果 + 截图证据 + 依赖标准。可在别的机器上原样还原。</span>
+              <span class="radio-desc">项目台账 + 系统信息 + 资产 + 测评记录 + 问题清单 + 采集结果 + 截图证据 + 依赖标准。可在别的机器上原样还原，多个系统会回到同一个项目下。</span>
             </div>
           </label>
           <label class="radio-item">

@@ -9,6 +9,7 @@ import type { ProjectListParams } from '../../shared/types';
 import { writeOperationLog } from '../utils/operation-log';
 import { wrap, wrapRaw } from '../utils/ipc-wrapper';
 import { resolveStandardIdForProject } from '../services/assessment-progress';
+import { syncGroupStatusFromSystems } from '../services/project-status.service';
 import {
   exportProjectArchive,
   previewProjectArchive,
@@ -200,17 +201,83 @@ export async function recalculateProjectAssetCounts(force = false): Promise<void
   }
 }
 
+/**
+ * 级联删除一个系统（projects 行）的全部数据，必须在事务内调用。
+ *
+ * 顺序与线上行为保持一致：子表 → 父表；并额外清理「无资产归属」的孤儿连接配置
+ * （它们携带 password_encrypted，残留等同凭据泄露）。
+ * 导出给 `projectGroup:remove` 复用，避免删除项目分组时另写一份枚举而漏掉子表。
+ */
+export function cascadeDeleteProject(tx: any, id: string): void {
+  // 先收集关联 id，再级联删除，避免遗留孤儿数据
+  const assetRows = tx.select({ id: schema.assets.id }).from(schema.assets).where(eq(schema.assets.projectId, id)).all() as Array<{ id: string }>;
+  const assetIds = assetRows.map(a => a.id);
+  const taskRows = tx.select({ id: schema.collectionTasks.id, connectionId: schema.collectionTasks.connectionId }).from(schema.collectionTasks).where(eq(schema.collectionTasks.projectId, id)).all() as Array<{ id: string; connectionId: string }>;
+  const taskIds = taskRows.map(t => t.id);
+  // 采集任务引用的连接配置 id（去重、排除本地兜底的空串）
+  const taskConnIds = [...new Set(taskRows.map(t => t.connectionId).filter(Boolean))] as string[];
+
+  tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.projectId, id)).run();
+  // 重大风险隐患分析：按项目清理，避免删除系统后留下孤儿判定行
+  tx.delete(schema.majorRiskAnalysis).where(eq(schema.majorRiskAnalysis.projectId, id)).run();
+  tx.delete(schema.issues).where(eq(schema.issues.projectId, id)).run();
+  tx.delete(schema.projectMembers).where(eq(schema.projectMembers.projectId, id)).run();
+  if (taskIds.length > 0) {
+    tx.delete(schema.collectionResults).where(inArray(schema.collectionResults.taskId, taskIds)).run();
+  }
+  tx.delete(schema.collectionTasks).where(eq(schema.collectionTasks.projectId, id)).run();
+  tx.delete(schema.collectionDocuments).where(eq(schema.collectionDocuments.projectId, id)).run();
+  // 只清理已不被任何采集任务引用的配置，避免误删仍在其他项目中使用的共用配置
+  if (taskConnIds.length > 0) {
+    const stillUsedRows = tx
+      .select({ connectionId: schema.collectionTasks.connectionId })
+      .from(schema.collectionTasks)
+      .where(inArray(schema.collectionTasks.connectionId, taskConnIds))
+      .all() as Array<{ connectionId: string }>;
+    const stillUsed = new Set(stillUsedRows.map(r => r.connectionId));
+    const orphanConnIds = taskConnIds.filter(cid => !stillUsed.has(cid));
+    if (orphanConnIds.length > 0) {
+      const res = tx.delete(schema.connectionProfiles).where(
+        and(
+          inArray(schema.connectionProfiles.id, orphanConnIds),
+          or(
+            isNull(schema.connectionProfiles.assetId),
+            eq(schema.connectionProfiles.assetId, '')
+          )
+        )
+      ).run();
+      if (res.changes > 0) {
+        log.info(`[project:remove] 已清理 ${res.changes} 条无资产归属的孤儿连接配置（含加密凭据）`);
+      }
+    }
+  }
+  if (assetIds.length > 0) {
+    tx.delete(schema.assetConnections).where(inArray(schema.assetConnections.assetId, assetIds)).run();
+    tx.delete(schema.connectionProfiles).where(inArray(schema.connectionProfiles.assetId, assetIds)).run();
+  }
+  tx.delete(schema.assets).where(eq(schema.assets.projectId, id)).run();
+  tx.delete(schema.projects).where(eq(schema.projects.id, id)).run();
+}
+
 export function registerProjectHandlers(): void {
   ipcMain.handle('project:list', wrap(async (_event, params: ProjectListParams) => {
       const db = getDb();
       // 每次列表加载前校准 assetCount 冗余字段，杜绝与 assets 表漂移
       await recalculateProjectAssetCounts();
-      const { page = 1, pageSize = 20, keyword, status, level, excludeArchived } = params;
+      const { page = 1, pageSize = 20, keyword, status, level, excludeArchived, groupId } = params;
 
       const conditions = [];
       if (keyword) {
         const escapedKeyword = keyword.replace(/[%_\\]/g, '\\$&');
-        conditions.push(sql`${schema.projects.name} LIKE ${`%${escapedKeyword}%`} ESCAPE '\\'`);
+        // 系统列表按「系统名称」检索；老数据的 name 仍是历史项目名、system_name 才是系统名，
+        // 两列都匹配才能保证升级后搜得到。
+        conditions.push(or(
+          sql`${schema.projects.name} LIKE ${`%${escapedKeyword}%`} ESCAPE '\\'`,
+          sql`${schema.projects.systemName} LIKE ${`%${escapedKeyword}%`} ESCAPE '\\'`,
+        ));
+      }
+      if (groupId) {
+        conditions.push(eq(schema.projects.groupId, groupId));
       }
       if (status) {
         conditions.push(eq(schema.projects.status, status));
@@ -248,6 +315,7 @@ export function registerProjectHandlers(): void {
       return {
         list: list.map((p) => ({
           id: p.id,
+          groupId: p.groupId || undefined,
           name: p.name,
           projectNo: p.projectNo || undefined,
           systemName: p.systemName,
@@ -413,8 +481,10 @@ export function registerProjectHandlers(): void {
       const standardId = data.standardId || (level === 2 ? 'gb-t-22239-2019-l2' : 'gb-t-22239-2019-l3');
 
       // 自动生成项目编号 DJCP-XXX
+      // 编号现在属于「项目分组」（project_groups.project_no）；分组下新建的系统
+      // 不再生成编号，否则分组和系统会出现两个同格式编号、导出台账时分不清。
       let projectNo = data.projectNo;
-      if (!projectNo) {
+      if (!projectNo && !data.groupId) {
         const allProjects = await db.select({ projectNo: schema.projects.projectNo })
           .from(schema.projects)
           .where(like(schema.projects.projectNo, 'DJCP-%'));
@@ -433,6 +503,7 @@ export function registerProjectHandlers(): void {
 
       await db.insert(schema.projects).values({
         id,
+        groupId: data.groupId || null,
         name: data.name,
         projectNo,
         systemName: data.systemName,
@@ -455,6 +526,11 @@ export function registerProjectHandlers(): void {
 
       calcProjectProgress(id).catch((err) => {
         log.error('[project:create] 进度计算失败:', err);
+      });
+
+      // 新系统入组可能改变项目状态（如给已完成项目加了一个草稿系统）
+      syncGroupStatusFromSystems(data.groupId).catch((err) => {
+        log.error('[project:create] 项目状态同步失败:', err);
       });
 
       const project = await db.query.projects.findFirst({
@@ -506,6 +582,16 @@ export function registerProjectHandlers(): void {
         log.error('[project:update] 进度计算失败:', err);
       });
 
+      // 系统状态/归档变化会连带项目（分组）状态
+      if (status !== undefined) {
+        const updated = await db.query.projects.findFirst({
+          where: eq(schema.projects.id, id),
+        });
+        syncGroupStatusFromSystems(updated?.groupId).catch((err) => {
+          log.error('[project:update] 项目状态同步失败:', err);
+        });
+      }
+
       const project = await db.query.projects.findFirst({
         where: eq(schema.projects.id, id),
       });
@@ -526,55 +612,11 @@ export function registerProjectHandlers(): void {
       const db = getDb();
       const project = db.select().from(schema.projects).where(eq(schema.projects.id, id)).get();
       db.transaction((tx) => {
-        // 先收集关联 id，再级联删除，避免遗留孤儿数据
-        const assetRows = tx.select({ id: schema.assets.id }).from(schema.assets).where(eq(schema.assets.projectId, id)).all();
-        const assetIds = assetRows.map(a => a.id);
-        const taskRows = tx.select({ id: schema.collectionTasks.id, connectionId: schema.collectionTasks.connectionId }).from(schema.collectionTasks).where(eq(schema.collectionTasks.projectId, id)).all();
-        const taskIds = taskRows.map(t => t.id);
-        // 采集任务引用的连接配置 id（去重、排除本地兜底的空串）
-        const taskConnIds = [...new Set(taskRows.map(t => t.connectionId).filter(Boolean))] as string[];
-
-        tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.projectId, id)).run();
-        tx.delete(schema.issues).where(eq(schema.issues.projectId, id)).run();
-        tx.delete(schema.projectMembers).where(eq(schema.projectMembers.projectId, id)).run();
-        if (taskIds.length > 0) {
-          tx.delete(schema.collectionResults).where(inArray(schema.collectionResults.taskId, taskIds)).run();
-        }
-        tx.delete(schema.collectionTasks).where(eq(schema.collectionTasks.projectId, id)).run();
-        tx.delete(schema.collectionDocuments).where(eq(schema.collectionDocuments.projectId, id)).run();
-        // P1-14：清理「无资产归属」的孤儿连接配置。
-        // connection_profiles.asset_id 允许为空（手动投放的采集目标），这类行无法随资产级联删除，
-        // 项目删掉后仍留在库里 —— 而它携带 password_encrypted，等同于凭据残留。
-        // 只清理已不被任何采集任务引用的配置，避免误删仍在其他项目中使用的共用配置。
-        if (taskConnIds.length > 0) {
-          const stillUsedRows = tx
-            .select({ connectionId: schema.collectionTasks.connectionId })
-            .from(schema.collectionTasks)
-            .where(inArray(schema.collectionTasks.connectionId, taskConnIds))
-            .all();
-          const stillUsed = new Set(stillUsedRows.map(r => r.connectionId));
-          const orphanConnIds = taskConnIds.filter(cid => !stillUsed.has(cid));
-          if (orphanConnIds.length > 0) {
-            const res = tx.delete(schema.connectionProfiles).where(
-              and(
-                inArray(schema.connectionProfiles.id, orphanConnIds),
-                or(
-                  isNull(schema.connectionProfiles.assetId),
-                  eq(schema.connectionProfiles.assetId, '')
-                )
-              )
-            ).run();
-            if (res.changes > 0) {
-              log.info(`[project:remove] 已清理 ${res.changes} 条无资产归属的孤儿连接配置（含加密凭据）`);
-            }
-          }
-        }
-        if (assetIds.length > 0) {
-          tx.delete(schema.assetConnections).where(inArray(schema.assetConnections.assetId, assetIds)).run();
-          tx.delete(schema.connectionProfiles).where(inArray(schema.connectionProfiles.assetId, assetIds)).run();
-        }
-        tx.delete(schema.assets).where(eq(schema.assets.projectId, id)).run();
-        tx.delete(schema.projects).where(eq(schema.projects.id, id)).run();
+        cascadeDeleteProject(tx, id);
+      });
+      // 剩余系统可能全是已完成/草稿，项目状态跟着变
+      syncGroupStatusFromSystems(project?.groupId).catch((err) => {
+        log.error('[project:remove] 项目状态同步失败:', err);
       });
       writeOperationLog({
         action: 'delete',
@@ -824,6 +866,8 @@ export function registerProjectHandlers(): void {
       // 按本机真实的资产数与测评记录重算，避免列表页显示与点进去看到的不一致
       await recalculateProjectAssetCounts();
       const db = getDb();
+      // 导入的系统状态可能改变所属项目（分组）状态，逐个同步
+      const affectedGroups = new Set<string>();
       for (const item of res.imported) {
         try {
           const progress = await calcProjectProgress(item.id);
@@ -831,9 +875,16 @@ export function registerProjectHandlers(): void {
             .update(schema.projects)
             .set({ progress, updatedAt: new Date().toISOString() })
             .where(eq(schema.projects.id, item.id));
+          const imported = await db.query.projects.findFirst({
+            where: eq(schema.projects.id, item.id),
+          });
+          if (imported?.groupId) affectedGroups.add(imported.groupId);
         } catch (e) {
           log.warn(`[项目归档] 进度重算失败（沿用归档值）: ${item.id}`, e);
         }
+      }
+      for (const groupId of affectedGroups) {
+        await syncGroupStatusFromSystems(groupId);
       }
 
       await writeOperationLog({

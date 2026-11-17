@@ -32,8 +32,40 @@ export const users = sqliteTable('users', {
   updatedAt: text('updated_at').notNull(),
 });
 
+/**
+ * 项目分组（委托 / 合同批次）。
+ *
+ * 业务背景：一个项目常包含多个被测系统，每个系统都要独立完成系统构成调研、
+ * 现场测评、问题分析与整改建议。但历史上 `projects` 表的一行在业务语义上
+ * **本来就是「一个系统的完整测评」**——报告服务按 projectId 取资产/记录/问题，
+ * 模板里的"系统名称"即 `projects.system_name`。因此这里不把系统插到项目下面，
+ * 而是反过来：在现有系统记录之上加一层轻量的项目分组，由 `projects.group_id` 关联。
+ *
+ * 这样做的直接收益：assets / assessment_records / issues / 报告 / 归档 / 统计 / AI
+ * 全部维持原有的 project_id 归属，一行都不用改；每个系统天然数据隔离。
+ */
+export const projectGroups = sqliteTable('project_groups', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  projectNo: text('project_no'),
+  assessedUnit: text('assessed_unit'),
+  customerName: text('customer_name'),
+  assessor: text('assessor'),
+  startDate: text('start_date'),
+  endDate: text('end_date'),
+  description: text('description'),
+  status: text('status').notNull().default('draft'),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => ({
+  statusIdx: index('project_group_status_idx').on(table.status),
+}));
+
 export const projects = sqliteTable('projects', {
   id: text('id').primaryKey(),
+  /** 所属项目分组；NULL 表示历史遗留的「未分组单系统项目」，由启动兜底自动回填 */
+  groupId: text('group_id'),
   name: text('name').notNull(),
   projectNo: text('project_no'),
   systemName: text('system_name').notNull(),
@@ -54,7 +86,9 @@ export const projects = sqliteTable('projects', {
   progress: integer('progress').notNull().default(0),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => ({
+  groupIdIdx: index('project_group_ref_idx').on(table.groupId),
+}));
 
 export const projectMembers = sqliteTable('project_members', {
   id: text('id').primaryKey(),
@@ -178,6 +212,18 @@ export const issues = sqliteTable('issues', {
   fixedDate: text('fixed_date'),
   assessor: text('assessor'),
   evidenceFiles: text('evidence_files'),
+  // 风险分析（一条问题对应一份分析结论，全部可选；未分析时保持 NULL）
+  riskLikelihood: text('risk_likelihood'),
+  riskImpact: text('risk_impact'),
+  riskScore: integer('risk_score'),
+  riskEvaluatedLevel: text('risk_evaluated_level'),
+  riskThreat: text('risk_threat'),
+  riskConsequence: text('risk_consequence'),
+  riskStrategy: text('risk_strategy'),
+  riskCountermeasure: text('risk_countermeasure'),
+  riskResidual: text('risk_residual'),
+  riskAnalyst: text('risk_analyst'),
+  riskAnalyzedAt: text('risk_analyzed_at'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 }, (table) => ({
@@ -282,6 +328,8 @@ export const systemSettings = sqliteTable('system_settings', {
   // 与 initDefaultData() 的实际写入保持一致：默认留空，由前端按"无标准"安全降级。
   defaultStandard: text('default_standard').default(''),
   standardDataVersion: integer('standard_data_version').notNull().default(1),
+  /** 重大风险隐患清单内置种子版本：0=未入驻，>0=已入驻对应版本；用户导入后不回滚 */
+  majorRiskSeedVersion: integer('major_risk_seed_version').notNull().default(0),
   updatedAt: text('updated_at').notNull(),
 });
 
@@ -423,4 +471,61 @@ export const externalLinks = sqliteTable('external_links', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
+
+/**
+ * 重大风险隐患清单（全局参考清单，用户提供内容后导入/编辑）。
+ *
+ * 与 high-risk-guideline.json（只读快照）不同，这张表是用户维护的：
+ * 「我提供的重大风险隐患清单」由用户在页面上导入或逐条编辑，跨项目共用，
+ * 属于全局参考数据（同标准库），不随单个项目归档带走。
+ * 每条的 keywords 用逗号/换行分隔，供与问题「问题描述」做文本召回；
+ * title / criteria 同时进 AI 提示词作为判定依据。
+ */
+export const majorRiskCatalog = sqliteTable('major_risk_catalog', {
+  id: text('id').primaryKey(),
+  code: text('code'),                       // 清单编号（可选）
+  title: text('title').notNull(),           // 隐患名称/简述
+  category: text('category'),               // 分类/安全域
+  criteria: text('criteria'),               // 判定标准/识别要点
+  keywords: text('keywords'),               // 匹配关键词（逗号或换行分隔）
+  source: text('source'),                   // 来源出处
+  sortOrder: integer('sort_order').notNull().default(0),
+  enabled: integer('enabled').notNull().default(1),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => ({
+  enabledIdx: index('major_risk_catalog_enabled_idx').on(table.enabled),
+}));
+
+/**
+ * 重大风险隐患识别与分析结论：一条问题（issues 行）对应一份分析。
+ *
+ * 字段含义：
+ * - catalogId/catalogTitle：命中的清单条目（含快照名，清单改动也不丢判定依据）
+ * - relevance/severity/frequency：相关性、严重性、高发性三要素各一段话
+ * - verdict：最终判定 major（属于）/ non_major（不属于）/ pending（待判定）
+ * - conclusion：综合判定说明；analyst/reviewedAt 记录人工复核；source 区分 AI 与人工
+ * 独立成表：分析字段较多，且清单命中是过程数据，不塞进 issues 行。
+ */
+export const majorRiskAnalysis = sqliteTable('major_risk_analysis', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull(),
+  issueId: text('issue_id').notNull(),
+  catalogId: text('catalog_id'),
+  catalogTitle: text('catalog_title'),
+  relevance: text('relevance'),
+  severity: text('severity'),
+  frequency: text('frequency'),
+  verdict: text('verdict').notNull().default('pending'),
+  conclusion: text('conclusion'),
+  analyst: text('analyst'),
+  analyzedAt: text('analyzed_at'),
+  reviewedAt: text('reviewed_at'),
+  source: text('source').notNull().default('manual'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => ({
+  projectIdx: index('major_risk_analysis_project_idx').on(table.projectId),
+  issueUnique: uniqueIndex('major_risk_analysis_issue_unique').on(table.issueId),
+}));
 

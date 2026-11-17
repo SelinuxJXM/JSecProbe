@@ -1,0 +1,1365 @@
+<template>
+  <div class="page-container">
+    <!-- 项目上下文栏 -->
+    <div class="project-context-bar">
+      <div class="breadcrumb">
+        <el-icon class="back-btn" @click="goBack"><ArrowLeft /></el-icon>
+        <el-icon><HomeFilled /></el-icon>
+        <span class="customer-name">{{ project?.name || '未选择项目' }}</span>
+        <el-icon><DArrowRight /></el-icon>
+        <span class="current-page">风险分析</span>
+      </div>
+      <div class="phase-indicators">
+        <div class="phase-pill" @click="goToPhase('assets')">
+          <span class="pill-num">1</span>
+          系统构成
+        </div>
+        <div class="phase-pill" @click="goToPhase('assessment')">
+          <span class="pill-num">2</span>
+          现场核查
+        </div>
+        <div class="phase-pill active">
+          <span class="pill-num">3</span>
+          风险分析
+        </div>
+        <div class="phase-pill" @click="goToPhase('issues')">
+          <span class="pill-num">4</span>
+          整改建议
+        </div>
+        <div class="phase-pill" @click="goToPhase('major-risk')">
+          <span class="pill-num">5</span>
+          重大风险隐患
+        </div>
+      </div>
+    </div>
+
+    <div class="page-header">
+      <div>
+        <div class="page-header-title">风险分析</div>
+        <div class="page-header-desc">对发现的问题逐条填写问题分析（可能导致的风险）</div>
+      </div>
+      <div class="page-header-actions">
+        <el-button type="primary" data-guide="risk-generate" :icon="Refresh" :loading="generating" @click="handleGenerate">
+          {{ generating ? '生成中...' : '从测评记录生成' }}
+        </el-button>
+        <el-button type="success" :icon="Download" :loading="exporting" @click="handleExport">
+          {{ exporting ? '导出中...' : '导出风险分析' }}
+        </el-button>
+      </div>
+    </div>
+
+    <!-- 首访提示：只在该页面首次进入时出现，关闭后不再打扰 -->
+    <PageHint
+      hint-key="risk-analysis"
+      title="第一次做风险分析？看这三点"
+      :tips="[
+        '先点「从测评记录生成」，把现场核查中判定为不符合 / 部分符合的项转成问题，再逐条做分析。这里是问题的唯一录入入口，整改建议页会自动同步。',
+        '表格和编辑弹窗中直接填写「问题分析」，说明该问题可能导致的风险，例如「可能导致账号口令被暴力破解、未授权访问的风险」。',
+        '可用「AI分析」生成分析建议，确认填入后点「保存」生效；分析结果会纳入项目报告的「风险分析」章节。',
+      ]"
+    />
+
+    <div class="stat-cards-row">
+      <div class="stat-card stat-high">
+        <div class="stat-icon">
+          <el-icon :size="32"><Warning /></el-icon>
+        </div>
+        <div class="stat-info">
+          <div class="stat-value">{{ summary.highRisk }}</div>
+          <div class="stat-label">高风险问题</div>
+        </div>
+      </div>
+      <div class="stat-card stat-medium">
+        <div class="stat-icon">
+          <el-icon :size="32"><InfoFilled /></el-icon>
+        </div>
+        <div class="stat-info">
+          <div class="stat-value">{{ summary.mediumRisk }}</div>
+          <div class="stat-label">中风险问题</div>
+        </div>
+      </div>
+      <div class="stat-card stat-low">
+        <div class="stat-icon">
+          <el-icon :size="32"><CircleCheck /></el-icon>
+        </div>
+        <div class="stat-info">
+          <div class="stat-value">{{ summary.lowRisk }}</div>
+          <div class="stat-label">低风险问题</div>
+        </div>
+      </div>
+      <div class="stat-card stat-compliant">
+        <div class="stat-icon">
+          <el-icon :size="32"><CircleCheckFilled /></el-icon>
+        </div>
+        <div class="stat-info">
+          <el-tooltip placement="top" :show-after="300">
+            <template #content>
+              测评符合率 = 符合 /（已判定 − 不适用）<br />
+              统计自现场核查的测评记录，与「问题总数」不是同一口径，两者不能相减或相除。
+            </template>
+            <div class="stat-value">{{ complianceRateValue.toFixed(2) }}%</div>
+          </el-tooltip>
+          <div class="stat-label">测评符合率</div>
+        </div>
+      </div>
+      <div class="stat-card stat-total">
+        <div class="stat-icon">
+          <el-icon :size="32"><Document /></el-icon>
+        </div>
+        <div class="stat-info">
+          <div class="stat-value">{{ summary.total }}</div>
+          <div class="stat-label">问题总数</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card p-md" style="margin-bottom: 128px">
+      <el-form :inline="true" :model="filterForm" class="mb-sm">
+        <el-form-item label="关键词">
+          <el-input
+            v-model="filterForm.keyword"
+            placeholder="搜索标题/描述"
+            clearable
+            style="width: 180px"
+            @keyup.enter="loadIssues"
+          />
+        </el-form-item>
+        <el-form-item label="风险等级">
+          <el-select v-model="filterForm.riskLevel" placeholder="全部" clearable style="width: 120px">
+            <el-option label="高风险" value="high" />
+            <el-option label="中风险" value="medium" />
+            <el-option label="低风险" value="low" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-select v-model="filterForm.status" placeholder="全部" clearable style="width: 120px">
+            <el-option label="待整改" value="pending" />
+            <el-option label="整改中" value="rectifying" />
+            <el-option label="已整改" value="resolved" />
+            <el-option label="已关闭" value="closed" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="安全域">
+          <el-select v-model="filterForm.securityDomain" placeholder="全部" clearable style="width: 160px">
+            <el-option v-for="domain in domainList" :key="domain" :label="domain" :value="domain" />
+          </el-select>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :icon="Search" @click="loadIssues">查询</el-button>
+          <el-button :icon="Refresh" @click="resetFilter">重置</el-button>
+        </el-form-item>
+      </el-form>
+
+      <div class="table-toolbar">
+        <div class="toolbar-left">
+          <el-button
+            type="danger"
+            :icon="Delete"
+            size="small"
+            :disabled="selectedRows.length === 0"
+            @click="handleBatchDelete"
+          >
+            批量删除 ({{ selectedRows.length }})
+          </el-button>
+          <el-button
+            type="warning"
+            :icon="Edit"
+            size="small"
+            :disabled="selectedRows.length === 0"
+            @click="handleBatchStatus"
+          >
+            批量修改 ({{ selectedRows.length }})
+          </el-button>
+          <el-dropdown @command="handleAiBatchCommand" trigger="click">
+            <el-button type="primary" size="small">
+              <el-icon class="el-icon--left"><MagicStick /></el-icon>AI分析<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="describe">
+                  <el-icon class="dropdown-item-icon"><EditPen /></el-icon>
+                  批量分析问题描述
+                  <span class="dropdown-scope-hint">
+                    {{ selectedRows.length > 0 ? `(选中${selectedRows.length}个)` : '(全部)' }}
+                  </span>
+                </el-dropdown-item>
+                <el-dropdown-item command="suggestion">
+                  <el-icon class="dropdown-item-icon"><Opportunity /></el-icon>
+                  批量分析问题分析
+                  <span class="dropdown-scope-hint">
+                    {{ selectedRows.length > 0 ? `(选中${selectedRows.length}个)` : '(全部)' }}
+                  </span>
+                </el-dropdown-item>
+                <el-dropdown-item command="riskLevel">
+                  <el-icon class="dropdown-item-icon"><Aim /></el-icon>
+                  按高风险判定指引自动定级
+                  <span class="dropdown-scope-hint">
+                    {{ selectedRows.length > 0 ? `(选中${selectedRows.length}个)` : '(全部)' }}
+                  </span>
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
+        <div class="toolbar-right">
+          <el-pagination
+            v-model:current-page="pagination.page"
+            v-model:page-size="pagination.pageSize"
+            :total="pagination.total"
+            :page-sizes="[10, 20, 50, 100]"
+            layout="prev, pager, next, total"
+            background
+            @size-change="loadIssues"
+            @current-change="loadIssues"
+          />
+        </div>
+      </div>
+
+      <RiskLevelJudgeAi ref="riskLevelJudgeRef" @applied="handleJudgeApplied" />
+
+      <el-table
+        :data="issueList"
+        v-loading="loading"
+        border
+        stripe
+        @selection-change="handleSelectionChange"
+        @sort-change="handleSortChange"
+      >
+        <el-table-column type="selection" width="50" align="center" />
+        <el-table-column label="序号" width="60" align="center">
+          <template #default="{ $index }">
+            {{ (pagination.page - 1) * pagination.pageSize + $index + 1 }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="issueDescription" label="问题描述" min-width="200" sortable="custom">
+          <template #default="{ row }">
+            <span class="issue-description-cell">{{ row.issueDescription }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="安全域" width="120" sortable="custom" prop="securityDomain">
+          <template #default="{ row }">
+            {{ getSecurityDomainName(row.securityDomain) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="assetName" label="测评对象" width="150" sortable="custom" />
+        <el-table-column prop="controlPoint" label="控制点" width="120" sortable="custom" />
+        <el-table-column prop="riskLevel" label="风险等级" width="100" align="center" sortable="custom">
+          <template #default="{ row }">
+            <el-tag :type="getRiskTagType(row.riskLevel)" effect="dark">
+              {{ getRiskLabel(row.riskLevel) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="riskConsequence" label="问题分析" min-width="200" sortable="custom">
+          <template #default="{ row }">
+            {{ row.riskConsequence || '未分析' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="260" fixed="right" align="center">
+          <template #default="{ row }">
+            <el-tooltip content="编辑问题" placement="top" :show-after="500">
+              <el-button link type="primary" size="small" :icon="Edit" @click="handleEdit(row)" />
+            </el-tooltip>
+            <el-tooltip content="AI生成问题描述" placement="top" :show-after="500">
+              <el-button link type="primary" size="small" :icon="Reading" @click="handleAiDescribe(row)" />
+            </el-tooltip>
+            <el-tooltip content="AI生成问题分析" placement="top" :show-after="500">
+              <el-button link type="success" size="small" :icon="MagicStick" @click="handleAiAnalyze(row)" />
+            </el-tooltip>
+            <el-tooltip content="按等保高风险判定指引自动判定风险等级" placement="top" :show-after="500">
+              <el-button link type="warning" size="small" :icon="Aim" @click="handleJudgeRiskLevel(row)" />
+            </el-tooltip>
+            <el-tooltip content="删除问题" placement="top" :show-after="500">
+              <el-button link type="danger" size="small" :icon="Delete" @click="handleDelete(row)" />
+            </el-tooltip>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <!-- 问题详情/编辑弹窗 -->
+    <el-dialog
+      v-model="detailVisible"
+      title="编辑问题"
+      width="750px"
+      destroy-on-close
+    >
+      <el-form :model="formData" label-width="100px">
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="问题标题">
+              <el-input v-model="formData.issueTitle" :disabled="!isEdit" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="风险等级">
+              <el-select v-model="formData.riskLevel" style="width: 100%" :disabled="!isEdit">
+                <el-option label="高风险" value="high" />
+                <el-option label="中风险" value="medium" />
+                <el-option label="低风险" value="low" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="安全域">
+              <el-input v-model="formData.securityDomain" :disabled="!isEdit" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="控制点">
+              <el-input v-model="formData.controlPoint" :disabled="!isEdit" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="控制项">
+              <el-input v-model="formData.controlName" :disabled="!isEdit" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="状态">
+              <el-select v-model="formData.status" style="width: 100%" :disabled="!isEdit">
+                <el-option label="待整改" value="pending" />
+                <el-option label="整改中" value="rectifying" />
+                <el-option label="已整改" value="resolved" />
+                <el-option label="已关闭" value="closed" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="整改日期">
+              <el-date-picker
+                v-model="formData.fixedDate"
+                type="date"
+                placeholder="选择整改日期"
+                format="YYYY-MM-DD"
+                value-format="YYYY-MM-DD"
+                style="width: 100%"
+                :disabled="!isEdit"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="测评人">
+              <el-input v-model="formData.assessor" :disabled="!isEdit" placeholder="请输入测评人" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="问题描述">
+          <el-input
+            v-model="formData.issueDescription"
+            type="textarea"
+            :rows="3"
+            :disabled="!isEdit"
+          />
+        </el-form-item>
+        <el-form-item label="问题分析">
+          <el-input
+            v-model="formData.riskConsequence"
+            type="textarea"
+            :rows="3"
+            :disabled="!isEdit"
+            placeholder="例如：可能导致账号口令被暴力破解、未授权访问的风险。"
+          />
+        </el-form-item>
+        <el-form-item label="整改描述">
+          <el-input
+            v-model="formData.fixedDescription"
+            type="textarea"
+            :rows="3"
+            :disabled="!isEdit"
+            placeholder="请输入整改完成情况描述"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="detailVisible = false">关闭</el-button>
+        <el-button v-if="isEdit" type="primary" @click="handleSave">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 批量修改弹窗 -->
+    <el-dialog
+      v-model="batchStatusVisible"
+      title="批量修改"
+      width="450px"
+      destroy-on-close
+    >
+      <el-form label-width="100px">
+        <el-form-item label="风险等级">
+          <el-select v-model="batchNewRiskLevel" placeholder="请选择风险等级（不修改则留空）" style="width: 100%" clearable>
+            <el-option label="高风险" value="high" />
+            <el-option label="中风险" value="medium" />
+            <el-option label="低风险" value="low" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-select v-model="batchNewStatus" placeholder="请选择状态（不修改则留空）" style="width: 100%" clearable>
+            <el-option label="待整改" value="pending" />
+            <el-option label="整改中" value="rectifying" />
+            <el-option label="已整改" value="resolved" />
+            <el-option label="已关闭" value="closed" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="batchStatusVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmBatchStatus">确认修改</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- Phase 4：把项目/标准 ID 传入 AI 组件，用于按标准检索条款上下文（行标/国标均可） -->
+    <IssueAiAnalysis
+      ref="issueAiAnalysisRef"
+      :get-issue-domain-id="getIssueDomainId"
+      :project-id="projectId"
+      :standard-id="project?.standardId"
+      @apply-suggestion="handleApplySuggestion"
+    />
+    <IssueDescriptionAnalysis
+      ref="issueDescriptionAnalysisRef"
+      :get-issue-domain-id="getIssueDomainId"
+      :project-id="projectId"
+      :standard-id="project?.standardId"
+      @apply-description="handleApplyDescription"
+    />
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, reactive, onMounted, computed } from 'vue';
+import { useRoute } from 'vue-router';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import {
+  Download,
+  Refresh,
+  Search,
+  Warning,
+  InfoFilled,
+  CircleCheck,
+  CircleCheckFilled,
+  Document,
+  HomeFilled,
+  DArrowRight,
+  ArrowLeft,
+  ArrowDown,
+  Delete,
+  Edit,
+  MagicStick,
+  Reading,
+  EditPen,
+  Opportunity,
+  Aim,
+} from '@element-plus/icons-vue';
+import type { Issue, IssueSummary } from '../../../shared/types';
+import IssueAiAnalysis from './components/risk-ai-analysis.vue';
+import IssueDescriptionAnalysis from '../issues/components/issue-description-analysis.vue';
+import RiskLevelJudgeAi from './components/risk-level-judge-ai.vue';
+import PageHint from '@/components/PageHint/index.vue';
+import { useProjectNav } from '@/composables/useProjectNav';
+
+const route = useRoute();
+const projectId = computed(() => route.params.id as string);
+const { goToPhase, goBack } = useProjectNav(projectId);
+const project = ref<any>(null);
+const issueAiAnalysisRef = ref<InstanceType<typeof IssueAiAnalysis> | null>(null);
+const issueDescriptionAnalysisRef = ref<InstanceType<typeof IssueDescriptionAnalysis> | null>(null);
+const riskLevelJudgeRef = ref<InstanceType<typeof RiskLevelJudgeAi> | null>(null);
+
+// goToPhase / goBack 由 useProjectNav 提供（问题管理 / 现场核查 / 系统构成三处共用同一实现）
+
+async function loadProject() {
+  const pid = projectId.value;
+  if (!pid) return;
+  if (!window.api) return;
+  try {
+    const res = await window.api.project.get(pid);
+    if (res.success && res.data) {
+      project.value = res.data;
+    }
+  } catch (error) {
+    console.error('加载项目信息失败:', error);
+  }
+}
+
+
+const loading = ref(false);
+const saving = ref(false);
+const issueList = ref<Issue[]>([]);
+const selectedRows = ref<Issue[]>([]);
+const summary = ref<IssueSummary>({
+  total: 0,
+  highRisk: 0,
+  mediumRisk: 0,
+  lowRisk: 0,
+  pending: 0,
+  rectifying: 0,
+  resolved: 0,
+  closed: 0,
+  riskStats: [],
+  domainStats: [],
+});
+
+const filterForm = reactive({
+  keyword: '',
+  riskLevel: '',
+  status: '',
+  securityDomain: '',
+});
+
+const sortConfig = reactive({
+  prop: '',
+  order: '' as 'ascending' | 'descending' | '',
+});
+
+const pagination = reactive({
+  page: 1,
+  pageSize: 10,
+  total: 0,
+});
+
+const detailVisible = ref(false);
+const isEdit = ref(false);
+const formData = reactive<Partial<Issue>>({
+  issueTitle: '',
+  riskLevel: 'medium',
+  securityDomain: '',
+  controlPoint: '',
+  controlName: '',
+  status: 'pending',
+  issueDescription: '',
+  riskConsequence: '',
+  rectificationDeadline: '',
+  responsiblePerson: '',
+  fixedDescription: '',
+  fixedDate: '',
+  assessor: '',
+});
+// 记录打开弹窗时的原始「问题分析」，保存时只在内容变化时才写入风险分析列
+const originalAnalysis = ref('');
+
+const batchStatusVisible = ref(false);
+const batchNewStatus = ref('');
+const batchNewRiskLevel = ref('');
+
+// 改造：问题页安全域动态化（按项目标准加载；fallback 为国标十域）
+const FALLBACK_DOMAIN_ID_MAP: Record<string, { name: string; domainType?: string }> = {
+  'secure_physical': { name: '安全物理环境', domainType: 'national' },
+  'secure_communication': { name: '安全通信网络', domainType: 'national' },
+  'secure_boundary': { name: '安全区域边界', domainType: 'national' },
+  'secure_computing': { name: '安全计算环境', domainType: 'national' },
+  'secure_management': { name: '安全管理中心', domainType: 'national' },
+  'security_management': { name: '安全管理制度', domainType: 'national' },
+  'security_organization': { name: '安全管理机构', domainType: 'national' },
+  'security_personnel': { name: '安全管理人员', domainType: 'national' },
+  'security_construction': { name: '安全建设管理', domainType: 'national' },
+  'security_maintenance': { name: '安全运维管理', domainType: 'national' },
+};
+
+// 动态域元信息：id -> { name, domainType }（通过项目标准加载）
+const domainMetaMap = ref<Record<string, { name: string; domainType?: string }>>({ ...FALLBACK_DOMAIN_ID_MAP });
+
+// 安全域下拉列表（用于筛选）：名称列表，自动包含所有「项目已录入过问题的域」
+const domainList = computed<string[]>(() => {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  // 1. 先追加该标准声明的所有域
+  for (const meta of Object.values(domainMetaMap.value)) {
+    if (meta?.name && !seen.has(meta.name)) {
+      seen.add(meta.name);
+      names.push(meta.name);
+    }
+  }
+  // 2. 追加项目中已出现过的问题的域名称（确保历史数据可筛选）
+  for (const issue of issueList.value || []) {
+    if (!issue?.securityDomain) continue;
+    let n = issue.securityDomain;
+    if (domainMetaMap.value[n]?.name) n = domainMetaMap.value[n].name;
+    if (!seen.has(n)) { seen.add(n); names.push(n); }
+  }
+  return names;
+});
+
+// 按名称反查 ID（优先 exact match，其次基于 domainMetaMap）
+const DOMAIN_NAME_TO_ID = computed<Record<string, string>>(() => {
+  const rev: Record<string, string> = {};
+  for (const [id, meta] of Object.entries(domainMetaMap.value)) {
+    if (meta?.name) rev[meta.name] = id;
+  }
+  return rev;
+});
+
+function getIssueDomainId(domainName: string): string {
+  return DOMAIN_NAME_TO_ID.value[domainName as keyof typeof DOMAIN_NAME_TO_ID.value] || domainName || '';
+}
+
+function getSecurityDomainName(domainId: string): string {
+  if (!domainId) return '-';
+  if (domainMetaMap.value[domainId]?.name) return domainMetaMap.value[domainId].name;
+  // 传入值本身就是中文名称（旧数据兼容）
+  if (Object.values(domainMetaMap.value).some(m => m?.name === domainId)) return domainId;
+  return domainId;
+}
+
+// 按项目标准动态加载域列表
+async function loadDomainsForProject() {
+  const pid = projectId.value;
+  if (!pid || !window.api) return;
+  try {
+    const projectResp = await window.api.project.get(pid);
+    const stdId = projectResp.success && projectResp.data?.standardId ? projectResp.data.standardId : undefined;
+    if (!stdId) return;
+    const resp = await window.api.standard.getDomains(stdId);
+    if (resp?.success && Array.isArray(resp.data)) {
+      const patch: Record<string, { name: string; domainType?: string }> = { ...FALLBACK_DOMAIN_ID_MAP };
+      for (const d of resp.data) {
+        if (d?.id) patch[d.id] = { name: d.name || d.id, domainType: d.domainType };
+      }
+      domainMetaMap.value = patch;
+    }
+  } catch (error) {
+    console.warn('加载问题页安全域失败，fallback 国标十域:', error);
+  }
+}
+
+const complianceRateValue = computed(() => {
+  const rate = summary.value?.complianceRate;
+  if (rate === undefined || rate === null || isNaN(Number(rate))) {
+    return 0;
+  }
+  return Number(rate);
+});
+
+function getRiskLabel(level: string) {
+  const map: Record<string, string> = {
+    high: '高风险',
+    medium: '中风险',
+    low: '低风险',
+  };
+  return map[level] || level;
+}
+
+function getRiskTagType(level: string) {
+  const map: Record<string, string> = {
+    high: 'danger',
+    medium: 'warning',
+    low: 'success',
+  };
+  return map[level] || 'info';
+}
+
+async function loadSummary() {
+  if (!window.api) return;
+  try {
+    const res = await window.api.issue.getSummary(projectId.value);
+    if (res.success && res.data) {
+      summary.value = res.data;
+    }
+  } catch (error: any) {
+    console.error('加载统计摘要失败:', error);
+  }
+}
+
+let requestToken = 0;
+
+async function loadIssues() {
+  if (!window.api) return;
+  const currentToken = ++requestToken;
+  loading.value = true;
+  try {
+    const res = await window.api.issue.list({
+      projectId: projectId.value,
+      keyword: filterForm.keyword || undefined,
+      riskLevel: filterForm.riskLevel || undefined,
+      status: filterForm.status || undefined,
+      securityDomain: filterForm.securityDomain ? getIssueDomainId(filterForm.securityDomain) : undefined,
+      sortProp: sortConfig.prop || undefined,
+      sortOrder: sortConfig.order || undefined,
+      page: pagination.page,
+      pageSize: pagination.pageSize,
+    });
+    if (currentToken !== requestToken) return;
+    if (res.success && res.data) {
+      issueList.value = res.data.list;
+      pagination.total = res.data.total;
+    } else if (res.error) {
+      ElMessage.error(res.error.message || '加载数据失败');
+    }
+  } catch (error: any) {
+    if (currentToken !== requestToken) return;
+    ElMessage.error(error?.message || '加载数据失败');
+  } finally {
+    if (currentToken === requestToken) {
+      loading.value = false;
+    }
+  }
+}
+
+function resetFilter() {
+  filterForm.keyword = '';
+  filterForm.riskLevel = '';
+  filterForm.status = '';
+  filterForm.securityDomain = '';
+  sortConfig.prop = '';
+  sortConfig.order = '';
+  pagination.page = 1;
+  loadIssues();
+}
+
+function handleSelectionChange(rows: Issue[]) {
+  selectedRows.value = rows;
+}
+
+function handleSortChange({ prop, order }: { prop: string; order: string }) {
+  sortConfig.prop = prop;
+  sortConfig.order = order as 'ascending' | 'descending' | '';
+  pagination.page = 1;
+  loadIssues();
+}
+
+function handleEdit(row: Issue) {
+  isEdit.value = true;
+  originalAnalysis.value = row.riskConsequence || '';
+  Object.assign(formData, row);
+  detailVisible.value = true;
+}
+
+/**
+ * 「问题分析」与问题清单的「整改建议」共用同一个编辑弹窗，但落在 risk_consequence 列。
+ * 问题正文仍走 issue:update/create；这里只在内容变化时补写分析列，避免无谓刷新分析时间。
+ */
+async function saveAnalysisIfChanged(issueId: string): Promise<boolean> {
+  const analysis = (formData.riskConsequence || '').trim();
+  if (analysis === (originalAnalysis.value || '').trim()) return true;
+  try {
+    if (!analysis) {
+      const res = await window.api.riskAnalysis.clear(issueId);
+      if (!res.success) {
+        ElMessage.error(res.error?.message || '清除问题分析失败');
+        return false;
+      }
+    } else {
+      const res = await window.api.riskAnalysis.save({
+        issueId,
+        projectId: projectId.value,
+        result: analysis,
+        analyst: formData.assessor || '',
+      });
+      if (!res.success) {
+        ElMessage.error(res.error?.message || '保存问题分析失败');
+        return false;
+      }
+    }
+    originalAnalysis.value = analysis;
+    return true;
+  } catch (error: any) {
+    ElMessage.error(error?.message || '保存问题分析失败');
+    return false;
+  }
+}
+
+async function handleSave() {
+  if (saving.value) return;
+
+  if (!formData.issueTitle?.trim()) {
+    ElMessage.warning('请输入问题标题');
+    return;
+  }
+  if (!formData.securityDomain?.trim()) {
+    ElMessage.warning('请选择安全域');
+    return;
+  }
+  if (!formData.issueDescription?.trim()) {
+    ElMessage.warning('请输入问题描述');
+    return;
+  }
+  if (!['high', 'medium', 'low'].includes(formData.riskLevel || '')) {
+    ElMessage.warning('请选择有效的风险等级');
+    return;
+  }
+  if (!['pending', 'rectifying', 'resolved', 'closed'].includes(formData.status || '')) {
+    ElMessage.warning('请选择有效的状态');
+    return;
+  }
+
+  saving.value = true;
+  try {
+    const submitData = { ...formData };
+    if (formData.id) {
+      const res = await window.api.issue.update(formData.id, submitData);
+      if (res.success) {
+        if (!(await saveAnalysisIfChanged(formData.id))) return;
+        ElMessage.success('更新成功');
+        detailVisible.value = false;
+        loadIssues();
+        loadSummary();
+      } else {
+        ElMessage.error(res.error?.message || '更新失败');
+      }
+    } else {
+      const res = await window.api.issue.create({
+        ...submitData,
+        projectId: projectId.value,
+      });
+      if (res.success && res.data) {
+        const newId = String(res.data);
+        if (!(await saveAnalysisIfChanged(newId))) return;
+        ElMessage.success('创建成功');
+        detailVisible.value = false;
+        loadIssues();
+        loadSummary();
+      } else {
+        ElMessage.error(res.error?.message || '创建失败');
+      }
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.message || '操作失败');
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function handleDelete(row: Issue) {
+  try {
+    await ElMessageBox.confirm('确定要删除这个问题吗？', '确认删除', {
+      type: 'warning',
+    });
+    const res = await window.api.issue.remove(row.id);
+    if (res.success) {
+      ElMessage.success('删除成功');
+      loadIssues();
+      loadSummary();
+    } else {
+      ElMessage.error(res.error?.message || '删除失败');
+    }
+  } catch (error: any) {
+    if (error !== 'cancel' && error?.message) {
+      ElMessage.error(error?.message || '删除失败');
+    }
+  }
+}
+
+async function handleBatchDelete() {
+  if (selectedRows.value.length === 0) return;
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除选中的 ${selectedRows.value.length} 个问题吗？`,
+      '批量删除',
+      { type: 'warning' }
+    );
+    const ids = selectedRows.value.map(r => r.id);
+    const res = await window.api.issue.batchRemove(ids);
+    if (res.success) {
+      ElMessage.success(`成功删除 ${ids.length} 个问题`);
+      selectedRows.value = [];
+      loadIssues();
+      loadSummary();
+    } else {
+      ElMessage.error(res.error?.message || '批量删除失败');
+    }
+  } catch (error: any) {
+    if (error !== 'cancel' && error?.message) {
+      ElMessage.error(error?.message || '批量删除失败');
+    }
+  }
+}
+
+function handleBatchStatus() {
+  if (selectedRows.value.length === 0) return;
+  batchNewStatus.value = '';
+  batchNewRiskLevel.value = '';
+  batchStatusVisible.value = true;
+}
+
+async function confirmBatchStatus() {
+  if (!batchNewStatus.value && !batchNewRiskLevel.value) {
+    ElMessage.warning('请至少选择风险等级或状态中的一项');
+    return;
+  }
+  try {
+    const ids = selectedRows.value.map(r => r.id);
+    const res = await window.api.issue.batchUpdateStatus(ids, batchNewStatus.value || undefined, batchNewRiskLevel.value || undefined);
+    if (res.success) {
+      const updateParts: string[] = [];
+      if (batchNewRiskLevel.value) updateParts.push('风险等级');
+      if (batchNewStatus.value) updateParts.push('状态');
+      ElMessage.success(`成功更新 ${ids.length} 个问题的${updateParts.join('和')}`);
+      selectedRows.value = [];
+      batchStatusVisible.value = false;
+      loadIssues();
+      loadSummary();
+    } else {
+      ElMessage.error(res.error?.message || '批量更新失败');
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.message || '批量更新失败');
+  }
+}
+
+// 生成 / 导出 / 导入都是要跑一段时间的操作，原先没有 loading，
+// 界面看起来像假死，用户会重复点按钮
+const generating = ref(false);
+const exporting = ref(false);
+
+async function handleGenerate() {
+  if (generating.value) return;
+  try {
+    await ElMessageBox.confirm(
+      '将从测评记录中自动生成不符合项问题，是否继续？',
+      '生成问题',
+      { type: 'info' }
+    );
+  } catch {
+    return;
+  }
+  generating.value = true;
+  try {
+    const res = await window.api.issue.generateFromRecords(projectId.value);
+    if (res.success && res.data) {
+      ElMessage.success(`成功生成 ${res.data.count} 条问题`);
+      loadIssues();
+      loadSummary();
+    } else {
+      ElMessage.error(res.error?.message || '生成失败');
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.message || '生成失败');
+  } finally {
+    generating.value = false;
+  }
+}
+
+async function handleExport() {
+  if (summary.value.total === 0) {
+    ElMessage.warning('没有可导出的问题');
+    return;
+  }
+  if (exporting.value) return;
+  exporting.value = true;
+  try {
+    const res = await window.api.riskAnalysis.exportExcel(projectId.value);
+    if (res.success && res.data) {
+      ElMessage.success('导出成功');
+    } else if (res.error?.message !== '用户取消') {
+      ElMessage.error(res.error?.message || '导出失败');
+    }
+  } finally {
+    exporting.value = false;
+  }
+}
+
+function handleAiAnalyze(row: Issue) {
+  issueAiAnalysisRef.value?.analyzeIssue(row);
+}
+
+function handleAiDescribe(row: Issue) {
+  issueDescriptionAnalysisRef.value?.analyzeIssueDescription(row);
+}
+
+/** 问题行 → AI 定级输入 */
+function toJudgeParams(issue: Issue) {
+  return {
+    issueId: issue.id,
+    issueTitle: issue.issueTitle || '',
+    issueDescription: issue.issueDescription || '',
+    securityDomain: issue.securityDomain || '',
+    controlPoint: issue.controlPoint || '',
+    controlName: issue.controlName || '',
+    assetName: (issue as any).assetName || '',
+    rectificationSuggestion: issue.rectificationSuggestion || '',
+    currentLevel: issue.riskLevel || '',
+  };
+}
+
+/** 依据等保高风险判定指引，对单条问题自动判定并回填风险等级 */
+function handleJudgeRiskLevel(row: Issue) {
+  riskLevelJudgeRef.value?.judgeOne(toJudgeParams(row));
+}
+
+/** 定级结果已写回，刷新列表与统计 */
+function handleJudgeApplied({ applied }: { applied: number; failed: number; canceled: boolean }) {
+  if (applied > 0) {
+    loadIssues();
+    loadSummary();
+  }
+}
+
+function handleAiBatchCommand(command: string) {
+  // 智能切换分析范围：如果有选中行，则分析选中的；否则分析所有
+  const targetIssues = selectedRows.value.length > 0 ? selectedRows.value : issueList.value;
+  
+  if (targetIssues.length === 0) {
+    ElMessage.warning('当前没有可分析的问题');
+    return;
+  }
+  
+  const scopeText = selectedRows.value.length > 0 ? `选中的 ${selectedRows.value.length} 个` : '全部';
+
+  // 批量操作耗时较长，先把范围显式告知用户，避免"点错范围却已经跑了一半"
+  ElMessage.info(`开始分析${scopeText}问题（共 ${targetIssues.length} 个）`);
+
+  if (command === 'describe') {
+    issueDescriptionAnalysisRef.value?.batchAnalyzeIssueDescriptions(targetIssues);
+  } else if (command === 'suggestion') {
+    issueAiAnalysisRef.value?.batchAnalyzeIssues(targetIssues);
+  } else if (command === 'riskLevel') {
+    riskLevelJudgeRef.value?.judgeBatch(targetIssues.map(toJudgeParams));
+  }
+}
+
+async function handleApplySuggestion(issueId: string, suggestion: string) {
+  if (!window.api) return;
+  try {
+    const res = await window.api.riskAnalysis.save({
+      issueId,
+      projectId: projectId.value,
+      result: suggestion,
+      analyst: 'AI 生成',
+    });
+    if (res.success) {
+      ElMessage.success('问题分析已填入，请复核');
+      loadIssues();
+    } else {
+      ElMessage.error(res.error?.message || '填入失败');
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.message || '操作失败');
+  }
+}
+
+async function handleApplyDescription(issueId: string, description: string) {
+  if (!window.api) return;
+  try {
+    const res = await window.api.issue.update(issueId, { issueDescription: description });
+    if (res.success) {
+      ElMessage.success('问题描述已填入');
+      loadIssues();
+    } else {
+      ElMessage.error(res.error?.message || '填入失败');
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.message || '操作失败');
+  }
+}
+
+onMounted(() => {
+  loadProject();
+  loadDomainsForProject();
+  loadSummary();
+  loadIssues();
+});
+</script>
+
+<style scoped lang="scss">
+:root {
+  --color-text-primary: #111827;
+  --color-text-secondary: #4B5563;
+  --color-text-tertiary: #9CA3AF;
+  --color-bg-card: #FFFFFF;
+  --color-bg-page: #F5F6FA;
+  --color-border-default: #E5E7EB;
+  --color-border-light: #F3F4F6;
+  --color-primary: #1B5FD9;
+  --color-primary-light: #E8F0FE;
+  --color-success: #059669;
+  --color-success-light: #D1FAE5;
+  --color-warning: #D97706;
+  --color-warning-light: #FEF3C7;
+  --color-danger: #DC2626;
+  --color-danger-light: #FEE2E2;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.page-container {
+  // 页面顶部有项目上下文条（约 56px），此前漏减导致底部被裁掉一截
+  height: calc(100vh - var(--titlebar-height, 40px) - var(--header-height, 56px));
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-page);
+}
+
+.project-context-bar {
+  background: var(--color-bg-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 16px 24px;
+  margin-bottom: 10px;
+
+  .breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--color-text-tertiary);
+    margin-bottom: 12px;
+
+    .customer-name {
+      color: var(--color-text-secondary);
+    }
+
+    .current-page {
+      color: var(--color-text-primary);
+      font-weight: 500;
+    }
+  }
+
+  .phase-indicators {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+
+    .phase-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: var(--radius-full);
+      background: var(--color-bg-page);
+      color: var(--color-text-tertiary);
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+
+      &.active {
+        background: var(--color-primary);
+        color: #fff;
+
+        .pill-num {
+          background: rgba(255, 255, 255, 0.25);
+          color: #fff;
+        }
+      }
+
+      .pill-num {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: var(--color-border-default);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--color-text-secondary);
+      }
+    }
+  }
+}
+
+.stat-cards-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+/* 统计卡结构统一由 global.scss 的 .stat-card 提供，此处只保留本页配色 */
+.stat-card {
+  flex: 1;
+  min-width: 0;
+}
+
+.stat-high .stat-icon {
+  background: var(--color-danger-light);
+  color: var(--color-danger);
+}
+
+.stat-medium .stat-icon {
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+}
+
+.stat-low .stat-icon {
+  background: var(--color-success-light);
+  color: var(--color-success);
+}
+
+.stat-total .stat-icon {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.stat-compliant {
+  .stat-icon {
+    background: var(--color-success-light);
+    color: var(--color-success);
+  }
+
+  .stat-value {
+    color: var(--color-success);
+  }
+}
+
+/* 页面标题栏统一使用 global.scss 的 .page-header（此前此处自带一份卡片版，
+   与其余五个页面的裸标题版并存，字号/间距各不相同） */
+
+:deep(.el-button) {
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+}
+
+:deep(.el-button--primary) {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+
+  &:hover {
+    background: var(--color-primary-hover);
+    border-color: var(--color-primary-hover);
+  }
+}
+
+:deep(.el-button--success) {
+  background: var(--color-success);
+  border-color: var(--color-success);
+  color: #fff;
+
+  &:hover {
+    background: var(--color-success);
+    filter: brightness(1.1);
+    border-color: var(--color-success);
+  }
+}
+
+:deep(.el-button--warning) {
+  background: var(--color-warning);
+  border-color: var(--color-warning);
+  color: #fff;
+
+  &:hover {
+    background: var(--color-warning);
+    filter: brightness(1.1);
+    border-color: var(--color-warning);
+  }
+}
+
+.table-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dropdown-scope-hint {
+  font-size: 12px;
+  color: #909399;
+  margin-left: 8px;
+}
+
+:deep(.dropdown-item-icon) {
+  margin-right: 6px;
+  vertical-align: -2px;
+}
+
+.issue-description-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+
+  svg {
+    flex-shrink: 0;
+    opacity: 0.7;
+  }
+}
+
+:deep(.el-table) {
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+
+  .el-table__header th {
+    background: var(--color-bg-hover) !important;
+    color: var(--color-text-secondary) !important;
+    font-size: 12px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--color-border-base) !important;
+  }
+
+  .el-table__row {
+    &:hover > td {
+      background: var(--color-bg-hover) !important;
+    }
+  }
+
+  .el-table__body td {
+    font-size: 13px;
+    color: var(--color-text-primary);
+    border-bottom: 1px solid var(--color-border-light) !important;
+  }
+}
+
+.drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 0 0;
+  border-top: 1px solid var(--color-border-light);
+}
+
+:deep(.el-drawer__header) {
+  margin-bottom: 0;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--color-border-light);
+
+  .el-drawer__title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--color-text-primary);
+  }
+}
+
+:deep(.el-drawer__body) {
+  padding: 20px 24px;
+}
+
+.detail-section {
+  margin-bottom: 24px;
+
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-text-primary);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    svg {
+      color: var(--color-text-tertiary);
+    }
+  }
+
+  .section-content {
+    font-size: 13px;
+    color: var(--color-text-secondary);
+    line-height: 1.6;
+    background: var(--color-bg-page);
+    padding: 10px 14px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border-light);
+    white-space: pre-wrap;
+  }
+}
+
+.batch-status-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+</style>

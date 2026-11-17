@@ -39,6 +39,14 @@ const routes: RouteRecordRaw[] = [
             meta: { title: '项目列表', icon: 'Folder' },
           },
           {
+            // 项目下的系统列表。:groupId 是项目分组 id；点进某个系统后，
+            // 下面的 :id/assets|assessment|issues 里 :id 才是系统（projects 行）id。
+            path: ':groupId/systems',
+            name: 'ProjectSystems',
+            component: () => import('@/views/projects/systems.vue'),
+            meta: { title: '系统列表', icon: 'Monitor' },
+          },
+          {
             path: ':id/assets',
             name: 'ProjectAssets',
             component: () => import('@/views/system-composition/index.vue'),
@@ -51,10 +59,24 @@ const routes: RouteRecordRaw[] = [
             meta: { title: '现场核查', icon: 'List', requiresProject: true },
           },
           {
+            // 风险分析：现场核查之后、整改建议之前，对已发现问题逐条做风险分析
+            path: ':id/risk-analysis',
+            name: 'ProjectRiskAnalysis',
+            component: () => import('@/views/risk-analysis/index.vue'),
+            meta: { title: '风险分析', icon: 'Warning', requiresProject: true },
+          },
+          {
             path: ':id/issues',
             name: 'ProjectIssues',
             component: () => import('@/views/issues/index.vue'),
-            meta: { title: '问题清单', icon: 'Warning', requiresProject: true },
+            meta: { title: '整改建议', icon: 'Warning', requiresProject: true },
+          },
+          {
+            // 第五阶段：重大风险隐患识别与分析（整改建议之后）
+            path: ':id/major-risk',
+            name: 'ProjectMajorRisk',
+            component: () => import('@/views/major-risk/index.vue'),
+            meta: { title: '重大风险隐患', icon: 'Warning', requiresProject: true },
           },
         ],
       },

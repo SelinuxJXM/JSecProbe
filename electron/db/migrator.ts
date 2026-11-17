@@ -20,7 +20,8 @@ import log from 'electron-log';
  *
  * 额外的幂等保护（仅本执行器提供）：
  *   - `ALTER TABLE ... ADD COLUMN` 前先 `PRAGMA table_info` 判存，已存在则跳过；
- *   - `CREATE TABLE` / `CREATE [UNIQUE] INDEX` 自动改写为 `IF NOT EXISTS` 形式。
+ *   - `CREATE TABLE` / `CREATE [UNIQUE] INDEX` 自动改写为 `IF NOT EXISTS` 形式；
+ *   - 存量库基线：账本为空但业务表已存在时只补记账本、不重放历史 DDL（见 applyBaseline）。
  */
 
 const MIGRATIONS_TABLE = '__drizzle_migrations';
@@ -129,6 +130,48 @@ function applyMigration(sqlite: Database, entry: JournalEntry, fileContent: stri
   }
 }
 
+/** 库里是否已有业务表（用于区分全新空库与靠 JS 兜底建立的存量库）。 */
+function hasExistingSchema(sqlite: Database): boolean {
+  try {
+    return !!sqlite
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'projects'`)
+      .get();
+  } catch {
+    return false;
+  }
+}
+
+function journalFilesExist(folder: string, entries: JournalEntry[]): boolean {
+  return entries.every(e => fs.existsSync(join(folder, `${e.tag}.sql`)));
+}
+
+/**
+ * 存量库基线：把历史迁移直接登记为「已应用」，不重放 DDL。
+ *
+ * 背景：打包产物长期不带迁移目录（vite 只编译 TS，静态 SQL 不会自动跟随），正式版一直走
+ * autoCreateTables + ensure* 兜底建表，库里连 __drizzle_migrations 账本表都没有。
+ * 一旦把迁移文件补进包，这类库若不处理就会从 0000 起重放全部历史 DDL。
+ *
+ * 虽然本执行器已把 CREATE 改写为 IF NOT EXISTS、ALTER 会判存跳过，重放是幂等的，
+ * 但：1) 结构已由 JS 兜底建立，重放没有收益；2) 迁移 SQL 与 autoCreateTables 是两份
+ * 独立维护的 DDL，没必要让任何定义差异被放大；3) 升级用户的库应做到行为零变化。
+ * 因此只补记账本（hash / created_at 与 applyMigration 完全一致，保持与 drizzle 原生
+ * migrate() 的账本兼容）。此后新增迁移的 when 必然更大，仍会正常执行。
+ */
+function applyBaseline(sqlite: Database, folder: string, entries: JournalEntry[]): void {
+  const insert = sqlite.prepare(
+    `INSERT INTO ${MIGRATIONS_TABLE} ("hash", "created_at") VALUES (?, ?)`
+  );
+  sqlite.transaction(() => {
+    for (const entry of entries) {
+      const content = fs.readFileSync(join(folder, `${entry.tag}.sql`), 'utf8');
+      const hash = crypto.createHash('sha256').update(content).digest('hex');
+      insert.run(hash, entry.when);
+    }
+  })();
+  log.info(`[迁移] 存量库基线：已登记 ${entries.length} 条历史迁移，跳过历史 DDL 重放`);
+}
+
 export function runMigrations(sqlite: Database, migrationsFolder: string): void {
   const journalPath = join(migrationsFolder, 'meta', '_journal.json');
   if (!fs.existsSync(journalPath)) {
@@ -147,6 +190,20 @@ export function runMigrations(sqlite: Database, migrationsFolder: string): void 
     )
   `);
 
+  const applied = sqlite
+    .prepare(`SELECT COUNT(*) AS c FROM ${MIGRATIONS_TABLE}`)
+    .get() as { c: number };
+
+  if (
+    applied.c === 0 &&
+    journal.entries.length > 0 &&
+    hasExistingSchema(sqlite) &&
+    journalFilesExist(migrationsFolder, journal.entries)
+  ) {
+    applyBaseline(sqlite, migrationsFolder, journal.entries);
+  }
+
+  // 基线可能刚写入账本，必须在它之后重新读取 last，否则历史条目会被再执行一遍。
   const last = sqlite
     .prepare(`SELECT id, hash, created_at FROM ${MIGRATIONS_TABLE} ORDER BY created_at DESC LIMIT 1`)
     .get() as { id: number; hash: string; created_at: number } | undefined;
