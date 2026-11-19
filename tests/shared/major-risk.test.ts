@@ -125,6 +125,19 @@ describe('重大风险隐患 AI 草稿解析', () => {
     expect(draft.relevance).toBe('含 { 括号 } 的说明');
     expect(draft.verdict).toBe('major');
   });
+
+  it('catalogId 不在召回白名单时清空编号与标题（防编造）', () => {
+    const json = JSON.stringify({
+      catalogId: '9.9.9.9', catalogTitle: '模型编造的条目',
+      relevance: 'r', severity: 's', frequency: 'f', verdict: 'major',
+    });
+    const draft = parseMajorRiskDraft(json, ['6.1.1.1', '6.2.1.4']);
+    expect(draft.catalogId).toBe('');
+    expect(draft.catalogTitle).toBe('');
+    const ok = parseMajorRiskDraft(json, ['9.9.9.9']);
+    expect(ok.catalogId).toBe('9.9.9.9');
+    expect(ok.catalogTitle).toBe('模型编造的条目');
+  });
 });
 
 describe('防护措施/系统环境关键词命中', () => {

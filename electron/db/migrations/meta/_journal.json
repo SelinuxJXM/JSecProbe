@@ -57,6 +57,27 @@
       "when": 1794890100000,
       "tag": "0007_major_risk_seed_version",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1795018457000,
+      "tag": "0008_ai_chat_history",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1795021037000,
+      "tag": "0009_assessment_checkpoints",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1795024446000,
+      "tag": "0010_checkpoint_control_point_idx",
+      "breakpoints": true
     }
   ]
 }

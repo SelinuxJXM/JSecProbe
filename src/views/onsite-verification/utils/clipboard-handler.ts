@@ -50,8 +50,6 @@ export interface ClipboardHandlerOptions {
   tableRows: Ref<TableRow[]>;
   /** 当前行索引 */
   currentRowIndex: Ref<number>;
-  /** 是否有未保存的更改 */
-  hasUnsavedChanges: Ref<boolean>;
   /** 保存状态 */
   saveStatus: Ref<'idle' | 'saving' | 'saved' | 'error' | 'unsaved'>;
   /** 加载截图 DataUrl 的函数 */
@@ -166,7 +164,6 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
   const {
     tableRows,
     currentRowIndex,
-    hasUnsavedChanges,
     saveStatus,
     loadScreenshotDataUrl,
     debounceAutoSave,
@@ -271,7 +268,6 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
     if (rows.length <= 1 && rows[0]?.length === 1) {
       tableRows.value[rowIndex].conclusion = rows[0][0];
       adjustConclusionHeightForRow(rowIndex);
-      hasUnsavedChanges.value = true;
       saveStatus.value = 'unsaved';
       debounceAutoSave(tableRows.value[rowIndex] || {});
       return;
@@ -280,33 +276,41 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
     // 从当前行开始，批量填充内容
     const colCount = Math.max(...rows.map(r => r.length));
     const isMultiCol = colCount >= 2;
+    const touchedRows: TableRow[] = [];
 
     for (let i = 0; i < rows.length; i++) {
       const targetRowIndex = rowIndex + i;
       if (targetRowIndex >= tableRows.value.length) break;
+      let rowTouched = false;
 
       // 第一列填充到测评结论
       if (rows[i].length > 0 && rows[i][0]) {
         tableRows.value[targetRowIndex].conclusion = rows[i][0];
         adjustConclusionHeightForRow(targetRowIndex);
+        rowTouched = true;
       }
 
       // 第二列填充到符合性（如果存在）
       if (rows[i].length > 1 && rows[i][1]) {
         const complianceValue = parseComplianceText(rows[i][1]);
         tableRows.value[targetRowIndex].compliance = complianceValue;
+        rowTouched = true;
       }
 
       // 第三列填充到关键证据点（如果存在）
       if (rows[i].length > 2 && rows[i][2]) {
         tableRows.value[targetRowIndex].evidence = rows[i][2];
+        rowTouched = true;
       }
+
+      // 每一行都要标脏：此前只对起始行调用一次 debounceAutoSave，
+      // 后续行只改内存、dirtyMap 里没有，切页后内容丢失
+      if (rowTouched) touchedRows.push(tableRows.value[targetRowIndex]);
     }
 
     // 标记有未保存的更改并触发自动保存
-    hasUnsavedChanges.value = true;
     saveStatus.value = 'unsaved';
-    debounceAutoSave(tableRows.value[rowIndex] || {});
+    for (const row of touchedRows) debounceAutoSave(row);
 
     // 显示提示
     const pastedCount = Math.min(rows.length, tableRows.value.length - rowIndex);
@@ -363,7 +367,6 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
     if (rows.length <= 1 && rows[0]?.length === 1) {
       const value = parseComplianceText(rows[0][0]);
       tableRows.value[rowIndex].compliance = value;
-      hasUnsavedChanges.value = true;
       saveStatus.value = 'unsaved';
       debounceAutoSave(tableRows.value[rowIndex] || {});
       return;
@@ -371,27 +374,41 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
 
     const colCount = Math.max(...rows.map(r => r.length));
     const isMultiCol = colCount >= 2;
+    const touchedRows: TableRow[] = [];
 
     // 批量填充（第1列→符合性，第2列→关键证据点）
     let successCount = 0;
     for (let i = 0; i < rows.length; i++) {
       const targetRowIndex = rowIndex + i;
       if (targetRowIndex >= tableRows.value.length) break;
+      let rowTouched = false;
 
-      // 第一列填充到符合性
-      const value = parseComplianceText(rows[i][0]);
-      tableRows.value[targetRowIndex].compliance = value;
+      // 第一列填充到符合性：空源单元格跳过（不该清空原值），值未变不标脏
+      const srcVal = rows[i][0];
+      if (srcVal && srcVal.trim()) {
+        const value = parseComplianceText(srcVal);
+        const target = tableRows.value[targetRowIndex];
+        if (String(target.compliance ?? '') !== value) {
+          target.compliance = value;
+          rowTouched = true;
+        }
+      }
 
       // 第二列填充到关键证据点（如果存在）
       if (rows[i].length > 1 && rows[i][1]) {
-        tableRows.value[targetRowIndex].evidence = rows[i][1];
+        const target = tableRows.value[targetRowIndex];
+        if (String(target.evidence ?? '') !== rows[i][1]) {
+          target.evidence = rows[i][1];
+          rowTouched = true;
+        }
       }
       successCount++;
+      if (rowTouched) touchedRows.push(tableRows.value[targetRowIndex]);
     }
 
-    hasUnsavedChanges.value = true;
     saveStatus.value = 'unsaved';
-    debounceAutoSave(tableRows.value[rowIndex] || {});
+    // 同上：每一行都要标脏，否则只有起始行会落库
+    for (const row of touchedRows) debounceAutoSave(row);
 
     const colHint = isMultiCol ? `（${Math.min(colCount, 2)}列）` : '';
     ElMessage.success(`已批量填写 ${successCount} 条符合性${colHint}`);
@@ -497,6 +514,9 @@ export function createClipboardHandler(options: ClipboardHandlerOptions) {
         } else {
           currentRow.evidence = text;
         }
+        // 直接改内存不足以持久化：必须标脏触发自动保存，
+        // 否则界面提示"已粘贴"但 dirtyMap 为空，切页后内容丢失、手动保存还提示无改动。
+        debounceAutoSave(currentRow);
         ElMessage.success('已粘贴到关键证据点');
       }
     };

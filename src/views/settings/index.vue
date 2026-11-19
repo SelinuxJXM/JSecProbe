@@ -332,6 +332,9 @@
     <!-- 内置 / 自定义外链管理 -->
     <ExternalLinksTab v-show="activeTab === 'links'" />
 
+    <!-- 测评点知识库（指导书导入，L8：v-if 避免非管理员挂载时拉 stats） -->
+    <CheckpointsTab v-if="activeTab === 'checkpoints' && isAdmin" />
+
     <!-- 系统维护（方案 §九.496 可选：孤儿截图清理 + 其它） -->
     <template v-if="activeTab === 'maintenance'">
       <div class="card p-md" style="margin-bottom: 16px">
@@ -481,6 +484,7 @@ import { applyPrimaryColor, getSavedPrimaryColor, clearPrimaryColor, reapplyPrim
 import type { UpdateStatus } from '../../../shared/types';
 import StandardsTab from './components/StandardsTab.vue';
 import ExternalLinksTab from './components/ExternalLinksTab.vue';
+import CheckpointsTab from './components/CheckpointsTab.vue';
 
 const allTabs = [
   { key: 'settings', label: '常规设置' },
@@ -488,6 +492,7 @@ const allTabs = [
   { key: 'logs', label: '操作日志' },
   { key: 'standards', label: '标准库管理' },
   { key: 'links', label: '外链管理' },
+  { key: 'checkpoints', label: '测评点知识库', adminOnly: true },
   { key: 'maintenance', label: '系统维护' },
 ];
 const activeTab = ref('settings');
@@ -499,7 +504,8 @@ const tabs = computed(() => allTabs.filter(t => !t.adminOnly || isAdmin.value));
 
 // 防止停留在无权限的标签页（如会话中角色被降权）
 watch(isAdmin, (admin) => {
-  if (!admin && activeTab.value === 'users') {
+  // L8：测评点知识库同为 adminOnly，降权时也要退出
+  if (!admin && (activeTab.value === 'users' || activeTab.value === 'checkpoints')) {
     activeTab.value = 'settings';
   }
 }, { immediate: true });

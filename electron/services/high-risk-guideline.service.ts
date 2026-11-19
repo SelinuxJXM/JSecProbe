@@ -53,9 +53,10 @@ function toCategory(domain?: string): string {
   const value = (domain || '').trim();
   if (!value) return '';
   if (DOMAIN_CATEGORY[value]) return DOMAIN_CATEGORY[value];
-  // 页面/数据库里可能直接存中文域名，做一次包含匹配兜底
+  // 页面/数据库里可能直接存中文域名。只做单向包含（输入值足够长且完整包含已知分类名），
+  // 不再用 c.includes(value)：短值"网络"会同时命中多个安全域，按对象顺序误取第一个。
   const known = [...new Set(Object.values(DOMAIN_CATEGORY))];
-  return known.find(c => value.includes(c) || c.includes(value)) || '';
+  return known.find(c => value.length >= c.length && value.includes(c)) || '';
 }
 
 function normalize(text: string): string {

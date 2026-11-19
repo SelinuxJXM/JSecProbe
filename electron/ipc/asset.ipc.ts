@@ -11,7 +11,7 @@ import { getRowMaxHeight, styleCell } from '../utils/excel-helper';
 import { ASSET_CATEGORY_NAMES, ASSET_IMPORTANCE_MAP, ASSET_COLUMNS_MAP, ASSET_CATEGORY_ORDER, ASSET_EXAMPLE_DATA, sanitizeSheetName } from '../utils/excel-config';
 import { writeOperationLog } from '../utils/operation-log';
 import { wrap } from '../utils/ipc-wrapper';
-import { ASSET_CATEGORIES } from '../../shared/asset-categories';
+import { ASSET_CATEGORIES, ASSET_CATEGORY_IDS, resolveAssetCategoryFromSheet, resolveAssetCategoryByName } from '../../shared/asset-categories';
 
 // 默认不作为测评对象的分类
 const NON_ASSESSMENT_CATEGORIES = ['sys_doc', 'other_asset', 'crypto_product', 'security_personnel'];
@@ -19,24 +19,6 @@ const NON_ASSESSMENT_CATEGORIES = ['sys_doc', 'other_asset', 'crypto_product', '
 // 根据分类判断是否默认为测评对象
 function getDefaultIsAssessmentTarget(category: string): number {
   return NON_ASSESSMENT_CATEGORIES.includes(category) ? 0 : 1;
-}
-
-function detectCategoryFromFileName(filePath: string): string {
-  const lowerPath = filePath.toLowerCase();
-  if (lowerPath.includes('机房') || lowerPath.includes('physical') || lowerPath.includes('machine_room')) return 'machine_room';
-  if (lowerPath.includes('边界') || lowerPath.includes('boundary') || lowerPath.includes('区域')) return 'network_boundary';
-  if (lowerPath.includes('网络设备') || lowerPath.includes('network') || lowerPath.includes('交换机') || lowerPath.includes('路由器')) return 'network_device';
-  if (lowerPath.includes('安全设备') || lowerPath.includes('security') || lowerPath.includes('防火墙')) return 'security_device';
-  if (lowerPath.includes('服务器') || lowerPath.includes('server') || lowerPath.includes('存储')) return 'server_storage';
-  if (lowerPath.includes('数据库') || lowerPath.includes('sys_doc') || lowerPath.includes('document')) return 'sys_doc';
-  if (lowerPath.includes('管理平台') || lowerPath.includes('management') || lowerPath.includes('平台')) return 'management_platform';
-  if (lowerPath.includes('应用') || lowerPath.includes('app') || lowerPath.includes('业务系统')) return 'business_app';
-  if (lowerPath.includes('终端') || lowerPath.includes('terminal') || lowerPath.includes('运维')) return 'terminal';
-  if (lowerPath.includes('数据资源') || lowerPath.includes('data')) return 'data_resource';
-  if (lowerPath.includes('其他系统') || lowerPath.includes('other_asset') || lowerPath.includes('其他设备')) return 'other_asset';
-  if (lowerPath.includes('密码产品') || lowerPath.includes('crypto') || lowerPath.includes('加密')) return 'crypto_product';
-  if (lowerPath.includes('安全相关人员') || lowerPath.includes('security_personnel') || lowerPath.includes('安全人员')) return 'security_personnel';
-  return 'server_storage';
 }
 
 const RESULT_MAP: Record<string, string> = {
@@ -364,6 +346,11 @@ export function registerAssetHandlers(): void {
 
   ipcMain.handle('asset:create', wrap(async (_event, data: any) => {
       const db = getDb();
+      if (!data?.projectId) throw new Error('缺少所属系统ID');
+      // 判存 + 显式白名单：避免写入指向不存在系统的孤儿资产，也与 asset:update 的字段约束一致
+      const [project] = await db.select({ id: schema.projects.id })
+        .from(schema.projects).where(eq(schema.projects.id, data.projectId)).limit(1);
+      if (!project) throw new Error('所属系统不存在');
       const now = new Date().toISOString();
       const id = randomUUID();
 
@@ -453,6 +440,12 @@ export function registerAssetHandlers(): void {
         const taskRows = tx.select({ id: schema.collectionTasks.id }).from(schema.collectionTasks).where(eq(schema.collectionTasks.assetId, id)).all();
         const taskIds = taskRows.map(t => t.id);
 
+        // 资产删除会连带删 issues，重大隐患判定无外键，先按 issueId 清理避免孤儿
+        const issueIds = tx.select({ id: schema.issues.id }).from(schema.issues)
+          .where(eq(schema.issues.assetId, id)).all().map((r: any) => r.id as string);
+        if (issueIds.length) {
+          tx.delete(schema.majorRiskAnalysis).where(inArray(schema.majorRiskAnalysis.issueId, issueIds)).run();
+        }
         tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.assetId, id)).run();
         tx.delete(schema.issues).where(eq(schema.issues.assetId, id)).run();
         if (taskIds.length > 0) {
@@ -482,6 +475,11 @@ export function registerAssetHandlers(): void {
           const taskRows = tx.select({ id: schema.collectionTasks.id }).from(schema.collectionTasks).where(eq(schema.collectionTasks.assetId, id)).all();
           const taskIds = taskRows.map(t => t.id);
 
+          const issueIds = tx.select({ id: schema.issues.id }).from(schema.issues)
+            .where(eq(schema.issues.assetId, id)).all().map((r: any) => r.id as string);
+          if (issueIds.length) {
+            tx.delete(schema.majorRiskAnalysis).where(inArray(schema.majorRiskAnalysis.issueId, issueIds)).run();
+          }
           tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.assetId, id)).run();
           tx.delete(schema.issues).where(eq(schema.issues.assetId, id)).run();
           if (taskIds.length > 0) {
@@ -509,38 +507,14 @@ export function registerAssetHandlers(): void {
     return path.resolve(inputPath);
   }
 
-  ipcMain.handle('asset:importExcel', wrap(async (_event, projectId: string, filePath: string) => {
+  ipcMain.handle('asset:importExcel', wrap(async (_event, projectId: string, filePath: string, expectedCategory?: string) => {
       const resolvedPath = validateImportPath(filePath);
+      // 前端在系统构成页当前选中的分类：单 sheet 导入时直接采用，不再靠 sheet 名/路径猜。
+      // 用户实锤 bug：「业务应用系统」文件放在含「平台」的目录下会被误判为系统管理平台。
+      const validExpected = expectedCategory && ASSET_CATEGORY_IDS.has(expectedCategory) ? expectedCategory : null;
       const db = getDb();
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.readFile(resolvedPath);
-
-      const CATEGORY_NAME_TO_KEY: Record<string, string> = {
-        '管理机房': 'machine_room',
-        '区域边界': 'network_boundary',
-        '网络设备': 'network_device',
-        '安全设备': 'security_device',
-        '服务器/存储设备': 'server_storage',
-        '服务器存储设备': 'server_storage',
-        '服务器-存储设备': 'server_storage',
-        '系统管理文档': 'sys_doc',
-        '数据库管理': 'sys_doc',
-        '系统管理平台': 'management_platform',
-        '业务应用系统': 'business_app',
-        '业务应用': 'business_app',
-        '业务终端/运维终端': 'terminal',
-        '业务终端运维终端': 'terminal',
-        '业务终端-运维终端': 'terminal',
-        '运维终端': 'terminal',
-        '业务终端': 'terminal',
-        '终端': 'terminal',
-        '数据资源': 'data_resource',
-        '其他系统或设备': 'other_asset',
-        '其他系统设备': 'other_asset',
-        '密码产品': 'crypto_product',
-        '安全相关人员': 'security_personnel',
-        '安全人员': 'security_personnel',
-      };
 
       // 列定义统一复用 excel-config 的 ASSET_COLUMNS_MAP：导入模板生成与导入解析共用同一份真相，
       // 避免两份列定义各自演进导致"改了模板没改解析"（或反之）时静默写错字段。
@@ -588,7 +562,8 @@ export function registerAssetHandlers(): void {
         }
 
         if (!colPositions['name']) {
-          return 0;
+          // 找不到名称列：整个 sheet 无法导入，按 skipped 计入并提示用户
+          return { count: 0, skipped: Math.max(0, worksheet.rowCount - 1) };
         }
 
         // 如果重要程度列未匹配，尝试关键词匹配
@@ -698,50 +673,31 @@ export function registerAssetHandlers(): void {
         });
 
         logger.info(`[AssetImport] Sheet "${worksheet.name}": imported ${importCount} rows, skipped ${skippedRows} rows, total rows in sheet: ${worksheet.rowCount}`);
-        return importCount;
+        return { count: importCount, skipped: skippedRows };
       };
 
       let totalCount = 0;
+      let totalSkipped = 0;
       const results: Array<{ sheet: string; count: number }> = [];
+      // 单 sheet 导入（用户在某个分类页点「导入」的常见场景）：直接用页面选中分类，
+      // 彻底绕开 sheet 名/文件名猜测。多 sheet 官方模板才按每个 sheet 名解析。
+      const singleSheet = workbook.worksheets.length === 1;
 
       for (const worksheet of workbook.worksheets) {
         const sheetName = worksheet.name;
-        let category = CATEGORY_NAME_TO_KEY[sheetName];
-        
-        if (!category) {
-          const lowerSheetName = sheetName.toLowerCase();
-          if (lowerSheetName.includes('机房') || lowerSheetName.includes('管理机房')) {
-            category = 'machine_room';
-          } else if (lowerSheetName.includes('边界')) {
-            category = 'network_boundary';
-          } else if (lowerSheetName.includes('网络设备') || lowerSheetName.includes('网络')) {
-            category = 'network_device';
-          } else if (lowerSheetName.includes('安全设备') || lowerSheetName.includes('安全')) {
-            category = 'security_device';
-          } else if (lowerSheetName.includes('服务器') || lowerSheetName.includes('存储')) {
-            category = 'server_storage';
-          } else if (lowerSheetName.includes('文档') || lowerSheetName.includes('系统管理')) {
-            category = 'sys_doc';
-          } else if (lowerSheetName.includes('平台') || lowerSheetName.includes('管理')) {
-            category = 'management_platform';
-          } else if (lowerSheetName.includes('应用') || lowerSheetName.includes('业务')) {
-            category = 'business_app';
-          } else if (lowerSheetName.includes('终端') || lowerSheetName.includes('运维')) {
-            category = 'terminal';
-          } else if (lowerSheetName.includes('数据')) {
-            category = 'data_resource';
-          } else if (lowerSheetName.includes('其他系统') || lowerSheetName.includes('其他设备')) {
-            category = 'other_asset';
-          } else if (lowerSheetName.includes('密码') || lowerSheetName.includes('加密')) {
-            category = 'crypto_product';
-          } else if (lowerSheetName.includes('安全人员') || lowerSheetName.includes('相关人员') || lowerSheetName.includes('人员')) {
-            category = 'security_personnel';
-          } else {
-            category = detectCategoryFromFileName(filePath);
-          }
+        let category: string;
+        if (singleSheet && validExpected) {
+          category = validExpected;
+        } else {
+          // 统一走"最具体优先"分类解析；失败时用文件名 basename（不是完整路径）再试
+          category = resolveAssetCategoryFromSheet(sheetName)
+            || resolveAssetCategoryByName(path.basename(filePath))
+            || 'other_asset';
         }
-        
-        const count = await importFromSheet(worksheet, category);
+        logger.info(`[AssetImport] Sheet "${sheetName}" → category ${category}${singleSheet && validExpected ? ' (来自页面选中分类)' : ''}`);
+
+        const { count, skipped } = await importFromSheet(worksheet, category);
+        totalSkipped += skipped;
         if (count > 0) {
           results.push({ sheet: sheetName, count });
           totalCount += count;
@@ -752,7 +708,7 @@ export function registerAssetHandlers(): void {
         throw new Error('没有找到可导入的数据（请确保sheet名称与导出时一致，且包含名称列）');
       }
 
-      return { count: totalCount, results };
+      return { count: totalCount, skipped: totalSkipped, results };
     })
   );
 

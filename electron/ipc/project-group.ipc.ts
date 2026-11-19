@@ -53,6 +53,8 @@ async function loadSystemStats(): Promise<Map<string, SystemStats>> {
   const acc = new Map<string, { count: number; progressSum: number; statuses: string[] }>();
   for (const row of rows) {
     if (!row.groupId) continue;
+    // 与 deriveGroupStatus 口径一致：归档系统不参与分组状态/进度/系统数统计
+    if (row.status === 'archived') continue;
     const a = acc.get(row.groupId) || { count: 0, progressSum: 0, statuses: [] as string[] };
     a.count += 1;
     a.progressSum += row.progress || 0;
@@ -153,6 +155,10 @@ export function registerProjectGroupHandlers(): void {
     const now = new Date().toISOString();
     const id = randomUUID();
     const projectNo = String(data.projectNo || '').trim() || await nextProjectNo();
+    // P7：客户端传入的编号必须判重，否则并发/手工编号会撞号导致台账混乱
+    const dup = await db.select({ id: schema.projectGroups.id })
+      .from(schema.projectGroups).where(eq(schema.projectGroups.projectNo, projectNo)).limit(1);
+    if (dup.length > 0) throw new Error(`项目编号 ${projectNo} 已存在，请更换`);
 
     await db.insert(schema.projectGroups).values({
       id,

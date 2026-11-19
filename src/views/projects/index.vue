@@ -123,8 +123,9 @@
           <tbody v-if="!loading && rows.length === 0">
             <tr>
               <td colspan="9" class="empty-cell">
-                <el-empty :description="emptyText">
-                  <el-button v-if="activeTab === 'active' && !keyword" type="primary" @click="openCreate">新建第一个项目</el-button>
+                <el-empty :description="loadError ? '项目列表加载失败' : emptyText">
+                  <el-button v-if="loadError" type="primary" @click="loadRows">重新加载</el-button>
+                  <el-button v-else-if="activeTab === 'active' && !keyword" type="primary" @click="openCreate">新建第一个项目</el-button>
                 </el-empty>
               </td>
             </tr>
@@ -242,6 +243,7 @@ import ReportConfigDialog from '@/views/issues/report-config-dialog.vue';
 const router = useRouter();
 const rows = ref<ProjectGroup[]>([]);
 const loading = ref(false);
+const loadError = ref(false); // 区分加载失败与真空列表，失败时给出重试入口
 const saving = ref(false);
 const activeTab = ref<'active' | 'archived'>('active');
 const keyword = ref('');
@@ -298,7 +300,15 @@ async function loadRows(): Promise<void> {
     if (res.success && res.data) {
       rows.value = res.data.list;
       pagination.total = res.data.total;
+      loadError.value = false;
+    } else {
+      // 加载失败不能伪装成"暂无项目"，否则用户会误判数据丢失并重复新建
+      loadError.value = true;
+      ElMessage.error(res.error?.message || '项目列表加载失败');
     }
+  } catch (err: any) {
+    loadError.value = true;
+    ElMessage.error(err?.message || '项目列表加载失败');
   } finally {
     loading.value = false;
   }

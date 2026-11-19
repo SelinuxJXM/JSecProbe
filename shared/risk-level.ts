@@ -44,12 +44,18 @@ export function parseRiskLevelJudgment(
 
   const suggestedId = typeof obj?.matchedId === 'string' ? obj.matchedId.trim() : '';
   const matchedId = candidates.some(c => c.id === suggestedId) ? suggestedId : '';
-  const reason = typeof obj?.reason === 'string' && obj.reason.trim()
+  // 判定原则：无指引条目实质吻合不得判高风险。解析层兜底，
+  // 防止模型在无候选或编造编号时仍给出 high。
+  const finalLevel = level === 'high' && !matchedId ? 'medium' : level;
+  let reason = typeof obj?.reason === 'string' && obj.reason.trim()
     ? obj.reason.trim().slice(0, 300)
     : '依据判定指引与现场事实综合判定，建议人工复核。';
+  if (finalLevel !== level) {
+    reason = `未命中高风险判定指引条目，高风险结论回落为中风险。${reason}`.slice(0, 300);
+  }
 
   return {
-    level,
+    level: finalLevel,
     matchedId,
     matchedTitle: matchedId ? candidates.find(c => c.id === matchedId)?.title : undefined,
     reason,

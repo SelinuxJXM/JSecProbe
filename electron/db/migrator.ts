@@ -208,15 +208,29 @@ export function runMigrations(sqlite: Database, migrationsFolder: string): void 
     .prepare(`SELECT id, hash, created_at FROM ${MIGRATIONS_TABLE} ORDER BY created_at DESC LIMIT 1`)
     .get() as { id: number; hash: string; created_at: number } | undefined;
 
+  // L7：读取全部已应用迁移的 hash，检测"历史迁移文件被改动但账本未更新"。
+  // 修正过的历史迁移（when 不变）此前永不重放，结构漂移无法发现；这里至少醒目告警。
+  const appliedRows = sqlite.prepare(`SELECT created_at, hash FROM ${MIGRATIONS_TABLE}`).all() as Array<{ created_at: number; hash: string }>;
+  const appliedByWhen = new Map(appliedRows.map(r => [Number(r.created_at), r.hash]));
+
   for (const entry of journal.entries) {
     const file = join(migrationsFolder, `${entry.tag}.sql`);
     if (!fs.existsSync(file)) {
       throw new Error(`No file ${file} found in ${migrationsFolder} folder`);
     }
+    const content = fs.readFileSync(file, 'utf8');
     if (last && Number(last.created_at) >= entry.when) {
+      // 已应用的迁移：比对内容 hash，不一致则告警（不自动重放，避免破坏已有数据）
+      const recorded = appliedByWhen.get(entry.when);
+      if (recorded) {
+        const crypto = require('crypto');
+        const currentHash = crypto.createHash('sha256').update(content).digest('hex');
+        if (recorded !== currentHash) {
+          console.warn(`[migrator] 迁移 ${entry.tag} 文件内容已变更（账本 hash 不匹配），但未重放。如需应用请手动处理账本。`);
+        }
+      }
       continue;
     }
-    const content = fs.readFileSync(file, 'utf8');
     applyMigration(sqlite, entry, content);
   }
 }

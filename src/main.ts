@@ -47,6 +47,15 @@ function applyInitialTheme() {
 applyInitialTheme();
 restorePrimaryColor();
 
+// 「跟随系统」主题：运行时监听系统主题变化并实时应用（仅在用户选了 auto 时生效）。
+// 此前只在初始化/手动切换时读一次，运行中改系统主题不会跟随。
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+  if ((localStorage.getItem('themeMode') || 'light') !== 'auto') return;
+  const html = document.documentElement;
+  html.classList.toggle('dark', e.matches);
+  html.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+});
+
 const app = createApp(App);
 
 app.use(createPinia());

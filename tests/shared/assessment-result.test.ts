@@ -128,9 +128,10 @@ describe('校验层与唯一真相源一致', () => {
 });
 
 describe('反漂移：统计与报表里的 result 字面量', () => {
+  // report.service.ts 已不再自带 result 统计 SQL（T2 修复）：报告统计统一复用
+  // assessment-progress 的 computeAssessmentProgress，避免两套口径漂移。故从名单移除。
   const statSources = [
     'electron/services/assessment-progress.ts',
-    'electron/services/report.service.ts',
     'electron/ipc/project.ipc.ts',
     'electron/ipc/issue.ipc.ts',
   ];
@@ -150,7 +151,6 @@ describe('反漂移：统计与报表里的 result 字面量', () => {
   it('完整「已判定」口径的三处 SQL 必须与 TESTED_RESULTS 完全一致（不许多也不许少）', () => {
     for (const file of [
       'electron/services/assessment-progress.ts',
-      'electron/services/report.service.ts',
       'electron/ipc/project.ipc.ts',
     ]) {
       const lists = extractInLists(readSource(file));

@@ -2,6 +2,7 @@ import { ipcMain } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getDb } from '../db';
+import { logger } from '../utils/logger';
 import * as schema from '../db/schema';
 import { eq, and, like, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
@@ -249,7 +250,19 @@ export function registerKnowledgeHandlers(): void {
 
   ipcMain.handle('knowledge:deleteDocument', wrap(async (_event, id: string) => {
       const db = getDb();
+      const [doc] = await db.select().from(schema.knowledgeDocuments)
+        .where(eq(schema.knowledgeDocuments.id, id)).limit(1);
       await db.delete(schema.knowledgeDocuments).where(eq(schema.knowledgeDocuments.id, id));
+      // 删除库记录的同时清理上传的物理文件：否则含敏感标准的原文件永久残留磁盘。
+      // 先删库再删文件：即使文件删除失败（占用等）也不会留下"仍可见但内容孤儿"的记录。
+      if (doc?.filePath) {
+        try {
+          const resolved = await validateDataPath(doc.filePath);
+          if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) fs.unlinkSync(resolved);
+        } catch (e) {
+          logger.warn(`[knowledge:deleteDocument] 物理文件清理失败（${doc.filePath}）: ${String(e)}`);
+        }
+      }
     }));
 
   ipcMain.handle('knowledge:listCommands', wrap(async (_event, params: {
@@ -770,6 +783,9 @@ export function registerKnowledgeHandlers(): void {
     tags?: string;
     filePath: string;
   }) => {
+      // 与 uploadDocument 同一套路径校验：防止畸形 filePath 写入数据库后，
+      // 后续下载/读取指向数据目录外的文件（表现为"文档无法打开"或被越界读取）
+      await validateReadablePath(data.filePath);
       const db = getDb();
       const id = randomUUID();
       const now = new Date().toISOString();

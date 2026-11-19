@@ -657,14 +657,38 @@ async function saveAiAppliedRows(rows: any[] = []): Promise<boolean> {
   });
 }
 
+/**
+ * 切换测评对象前的落盘守卫：返回 true 表示可以安全切换，false 表示必须阻断。
+ *
+ * 竞态：saveAllRows() 的 IPC 往返期间用户可能又敲了字，debounceAutoSave 会把
+ * 新改动标进 dirtyMap（版本号自增）。此时首次 flush 返回 true 只代表"快照内
+ * 的行已落库"，hasUnsavedChanges 却已再次变 true。旧代码仅判断
+ * `!flushed && hasUnsavedChanges`，flushed=true 时直接穿过，走到 markClean()
+ * 无条件清空 dirtyMap —— 这段新改动既没进库又被抹掉，静默丢失。
+ * 这里在首次 flush 后复查脏标记：仍有改动就再 flush 一轮；仍不干净则阻断切换。
+ */
+async function flushBeforeSwitch(): Promise<boolean> {
+  if (!autoSave.hasUnsavedChanges?.value) return true;
+  let flushed = await autoSave.saveAllRows();
+  // 保存往返期间的新改动：再落一轮，避免 markClean 抹掉尚未入库的内容
+  if (autoSave.hasUnsavedChanges?.value) {
+    flushed = (await autoSave.saveAllRows()) || flushed;
+  }
+  if (autoSave.hasUnsavedChanges?.value) {
+    ElMessage.error('存在未保存的修改且自动保存失败，改动已保留，请重试保存后再切换');
+    return false;
+  }
+  void flushed; // 状态以脏标记是否清空为准，flushed 仅保留作语义说明
+  return true;
+}
+
 // AI 分析 composable
 const aiAnalysisRef = ref<InstanceType<typeof AiAnalysis> | null>(null);
 
 // 表格单元格选区
 const tableCellSelection = createTableCellSelection({
   tableRows,
-  hasUnsavedChanges: autoSave.hasUnsavedChanges,
-  saveStatus: autoSave.saveStatus,
+  markDirty: (row: any) => autoSave.markDirty(row),
   triggerSave: () => autoSave.saveAllRows(),
   onClearSuccess: (count: number) => {
     ElMessage.success(`已清空 ${count} 个单元格`);
@@ -681,7 +705,6 @@ const tableCellSelection = createTableCellSelection({
 const clipboardHandler = createClipboardHandler({
   tableRows,
   currentRowIndex,
-  hasUnsavedChanges: autoSave.hasUnsavedChanges,
   saveStatus: autoSave.saveStatus,
   loadScreenshotDataUrl,
   debounceAutoSave: (row: any) => autoSave.debounceAutoSave(row),
@@ -812,17 +835,9 @@ async function getProjectStandardId(): Promise<string> {
 // 选择全局层面
 async function selectGlobalDomain(domainId: string) {
   // 先把上一个对象的待保存编辑落盘：1.5 秒防抖里的 saveAllRows 读到的是
-  // 切换后的 currentAsset / tableRows，不 flush 会把旧对象的填写内容丢失或串到新视图
-  if (autoSave.hasUnsavedChanges?.value) {
-    const flushed = await autoSave.saveAllRows();
-    // 落库失败：脏标记仍保留（persist 里失败的行不会清脏）。此时若继续切换，
-    // 走到后面的 markClean() 会把脏标记无条件清空——改动既没进库又被抹掉，直接静默丢数据。
-    // 必须阻断切换，让用户先重试保存。
-    if (!flushed && autoSave.hasUnsavedChanges?.value) {
-      ElMessage.error('存在未保存的修改且自动保存失败，改动已保留，请重试保存后再切换');
-      return;
-    }
-  }
+  // 切换后的 currentAsset / tableRows，不 flush 会把旧对象的填写内容丢失或串到新视图。
+  // flushBeforeSwitch 还会复查往返期间的新改动，未落干净则阻断切换。
+  if (!(await flushBeforeSwitch())) return;
   currentAsset.value = null;
   currentDomainId.value = domainId;
 
@@ -876,6 +891,8 @@ async function selectGlobalDomain(domainId: string) {
         itemId: item.id,
         assetId: '',
         isGlobal: true,
+        // S3：全局视图也要带 domain，供 AI 测评点精确召回（当前选中的安全层面）
+        domainId: currentDomainId.value || '',
         extensionType: item.extensionType || 'general',
         controlPoint: item.controlPoint || item.requirement,
         requirement: item.requirement,
@@ -911,16 +928,10 @@ async function selectGlobalDomain(domainId: string) {
 // 选择资产
 async function selectAsset(asset: any) {
   // 同上：切换测评对象前先把当前对象的编辑保存掉，避免丢失/串数据
-  if (autoSave.hasUnsavedChanges?.value) {
-    const flushed = await autoSave.saveAllRows();
-    // 落库失败：脏标记仍保留。若继续切换，后面的 markClean() 会无条件清空脏标记，
-    // 改动既没进库又被抹掉——静默丢数据。阻断切换，让用户先重试保存。
-    if (!flushed && autoSave.hasUnsavedChanges?.value) {
-      ElMessage.error('存在未保存的修改且自动保存失败，改动已保留，请重试保存后再切换');
-      return;
-    }
-  }
+  if (!(await flushBeforeSwitch())) return;
   currentAsset.value = asset;
+  // S3：资产视图同步当前域，避免沿用上一个全局域导致 AI 测评点召回串味
+  if (asset.domainId) currentDomainId.value = asset.domainId;
 
   if (!window.api) return;
 
@@ -991,6 +1002,10 @@ async function selectAsset(asset: any) {
         itemId: item.id,
         assetId: asset.id,
         extensionType: item.extensionType || 'general',
+        // S2/S3：AI 测评点召回需要资产类别 + 操作系统 + 域，此前全部缺失导致设备维度召回失效
+        assetCategory: asset.category || '',
+        assetOs: asset.os || '',
+        domainId: asset.domainId || currentDomainId.value || '',
         controlPoint: item.controlPoint || item.requirement,
         requirement: item.requirement,
         method: record ? (methodMap[record.method] || '核查') : '核查',
@@ -1106,25 +1121,46 @@ function handleScreenshotAutoSave(nextRow: any) {
 
 // 处理引用命令（来自 KnowledgePanel）
 function handleQuoteCommand(cmd: any) {
-  if (tableRows.value.length === 0) {
-    ElMessage.warning('无可用行');
+  const currentRow = tableRows.value[currentRowIndex.value];
+  // currentRowIndex 可能指向分隔行/空表，或尚未选中（-1），必须校验是有效测评行
+  if (!currentRow?.itemId) {
+    ElMessage.warning('请先选中一条有效的测评行');
     return;
   }
-  const currentRow = tableRows.value[currentRowIndex.value];
   const cmdText = `命令: ${cmd.command}`;
   if (currentRow.evidence) {
     currentRow.evidence += '\n' + cmdText;
   } else {
     currentRow.evidence = cmdText;
   }
+  // 直接改内存不足以持久化：必须标脏触发自动保存，否则切页/刷新后引用内容全丢
+  autoSave.debounceAutoSave(currentRow, 300);
   ElMessage.success('已引用命令到关键证据点');
 }
 
 // 处理导入刷新
 async function handleImportRefresh() {
+  // 导入直接写库，必须重建当前表格才能看到新数据。此前只刷新了项目/资产树/进度，
+  // tableRows 仍是导入前的旧数据，用户以为导入没生效，要切走再切回才看得到。
+  const activeAssetId = currentAsset.value?.id || '';
+  const activeGlobalDomainId = !currentAsset.value ? currentDomainId.value : '';
   await loadProject();
   await loadAssetTree();
   await loadProgress();
+
+  if (activeAssetId) {
+    // loadAssetTree 已重建树，旧 currentAsset 引用失效，按 id 从新树里找回对应资产
+    let freshAsset: any = null;
+    for (const domain of treeData.value) {
+      const found = (domain.children || []).find((a: any) => a.id === activeAssetId);
+      if (found) { freshAsset = found; break; }
+    }
+    if (freshAsset) {
+      await selectAsset(freshAsset);
+    }
+  } else if (activeGlobalDomainId) {
+    await selectGlobalDomain(activeGlobalDomainId);
+  }
 }
 
 // 同步问题
@@ -1365,13 +1401,8 @@ onMounted(async () => {
       aiAnalysisRef.value.batchAiProgress.percent = data.percent || 0;
       aiAnalysisRef.value.batchAiProgress.message = data.message || '';
       aiAnalysisRef.value.batchAiProgress.stage = data.stage || '';
-      if (data.stage === 'done') {
-        if (aiAnalysisRef.value.batchAiMinimized) {
-          aiAnalysisRef.value.batchAiMinimized = false;
-          ElMessage.success('AI批量分析已完成！');
-        }
-        setTimeout(() => { aiAnalysisRef.value!.batchAiProgress.visible = false; }, 400);
-      }
+      // 弹窗关闭不再由 IPC 进度事件驱动：批量已改为前端分批，单批 done 不代表整体完成。
+      // 关闭统一由 useAiAnalysis 在所有批次回填、落库完成后执行，避免弹窗先关、按钮还在转圈的时序脱节。
     }
   });
 

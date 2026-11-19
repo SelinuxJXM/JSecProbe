@@ -185,15 +185,21 @@ function extractJsonObj(text: string, label: string): Record<string, any> {
 /**
  * 解析重大风险隐患 AI 草稿：严格 JSON 优先，容错围栏；三要素各自单独保留一段；
  * verdict 非法回落 pending。不写库。
+ *
+ * @param allowedCodes 本次召回候选的编号白名单（code 或 id）。模型可能编造编号，
+ *   传入后只接受白名单内的 catalogId，其余清空并连带清空快照标题，避免结论挂到不存在的条目。
  */
-export function parseMajorRiskDraft(content: string): MajorRiskAiDraft {
+export function parseMajorRiskDraft(content: string, allowedCodes?: string[]): MajorRiskAiDraft {
   const raw = String(content || '').trim();
   let obj: Record<string, any> = {};
   const cleaned = raw.replace(/^```(?:json|text)?\s*/i, '').replace(/\s*```$/, '').trim();
+  let parseFailed = false;
   if (cleaned.startsWith('{')) {
     try {
       obj = extractJsonObj(cleaned, '重大风险隐患分析');
     } catch {
+      // 解析失败不能伪装成一次合法的"待判定"：留痕供调用方提示重试
+      parseFailed = true;
       obj = {};
     }
   }
@@ -201,13 +207,32 @@ export function parseMajorRiskDraft(content: string): MajorRiskAiDraft {
   const verdictRaw = pick(obj.verdict, 32).toLowerCase();
   const verdict: MajorRiskVerdict =
     verdictRaw === 'major' || verdictRaw === 'non_major' || verdictRaw === 'pending' ? verdictRaw : 'pending';
-  return {
-    catalogId: pick(obj.catalogId, 100),
-    catalogTitle: pick(obj.catalogTitle, 300),
+  const rawCatalogId = pick(obj.catalogId, 100);
+  // allowedCodes 显式传入（含空数组=空召回）时做白名单校验：空召回下 AI 的编号只能是编造的。
+  // 大小写/空白归一化，避免合法编号因格式差异被误杀。
+  // 未传该参数时保留旧行为，兼容不经过 AI 召回的解析调用（如测试/工具）。
+  const catalogId = allowedCodes === undefined
+    ? rawCatalogId
+    : (allowedCodes.map(c => c.trim().toLowerCase()).includes(rawCatalogId.toLowerCase()) ? rawCatalogId : '');
+  const draft: MajorRiskAiDraft = {
+    catalogId,
+    // 编号被判非法时，快照标题一并清空，避免"无编号但有标题"的错配展示
+    catalogTitle: catalogId ? pick(obj.catalogTitle, 300) : '',
     relevance: pick(obj.relevance),
     severity: pick(obj.severity),
     frequency: pick(obj.frequency),
     verdict,
     conclusion: pick(obj.conclusion),
   };
+  if (parseFailed) {
+    try {
+      Object.defineProperty(draft, '__parseFailed', { value: true, enumerable: false });
+    } catch { /* 标记失败不影响主流程 */ }
+  }
+  return draft;
+}
+
+/** 草稿是否为解析失败后的空结果（供前端提示重试，避免误当 pending） */
+export function isMajorRiskDraftParseFailed(draft: MajorRiskAiDraft): boolean {
+  return !!(draft as any).__parseFailed;
 }

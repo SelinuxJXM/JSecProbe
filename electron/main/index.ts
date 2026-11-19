@@ -209,6 +209,12 @@ function createWindow() {
   // 设置日志转发目标，将主进程日志推送到 DevTools Console
   logger.setTargetWindow(mainWindow.webContents);
 
+  // 诊断：把渲染层 console 的 warning/error 转发到主进程终端，
+  // 便于定位「页面打不开但后端 IPC 正常」这类前端运行时问题。
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (level >= 2) log.warn(`[渲染层console:${level}] ${message} (${sourceId}:${line})`);
+  });
+
   if (process.env.NODE_ENV === 'development') {
     if (process.env.JSECPROBE_DEV_FILE === '1') {
       // 兜底：本机 Chromium 偶发连不上 Vite loopback（白屏、fetch 挂起，Node/curl 却正常），

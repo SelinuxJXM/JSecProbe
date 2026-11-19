@@ -9,6 +9,8 @@ import { registerMajorRiskHandlers } from '../ipc/major-risk.ipc';
 import { registerScreenshotHandlers } from '../ipc/screenshot.ipc';
 import { registerStandardHandlers } from '../ipc/standard.ipc';
 import { registerAIHandlers } from '../ipc/ai.ipc';
+import { registerAiConversationHandlers } from '../ipc/ai-conversation.ipc';
+import { registerCheckpointHandlers } from '../ipc/checkpoint.ipc';
 import { registerKnowledgeHandlers } from '../ipc/knowledge.ipc';
 import { registerUserHandlers } from '../ipc/user.ipc';
 import { registerSystemHandlers } from '../ipc/system.ipc';
@@ -33,6 +35,8 @@ export function registerIpcHandlers(): void {
   registerScreenshotHandlers();
   registerStandardHandlers();
   registerAIHandlers();
+  registerAiConversationHandlers();
+  registerCheckpointHandlers();
   registerKnowledgeHandlers();
   registerUserHandlers();
   registerSystemHandlers();

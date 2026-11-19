@@ -207,7 +207,7 @@ import type { MajorRiskAiDraft, MajorRiskAiParams } from '../../../../shared/typ
 const emit = defineEmits<{
   /** 单条草稿回填（页面弹编辑框让人复核）；批量完成直接落库后通知刷新 */
   (e: 'draft', draft: MajorRiskAiDraft, params: MajorRiskAiParams): void;
-  (e: 'batch-done', results: Array<{ issueId: string; draft?: MajorRiskAiDraft; success: boolean; error?: string }>): void;
+  (e: 'batch-done', results: Array<{ issueId: string; draft?: MajorRiskAiDraft; success: boolean; error?: string }>, canceled?: boolean): void;
 }>();
 
 const steps = ['读取配置', '召回清单与现场记录', '提交AI', '等待响应', '生成判定'];
@@ -380,9 +380,10 @@ async function analyzeBatch(issues: MajorRiskAiParams[]): Promise<void> {
     // 中止时后端仍会发 current=total，这里按实际返回的条目数回拨，未处理的保持待处理态
     batchCurrent.value = res.data.canceled ? results.length : batchTotal.value;
     batchMessage.value = res.data.canceled
-      ? `已中止，完成 ${batchSuccessCount.value}/${batchTotal.value}`
+      ? `已中止，${batchSuccessCount.value} 条结果未应用（需重新执行才会落库）`
       : `完成 ${batchSuccessCount.value}/${batchTotal.value} 条`;
-    emit('batch-done', results);
+    // S6：把 canceled 一并传给父组件，取消时不落库半成品草稿
+    emit('batch-done', results, !!res.data.canceled);
   } catch (err: any) {
     batchStage.value = 'error';
     batchMessage.value = err?.message || 'AI批量识别失败';

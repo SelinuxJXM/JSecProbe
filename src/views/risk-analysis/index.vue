@@ -409,7 +409,7 @@
       </el-form>
       <template #footer>
         <el-button @click="batchStatusVisible = false">取消</el-button>
-        <el-button type="primary" @click="confirmBatchStatus">确认修改</el-button>
+        <el-button type="primary" :loading="batchOperating" :disabled="batchOperating" @click="confirmBatchStatus">确认修改</el-button>
       </template>
     </el-dialog>
 
@@ -544,6 +544,7 @@ const formData = reactive<Partial<Issue>>({
 const originalAnalysis = ref('');
 
 const batchStatusVisible = ref(false);
+const batchOperating = ref(false); // 批量删除/状态确认防重，避免连点重复写库
 const batchNewStatus = ref('');
 const batchNewRiskLevel = ref('');
 
@@ -653,10 +654,13 @@ function getRiskTagType(level: string) {
   return map[level] || 'info';
 }
 
+let summaryRequestToken = 0; // 统计刷新竞态：丢弃过期响应，避免慢请求覆盖新统计值
 async function loadSummary() {
   if (!window.api) return;
+  const token = ++summaryRequestToken;
   try {
     const res = await window.api.issue.getSummary(projectId.value);
+    if (token !== summaryRequestToken) return;
     if (res.success && res.data) {
       summary.value = res.data;
     }
@@ -738,7 +742,7 @@ async function saveAnalysisIfChanged(issueId: string): Promise<boolean> {
   if (analysis === (originalAnalysis.value || '').trim()) return true;
   try {
     if (!analysis) {
-      const res = await window.api.riskAnalysis.clear(issueId);
+      const res = await window.api.riskAnalysis.clear({ issueId, projectId: projectId.value });
       if (!res.success) {
         ElMessage.error(res.error?.message || '清除问题分析失败');
         return false;
@@ -793,11 +797,12 @@ async function handleSave() {
     if (formData.id) {
       const res = await window.api.issue.update(formData.id, submitData);
       if (res.success) {
+        // 主记录已写库，先刷新避免列表停在旧数据；分析列失败单独提示且保留弹窗供重试
+        loadIssues();
+        loadSummary();
         if (!(await saveAnalysisIfChanged(formData.id))) return;
         ElMessage.success('更新成功');
         detailVisible.value = false;
-        loadIssues();
-        loadSummary();
       } else {
         ElMessage.error(res.error?.message || '更新失败');
       }
@@ -845,7 +850,8 @@ async function handleDelete(row: Issue) {
 }
 
 async function handleBatchDelete() {
-  if (selectedRows.value.length === 0) return;
+  if (batchOperating.value || selectedRows.value.length === 0) return;
+  batchOperating.value = true;
   try {
     await ElMessageBox.confirm(
       `确定要删除选中的 ${selectedRows.value.length} 个问题吗？`,
@@ -866,6 +872,8 @@ async function handleBatchDelete() {
     if (error !== 'cancel' && error?.message) {
       ElMessage.error(error?.message || '批量删除失败');
     }
+  } finally {
+    batchOperating.value = false;
   }
 }
 
@@ -877,10 +885,12 @@ function handleBatchStatus() {
 }
 
 async function confirmBatchStatus() {
+  if (batchOperating.value) return;
   if (!batchNewStatus.value && !batchNewRiskLevel.value) {
     ElMessage.warning('请至少选择风险等级或状态中的一项');
     return;
   }
+  batchOperating.value = true;
   try {
     const ids = selectedRows.value.map(r => r.id);
     const res = await window.api.issue.batchUpdateStatus(ids, batchNewStatus.value || undefined, batchNewRiskLevel.value || undefined);
@@ -898,6 +908,8 @@ async function confirmBatchStatus() {
     }
   } catch (error: any) {
     ElMessage.error(error?.message || '批量更新失败');
+  } finally {
+    batchOperating.value = false;
   }
 }
 
@@ -998,7 +1010,8 @@ function handleAiBatchCommand(command: string) {
     return;
   }
   
-  const scopeText = selectedRows.value.length > 0 ? `选中的 ${selectedRows.value.length} 个` : '全部';
+  // 未选中时只处理当前分页，明确说"当前页全部"，避免用户误以为整项目都分析了
+  const scopeText = selectedRows.value.length > 0 ? `选中的 ${selectedRows.value.length} 个` : '当前页全部';
 
   // 批量操作耗时较长，先把范围显式告知用户，避免"点错范围却已经跑了一半"
   ElMessage.info(`开始分析${scopeText}问题（共 ${targetIssues.length} 个）`);

@@ -58,11 +58,14 @@ export function useAssetAutoSave(options: AssetAutoSaveOptions) {
     let needsReload = false;
     let failed = 0;
     try {
+      // 只移除删除成功的 id；失败的留在队列等待下次重试，避免静默丢失删除意图
+      const deleteSucceeded = new Set<string>();
       for (const id of deletedIds) {
         const res = await window.api.asset.remove(id);
-        if (!res.success) failed++;
+        if (res.success) deleteSucceeded.add(id);
+        else failed++;
       }
-      deletedIds.clear();
+      for (const id of deleteSucceeded) deletedIds.delete(id);
 
       for (const row of assetList.value) {
         const key = String(row.id);

@@ -47,4 +47,11 @@ describe('parseRiskLevelJudgment', () => {
   it('无法识别等级时抛错，避免误写回问题清单', () => {
     expect(() => parseRiskLevelJudgment('我没有给出等级', candidates)).toThrow('AI 定级结果格式无法解析');
   });
+
+  it('无指引命中时高风险回落中风险（解析层兜底）', () => {
+    const result = parseRiskLevelJudgment('{"level":"high","matchedId":"编造的编号","reason":"影响严重"}', candidates);
+    expect(result.level).toBe('medium');
+    expect(result.matchedId).toBe('');
+    expect(result.reason).toContain('回落为中风险');
+  });
 });

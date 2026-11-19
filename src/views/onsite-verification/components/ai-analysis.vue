@@ -114,6 +114,10 @@
           </div>
         </div>
       </div>
+      <!-- 测评点覆盖率提示：只提示覆盖情况，不展示逐点核查内容（用户不需要该内容） -->
+      <div v-if="aiWarning" class="result-section">
+        <el-alert :title="aiWarning" type="warning" :closable="false" show-icon />
+      </div>
       <div class="result-section">
         <div class="section-title">合规性判断</div>
         <div class="section-content">
@@ -220,6 +224,42 @@
         <div class="ai-progress-bar" :class="{ 'stage-error': batchAiProgress.stage === 'error', 'stage-done': batchAiProgress.stage === 'done', 'stage-receiving': batchAiProgress.stage === 'receiving' }">
           <div class="ai-progress-fill" :style="{ width: batchAiProgressPercent + '%' }"></div>
         </div>
+        <!-- 批次/条目概览：参照整改建议弹窗的 progress-meta 风格 -->
+        <div class="ai-batch-meta" v-if="batchAiProgress.totalBatches > 0">
+          <div class="ai-meta-item">
+            <span class="ai-meta-label">批次</span>
+            <span class="ai-meta-value">{{ batchAiProgress.currentBatch }} / {{ batchAiProgress.totalBatches }}</span>
+          </div>
+          <div class="ai-meta-item">
+            <span class="ai-meta-label">测评项</span>
+            <span class="ai-meta-value">{{ Math.min(batchAiProgress.current, batchAiProgress.totalItems) }} / {{ batchAiProgress.totalItems }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 分批进度清单：每批一条，done=已完成 / processing=进行中 / pending=待处理 -->
+      <div class="ai-batch-list" v-if="batchAiProgress.totalBatches > 1">
+        <div class="ai-batch-list-header">分批分析进度</div>
+        <div class="ai-batch-list-body">
+          <div
+            v-for="b in batchAiProgress.totalBatches"
+            :key="b"
+            class="ai-batch-list-item"
+            :class="{
+              done: b < batchAiProgress.currentBatch || batchAiProgress.stage === 'done',
+              processing: b === batchAiProgress.currentBatch && batchAiProgress.stage !== 'done' && batchAiProgress.stage !== 'error',
+              pending: b > batchAiProgress.currentBatch,
+            }"
+          >
+            <span class="ai-batch-status">
+              <svg v-if="b < batchAiProgress.currentBatch || batchAiProgress.stage === 'done'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+              <svg v-else-if="b === batchAiProgress.currentBatch && batchAiProgress.stage !== 'error'" class="spin-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>
+              <span v-else class="ai-batch-dot"></span>
+            </span>
+            <span class="ai-batch-name">第 {{ b }} 批</span>
+            <span class="ai-batch-count">{{ Math.min(batchSize, batchAiProgress.totalItems - (b - 1) * batchSize) }} 项</span>
+          </div>
+        </div>
       </div>
 
       <!-- Loading dots animation -->
@@ -268,7 +308,10 @@ const props = defineProps<{
   currentItemId?: string;
 }>();
 
-import { useAiAnalysis } from '../composables/useAiAnalysis';
+import { useAiAnalysis, BATCH_CHUNK_SIZE } from '../composables/useAiAnalysis';
+
+/** 单批条目数（与分批逻辑共用同一常量） */
+const batchSize = BATCH_CHUNK_SIZE;
 
 const {
   aiDialogVisible,
@@ -278,6 +321,7 @@ const {
   aiWaitPercent,
   aiCurrentRow,
   aiAnalysisResult,
+  aiWarning,
   batchAiProgress,
   batchAiMinimized,
   aiDialogMinimized,
@@ -325,6 +369,7 @@ defineExpose({
   aiStep,
   aiCurrentRow,
   aiAnalysisResult,
+  aiWarning,
   batchAiProgress,
   batchAiMinimized,
   aiDialogMinimized,
@@ -787,6 +832,101 @@ onBeforeUnmount(() => {
         font-weight: 700;
       }
     }
+
+    /* 批次/条目概览 */
+    .ai-batch-meta {
+      display: flex;
+      gap: 24px;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--el-border-color-lighter);
+
+      .ai-meta-item {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+
+        .ai-meta-label {
+          font-size: 12px;
+          color: var(--color-text-secondary, #6B7280);
+        }
+        .ai-meta-value {
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--color-text-primary, #374151);
+        }
+      }
+    }
+  }
+
+  /* 分批进度清单 */
+  .ai-batch-list {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    background: var(--color-bg-base);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--el-border-color-lighter);
+
+    .ai-batch-list-header {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--color-text-secondary, #6B7280);
+      margin-bottom: 8px;
+    }
+    .ai-batch-list-body {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+      gap: 6px;
+      max-height: 132px;
+      overflow-y: auto;
+    }
+    .ai-batch-list-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      border-radius: var(--radius-sm, 6px);
+      background: var(--el-fill-color-light);
+      font-size: 12px;
+
+      .ai-batch-status {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 14px;
+        height: 14px;
+        flex-shrink: 0;
+        svg { display: block; }
+        .spin-svg { animation: batchSpin 1s linear infinite; }
+      }
+      .ai-batch-name { color: var(--color-text-primary, #374151); }
+      .ai-batch-count {
+        margin-left: auto;
+        color: var(--color-text-tertiary, #9CA3AF);
+        font-size: 11px;
+      }
+      &.done {
+        .ai-batch-status { color: #10B981; }
+        .ai-batch-name { color: var(--color-text-secondary, #6B7280); }
+      }
+      &.processing {
+        background: rgba(27, 95, 217, 0.1);
+        .ai-batch-status { color: #1B5FD9; }
+        .ai-batch-name { color: #1B5FD9; font-weight: 600; }
+      }
+      &.pending {
+        opacity: 0.55;
+        .ai-batch-dot {
+          width: 8px; height: 8px; border-radius: 50%;
+          background: var(--color-text-tertiary, #9CA3AF);
+          display: inline-block;
+        }
+      }
+    }
+  }
+
+  @keyframes batchSpin {
+    to { transform: rotate(360deg); }
   }
   
   .ai-progress-bar {

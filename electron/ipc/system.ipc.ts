@@ -12,6 +12,7 @@ import {
   validateFsPath,
   assertOpenablePath,
   authorizeUserFiles,
+  isUserAuthorizedFile,
   validateUserSelectedDir,
 } from '../utils/path-resolver';
 import { createFullBackup, restoreFromZipBackup, restoreFromLegacyBackup, restoreFromZipBackupIncremental, previewZipBackup, listBackups, isBackupEncrypted } from '../services/backup.service';
@@ -220,6 +221,11 @@ export function registerSystemHandlers(): void {
   }, { moduleName: 'system', requireSession: true }));
 
   ipcMain.handle('system:restoreData', wrap(async (_event, backupPath: string, options?: { incremental?: boolean; projectIds?: string[]; password?: string }) => {
+    // 恢复会整体替换数据库，来源必须是用户通过对话框亲手选过并登记的文件，
+    // 否则渲染层被挟持时可指定任意 .zip/.db 触发整库覆盖
+    if (!isUserAuthorizedFile(backupPath)) {
+      throw new Error('请先通过文件选择对话框挑选备份文件');
+    }
     if (!fs.existsSync(backupPath)) {
       throw new Error('备份文件不存在');
     }
@@ -250,6 +256,18 @@ export function registerSystemHandlers(): void {
 
     if (!result.success) {
       throw new Error(result.error || '恢复失败');
+    }
+
+    // M27：数据恢复会连带覆盖 operation_logs（整库替换），导致"谁在何时恢复了备份"无法追溯。
+    // 写一份独立审计文件（不在被恢复的数据目录内），追加式保存，跨多次恢复仍可追溯。
+    try {
+      const auditDir = path.join(app.getPath('userData'), 'audit');
+      if (!fs.existsSync(auditDir)) fs.mkdirSync(auditDir, { recursive: true });
+      const auditFile = path.join(auditDir, 'restore-audit.log');
+      const line = `${new Date().toISOString()} | 数据恢复 | 文件=${path.basename(backupPath)} | 模式=${options?.incremental ? '增量' : '全量'}\n`;
+      fs.appendFileSync(auditFile, line, 'utf-8');
+    } catch (e) {
+      log.warn('[审计] 恢复审计日志写入失败（不影响恢复结果）:', e);
     }
 
     setTimeout(() => {
@@ -350,9 +368,16 @@ export function registerSystemHandlers(): void {
       // 字符串：如果是纯二进制字节（UTF-16 码元 ≤ 0xFF）直接按 byte→byte 写；否则按 base64 解析
       // 此前历史：只做 Buffer.from(data,'base64')，当传入 Uint8Array 无法走 base64 时写出全空文件；
       // 现在新增 Uint8Array/Buffer 直接写分支。
-      const isLikelyBase64 = /^[A-Za-z0-9+/=\s]+$/.test(data) && data.length % 4 === 0;
+      // base64 需用 round-trip 校验：仅靠「字符集+长度%4」会把 "test"、"abcd" 这类
+      // 普通英文文本误判成 base64，写出完全不同的二进制。解码后再编码必须与原串
+      // （去掉空白后）一致，才认定是真的 base64。
+      const compact = data.replace(/\s/g, '');
+      const isLikelyBase64 = compact.length >= 8
+        && compact.length % 4 === 0
+        && /^[A-Za-z0-9+/]+={0,2}$/.test(compact)
+        && Buffer.from(compact, 'base64').toString('base64').replace(/=+$/, '') === compact.replace(/=+$/, '');
       if (isLikelyBase64) {
-        const buffer = Buffer.from(data, 'base64');
+        const buffer = Buffer.from(compact, 'base64');
         fs.writeFileSync(safePath, buffer);
       } else {
         // 非 base64 的字符串：按 UTF-8 文本落盘（安全兜底：避免写 base64 失败时误写为纯文本 "data:image..."）

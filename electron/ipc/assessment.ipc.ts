@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { styleCell, getRowMaxHeight } from '../utils/excel-helper';
-import { wrap } from '../utils/ipc-wrapper';
+import { wrap, wrapRaw } from '../utils/ipc-wrapper';
 import { validateUuid, validateNotEmpty, validateComplianceStatus, sanitizeInput } from '../utils/validation';
 import { validateReadablePath } from '../utils/path-resolver';
 import type { ExcelSheetInfo } from '../../shared/types';
@@ -61,6 +61,26 @@ async function loadProjectDomainSheets(projectId: string): Promise<Array<{ domai
 // 弹窗预览（getExcelSheetInfo）与实际导入（importExcel）必须使用同一套规则，
 // 保证「预览说能导的就一定能导」。domainSheetMap 为 loadProjectDomainSheets
 // 构建的 {层面中文名: 域ID} 映射，由调用方构建一次、循环复用。
+/**
+ * 剥离 Excel 导出时合成到证据列里的附件清单文案（M18 往返污染）。
+ * 导出会把「N 个文件」「📎 类型: 文件名」「🖼️ N 张图片」拼进 evidence，
+ * 导入时必须还原为原始证据文本，否则这些展示文案会被当成证据写回数据库。
+ */
+function stripSyntheticEvidence(text: string): string {
+  return String(text || '')
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim();
+      if (!t) return true; // 保留空行结构
+      if (/^\d+\s*个文件$/.test(t)) return false;
+      if (/^🖼️\s*\d+\s*张图片$/.test(t)) return false;
+      if (/^📎\s*[^:：]+[:：]\s*.+$/.test(t)) return false;
+      return true;
+    })
+    .join('\n')
+    .trim();
+}
+
 async function resolveSheetName(
   sheetName: string,
   projectId: string,
@@ -270,6 +290,9 @@ export function registerAssessmentHandlers(): void {
   ipcMain.handle('assessment:saveRecord', wrap(async (_event, data: any) => {
       validateNotEmpty(data.projectId, '项目ID');
       validateNotEmpty(data.itemId, '测评项ID');
+      // 历史别名归一：notapplicable 曾是合法的 DB 值，但所有统计只认 not_applicable，
+      // 写入别名会让该记录在进度/导出/报告中静默少算。落库前统一，避免新数据继续污染。
+      if (data.result === 'notapplicable') data.result = 'not_applicable';
       if (data.result) {
         validateComplianceStatus(data.result);
       }
@@ -291,9 +314,16 @@ export function registerAssessmentHandlers(): void {
 
       if (data.id) {
         validateUuid(data.id, '记录ID');
+        // 归属校验：projectId/itemId 是数据隔离根键，更新时不得改写，且必须与原记录一致
+        const [existing] = await db.select().from(schema.assessmentRecords)
+          .where(eq(schema.assessmentRecords.id, data.id)).limit(1);
+        if (!existing) throw new Error('测评记录不存在');
+        if (existing.projectId !== projectId || existing.itemId !== itemId) {
+          throw new Error('不得改写测评记录的项目或测评项归属');
+        }
         await db.update(schema.assessmentRecords)
           .set({
-            projectId, itemId, assetId, result, method, commandOutput,
+            assetId, result, method, commandOutput,
             evidence, findings, assessor, assessmentDate, screenshotPaths,
             updatedAt: now,
           })
@@ -304,6 +334,10 @@ export function registerAssessmentHandlers(): void {
         });
         return record;
       } else {
+        // 新增时判存，避免写入指向不存在项目的孤儿记录
+        const [project] = await db.select({ id: schema.projects.id })
+          .from(schema.projects).where(eq(schema.projects.id, projectId)).limit(1);
+        if (!project) throw new Error('所属系统不存在');
         const id = randomUUID();
         await db.insert(schema.assessmentRecords).values({
           projectId, itemId, assetId, result, method, commandOutput,
@@ -409,7 +443,8 @@ export function registerAssessmentHandlers(): void {
     })
   );
 
-  ipcMain.handle('assessment:exportExcel', async (_event, projectId: string, domain?: string) => {
+  // wrapRaw：只加鉴权不改返回结构（前端按 res.data.path 读取，wrap 会多包一层）
+  ipcMain.handle('assessment:exportExcel', wrapRaw(async (_event, projectId: string, domain?: string) => {
     try {
       const db = getDb();
       const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
@@ -743,10 +778,10 @@ export function registerAssessmentHandlers(): void {
       log.error('导出评估记录失败:', error);
       return { success: false, error: { message: error.message || '导出失败' } };
     }
-  });
+  }, { moduleName: 'assessment' }));
 
   // 按资产和全局层面导出评估记录到Excel
-  ipcMain.handle('assessment:exportExcelByAssets', async (_event, projectId: string, assetIds: string[], domainIds: string[]) => {
+  ipcMain.handle('assessment:exportExcelByAssets', wrapRaw(async (_event, projectId: string, assetIds: string[], domainIds: string[]) => {
     try {
       const db = getDb();
       
@@ -1222,7 +1257,7 @@ export function registerAssessmentHandlers(): void {
       log.error('按资产导出评估记录失败:', error);
       return { success: false, error: { message: error.message || '导出失败' } };
     }
-  });
+  }, { moduleName: 'assessment' }));
 
   // 导入前预解析：返回 Excel 中每个 sheet 的解析结果，供前端弹窗可视化选择
   // 与 importExcel 共用 resolveSheetName，保证「预览说能导的就一定能导」
@@ -1306,7 +1341,7 @@ export function registerAssessmentHandlers(): void {
       let totalCount = 0;
       const now = new Date().toISOString();
 
-      const excelDataMap = new Map<string, {result: string, resultRecord: string, evidence: string, assetId: string | null, domainKey: string}>();
+      const excelDataMap = new Map<string, {result: string, resultRecord: string, evidence: string, assetId: string | null, domainKey: string, complianceFilled: boolean}>();
 
       for (const sheet of sheetsData) {
         const sheetName = sheet.name;
@@ -1356,8 +1391,9 @@ export function registerAssessmentHandlers(): void {
 
           const resultRecord = colD;
           const compliance = colE;
-          const evidence = colF;
-          
+          // 剥离导出时合成的附件清单文案，避免"往返一次"把 📎/N个文件 写进证据
+          const evidence = stripSyntheticEvidence(colF);
+
           const resultValue = resultMap[compliance] || 'untested';
 
           const key = `${domainKey}||${assetId || 'null'}||${controlPoint}||${requirement}`;
@@ -1367,6 +1403,8 @@ export function registerAssessmentHandlers(): void {
             evidence,
             assetId,
             domainKey,
+            // 区分"结论列留空"与"显式填了待判定"：后者应能把已有不符合回退为未测评
+            complianceFilled: !!compliance && compliance.trim() !== '',
           });
         }
       }
@@ -1425,9 +1463,9 @@ export function registerAssessmentHandlers(): void {
         .from(schema.assessmentRecords)
         .where(eq(schema.assessmentRecords.projectId, projectId));
       // key = itemId || (assetId ?? '')：assetId 为 NULL 与空串在原判重逻辑里同义
-      const existingRecordIndex = new Map<string, string>();
+      const existingRecordIndex = new Map<string, typeof existingRecordRows[number]>();
       for (const r of existingRecordRows) {
-        existingRecordIndex.set(`${r.itemId}||${r.assetId || ''}`, r.id);
+        existingRecordIndex.set(`${r.itemId}||${r.assetId || ''}`, r);
       }
 
       // 本轮要写入的记录：先在内存里收集好，循环结束后用一个事务批量落库
@@ -1474,7 +1512,9 @@ export function registerAssessmentHandlers(): void {
               const data = excelDataMap.get(key);
 
               if (!data) continue;
-              if (!data.resultRecord && data.result === 'untested') continue;
+              // 只有"结论列与检查结果列都留空"才是空行可跳过；
+              // 显式填了"待判定"时即使无检查结果也要落库，用于把已有判定回退为未测评
+              if (!data.resultRecord && !data.complianceFilled) continue;
 
               const recordData: any = {
                 projectId,
@@ -1483,17 +1523,25 @@ export function registerAssessmentHandlers(): void {
                 result: data.result || 'untested',
                 method: 'check',
                 commandOutput: '',
-                evidence: data.evidence || '',
-                findings: data.resultRecord || '',
+                // 与 saveRecord 同一套长度上限：Excel 导入不再绕过 sanitize 写入超长文本
+                evidence: sanitizeInput(data.evidence || '', 5000),
+                findings: sanitizeInput(data.resultRecord || '', 10000),
                 assessor: '',
                 assessmentDate: now,
                 updatedAt: now,
               };
 
               // 内存判重（替代原先每条一次的 findFirst）
-              const existingId = existingRecordIndex.get(`${item.id}||${data.assetId || ''}`);
-              if (existingId) {
-                pendingUpdate.push({ id: existingId, data: recordData });
+              const existing = existingRecordIndex.get(`${item.id}||${data.assetId || ''}`);
+              if (existing) {
+                // 只覆盖 Excel 里真正填了值的字段：证据/发现/测评人/日期若 Excel 留空，
+                // 保留库内已录入内容，避免"只改结论"的覆盖导入把现场证据清成空串。
+                const updateData: any = { ...recordData };
+                if (!data.evidence) delete updateData.evidence;
+                if (!data.resultRecord) delete updateData.findings;
+                delete updateData.assessor; // Excel 不含测评人列，始终保留原值
+                delete updateData.assessmentDate; // 导入不携带测评日期，保留原值
+                pendingUpdate.push({ id: existing.id, data: updateData });
               } else {
                 pendingInsert.push({ id: randomUUID(), ...recordData, createdAt: now });
               }

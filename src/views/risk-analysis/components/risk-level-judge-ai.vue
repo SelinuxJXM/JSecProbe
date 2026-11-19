@@ -284,7 +284,7 @@ const batchElapsedTime = ref(0);
 const batchEstimatedRemaining = ref(0);
 const batchSuccessCount = ref(0);
 const batchFailedCount = ref(0);
-const batchList = ref<Array<{ issueId: string; issueDescription: string; failed: boolean; level?: RiskLevelJudgment['level'] }>>([]);
+const batchList = ref<Array<{ issueId: string; issueDescription: string; failed: boolean; pendingApply?: boolean; level?: RiskLevelJudgment['level'] }>>([]);
 
 const batchPercentDisplay = computed(() => `${batchPercent.value}%`);
 
@@ -366,10 +366,18 @@ async function judgeBatch(issues: RiskLevelJudgeParams[]): Promise<void> {
     if (!res.success || !res.data) throw new Error(res.error?.message || 'AI批量判定失败');
 
     const results: RiskLevelJudgeResult[] = res.data.results;
+    const canceled = !!res.data.canceled;
     let applied = 0;
     let failed = 0;
+    // S6：用户点「中止」的语义是不要应用结果。取消后即便后端返回了已完成部分，
+    // 也只展示不落库，避免半套未经复核的判定被写入。需要应用请重新完整执行。
     for (const result of results) {
       const listItem = batchList.value.find(x => x.issueId === result.issueId);
+      if (canceled) {
+        // 取消：仅在列表标记"已完成但未应用"，不写后端、不改正式等级
+        if (listItem && result.success) listItem.pendingApply = true;
+        continue;
+      }
       if (result.success && result.judgment && result.issueId) {
         const ok = await writeBack(result.issueId, result.judgment.level);
         if (ok) {
@@ -387,15 +395,15 @@ async function judgeBatch(issues: RiskLevelJudgeParams[]): Promise<void> {
     batchSuccessCount.value = applied;
     batchFailedCount.value = failed;
     if (!batchStage.value || batchStage.value === 'init' || batchStage.value === 'analyzing') {
-      batchStage.value = res.data.canceled ? 'canceled' : 'done';
+      batchStage.value = canceled ? 'canceled' : 'done';
     }
     batchPercent.value = 100;
     // 中止时后端仍会发 current=total，这里按实际返回的条目数回拨，未处理的保持待处理态
-    batchCurrent.value = res.data.canceled ? results.length : batchTotal.value;
-    batchMessage.value = res.data.canceled
-      ? `已中止，完成 ${batchSuccessCount.value}/${batchTotal.value}`
+    batchCurrent.value = canceled ? results.length : batchTotal.value;
+    batchMessage.value = canceled
+      ? `已中止，${results.filter(r => r.success).length} 条结果未应用（需重新执行才会落库）`
       : `完成 ${batchSuccessCount.value}/${batchTotal.value} 条`;
-    emit('applied', { applied, failed, canceled: !!res.data.canceled });
+    emit('applied', { applied, failed, canceled });
   } catch (err: any) {
     batchStage.value = 'error';
     batchMessage.value = err?.message || 'AI批量判定失败';

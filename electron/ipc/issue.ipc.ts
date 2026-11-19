@@ -2,7 +2,7 @@ import { ipcMain, dialog } from 'electron';
 import log from 'electron-log';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, and, count, sql, or, desc, asc, inArray } from 'drizzle-orm';
+import { eq, and, count, sql, or, desc, asc, inArray, isNull } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import ExcelJS from 'exceljs';
 import { getRowMaxHeight, styleCell } from '../utils/excel-helper';
@@ -243,6 +243,11 @@ export function registerIssueHandlers(): void {
 
   ipcMain.handle('issue:create', wrap(async (_event, data: any) => {
       const db = getDb();
+      if (!data?.projectId) throw new Error('缺少所属系统ID');
+      // 判存：与 asset:create 保持一致，避免写入指向不存在系统的孤儿问题
+      const [project] = await db.select({ id: schema.projects.id })
+        .from(schema.projects).where(eq(schema.projects.id, data.projectId)).limit(1);
+      if (!project) throw new Error('所属系统不存在');
       const id = randomUUID();
       const now = new Date().toISOString();
       // 显式字段白名单，防止 Mass Assignment 覆盖 id/createdAt/updatedAt 等内部字段
@@ -287,13 +292,21 @@ export function registerIssueHandlers(): void {
 
   ipcMain.handle('issue:remove', wrap(async (_event, id: string) => {
       const db = getDb();
-      await db.delete(schema.issues).where(eq(schema.issues.id, id));
+      db.transaction((tx) => {
+        // 重大隐患判定无外键，删 issues 不会带走，先显式清理避免孤儿行
+        tx.delete(schema.majorRiskAnalysis).where(eq(schema.majorRiskAnalysis.issueId, id)).run();
+        tx.delete(schema.issues).where(eq(schema.issues.id, id)).run();
+      });
     })
   );
 
   ipcMain.handle('issue:batchRemove', wrap(async (_event, ids: string[]) => {
+      if (!ids.length) return;
       const db = getDb();
-      await db.delete(schema.issues).where(inArray(schema.issues.id, ids));
+      db.transaction((tx) => {
+        tx.delete(schema.majorRiskAnalysis).where(inArray(schema.majorRiskAnalysis.issueId, ids)).run();
+        tx.delete(schema.issues).where(inArray(schema.issues.id, ids)).run();
+      });
     })
   );
 
@@ -374,28 +387,29 @@ export function registerIssueHandlers(): void {
         return 0;
       });
 
-      let count = 0;
+      // 先算出全部待插入行，再一次事务写入：中途失败不留"生成一半的问题清单"
+      // 去重粒度必须是 (itemId, assetId)：测评记录本身就是这个粒度，
+      // 同一控制项在两台服务器都不符合是常态，按 itemId 去重会丢掉其余资产，
+      // 且修好一台后再次同步，另一台永远补不回来。
+      const existingRows = await db
+        .select({ itemId: schema.issues.itemId, assetId: schema.issues.assetId })
+        .from(schema.issues)
+        .where(eq(schema.issues.projectId, projectId));
+      const issueKey = (itemId: string | null | undefined, assetId?: string | null) => `${itemId || ''}||${assetId || ''}`;
+      const existingKeys = new Set(existingRows.map(r => issueKey(r.itemId, r.assetId)));
 
+      const newIssues: any[] = [];
+      const seenKeys = new Set<string>();
       for (const rec of records) {
         const record = rec.assessment_records as any;
         const item = rec.assessment_items as any;
+        const key = issueKey(item?.id || '', record?.assetId);
+        if (!item?.id || existingKeys.has(key) || seenKeys.has(key)) continue;
+        seenKeys.add(key);
 
-        const existing = await db
-          .select()
-          .from(schema.issues)
-          .where(and(
-            eq(schema.issues.projectId, projectId),
-            eq(schema.issues.itemId, item.id)
-          ))
-          .limit(1);
-
-        if (existing.length > 0) continue;
-
-        // 根据结果类型设置不同标题和风险等级
         const isNonCompliant = record.result === 'non_compliant' || record.result === 'nonconform';
         const riskLevel = isNonCompliant ? (item.isHighRisk ? 'high' : 'medium') : 'low';
-
-        await db.insert(schema.issues).values({
+        newIssues.push({
           id: randomUUID(),
           projectId,
           itemId: item.id,
@@ -403,18 +417,36 @@ export function registerIssueHandlers(): void {
           securityDomain: item.domain,
           controlPoint: item.controlPoint,
           controlName: item.controlName,
-          issueTitle: `${item.controlName} - ${isNonCompliant ? '不符合' : '部分符合'}`,
+          // 同一控制项多资产不符时标题带资产名，便于在问题清单里区分
+          issueTitle: `${item.controlName} - ${isNonCompliant ? '不符合' : '部分符合'}${assetMap.get(record.assetId)?.name ? `（${assetMap.get(record.assetId).name}）` : ''}`,
           issueDescription: record.findings || `经测评发现，${item.controlName}${isNonCompliant ? '不符合' : '部分符合'}要求。`,
           riskLevel,
           status: 'pending',
           rectificationSuggestion: `根据等保2.0标准要求，${item.requirement}`,
           createdAt: now,
           updatedAt: now,
-        } as any);
-        count++;
+        });
+      }
+      let actuallyInserted = 0;
+      if (newIssues.length) {
+        db.transaction((tx) => {
+          for (const row of newIssues) {
+            // T12：事务内二次判重——better-sqlite3 事务串行化，此处查重与插入原子，
+            // 杜绝并发两次调用各自读到空快照后生成重复问题（无 DB 唯一索引兜底时的补强）
+            const dup = tx.select({ id: schema.issues.id }).from(schema.issues)
+              .where(and(
+                eq(schema.issues.projectId, row.projectId),
+                eq(schema.issues.itemId, row.itemId),
+                row.assetId ? eq(schema.issues.assetId, row.assetId) : isNull(schema.issues.assetId),
+              )).limit(1).get();
+            if (dup) continue;
+            tx.insert(schema.issues).values(row).run();
+            actuallyInserted++;
+          }
+        });
       }
 
-      return { count };
+      return { count: actuallyInserted };
     })
   );
 

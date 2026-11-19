@@ -29,7 +29,12 @@ export async function extractTextFromFile(filePath: string): Promise<string> {
   if (lower.endsWith('.pdf')) {
     return extractPdfText(filePath);
   }
-  if (lower.endsWith('.doc') || lower.endsWith('.docx')) {
+  if (lower.endsWith('.doc')) {
+    // mammoth 只支持 .docx（OOXML），旧版 .doc（二进制 CFB）会读取失败或返回空文本。
+    // 这里显式报错，避免静默拿到空内容让 AI "识别不到"却无人察觉。
+    throw new Error('暂不支持 .doc 旧格式，请将文件另存为 .docx 后重试');
+  }
+  if (lower.endsWith('.docx')) {
     return extractWordText(filePath);
   }
   if (lower.endsWith('.xls') || lower.endsWith('.xlsx')) {

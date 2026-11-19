@@ -66,7 +66,13 @@ export function useAutoSaveCore(options: AutoSaveCoreOptions) {
       saveQueued = true;
       return false;
     }
-    if (!hasDirty()) return false;
+    if (!hasDirty()) {
+      // 早出时同步状态：scheduleSave 可能刚把状态置成 'unsaved'，但防抖定时器
+      // 到点时脏标记已被 markClean 清空。若不在这里纠正，UI 会一直显示"未保存"，
+      // 而手动点保存又提示"没有需要保存的修改"，前后矛盾。
+      saveStatus.value = lastSavedTime.value ? 'saved' : 'idle';
+      return false;
+    }
 
     saveInProgress = true;
     isSaving.value = true;

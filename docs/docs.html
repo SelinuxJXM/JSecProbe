@@ -541,7 +541,7 @@ body {
   <aside class="sidebar" id="sidebar" aria-label="目录导航">
     <div class="sidebar-header">
       <div class="sidebar-title"><a href="index.html">📄 产品白皮书</a></div>
-      <div class="sidebar-subtitle">JSecProbe V2.5.3</div>
+      <div class="sidebar-subtitle">JSecProbe V2.5.4</div>
     </div>
     <nav aria-label="目录">
       <div class="toc">
@@ -679,7 +679,7 @@ body {
   <main class="content" id="main-content">
     <article class="article">
       <h1>JSecProbe 等级保护现场测评系统</h1>
-      <p class="subtitle">产品白皮书 · 当前版本 V2.5.3 · 技术标准 GB/T 22239-2019</p>
+      <p class="subtitle">产品白皮书 · 当前版本 V2.5.4 · 技术标准 GB/T 22239-2019</p>
 
       <h2 id="intro">一、产品概述</h2>
 
@@ -1422,6 +1422,19 @@ body {
             </td>
           </tr>
           <tr>
+            <td>白皮书 V1.18</td><td>V2.5.4</td>
+            <td>
+              <ul style="margin:0 0 0 18px;padding:0;">
+                <li>系统构成：AI 资产识别按附件分批（图片每批 5 张、文档每批 2 份）并显示逐批阶段进度；识别上限提升至 300；修正文档类资产「主要内容 / 备注」字段语义与预览列名</li>
+                <li>系统构成：资产表格新增多选与批量删除</li>
+                <li>现场核查：AI 批量分析 JSON 容错与分批纠错，结论不再输出逐点罗列 / 判定套话；关联证据文件按 AI 判定落盘为可预览附件并校验错配</li>
+                <li>测评点知识库：Excel 导入、AI 分析召回注入与纯编号过滤</li>
+                <li>稳定性：删除 / 粘贴 / 批量操作统一标脏并自动保存；429 限流退避重试且不误降权；报告与保存竞态修复</li>
+                <li>附录 D 新增「白皮书变更记录」V1.18 条目</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
             <td>白皮书 V1.17</td><td>V2.5.3</td>
             <td>
               <ul style="margin:0 0 0 18px;padding:0;">
@@ -1644,7 +1657,7 @@ body {
 
       <hr>
       <p style="text-align:center;color:var(--gray-500);font-size:14px;padding:20px 0;">
-        <em>本文档最后更新：2026 年 11 月（V1.17，对应 V2.5.3）</em><br>
+        <em>本文档最后更新：2026 年 11 月（V1.18，对应 V2.5.4）</em><br>
         <strong>JSecProbe - 让等保测评更高效、更规范、更智能</strong>
       </p>
     </article>

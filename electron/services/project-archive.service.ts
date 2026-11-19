@@ -226,14 +226,26 @@ function uniqueTargetPath(dir: string, baseName: string): string {
 
 /** 定位解压后的附件（同样兼容包内多一层顶层目录的情况） */
 function locateExtractedFile(extractDir: string, archiveRel: string): string | null {
-  const parts = toPosix(archiveRel).split('/');
-  const direct = path.join(extractDir, ...parts);
-  if (fs.existsSync(direct)) return direct;
+  const posix = toPosix(archiveRel);
+  // 安全：fileMap 来自归档内的 data.json，不受 ZIP 条目名校验保护。
+  // 必须拒绝越界路径，否则构造的归档可读取并落地本机任意文件。
+  if (!posix || posix.startsWith('/') || /^[A-Za-z]:/.test(posix) || posix.split('/').includes('..')) {
+    throw new Error(`归档附件映射包含非法路径: ${archiveRel}`);
+  }
+  const parts = posix.split('/');
+  const root = path.resolve(extractDir);
+  const assertInside = (candidate: string): string | null => {
+    const resolved = path.resolve(candidate);
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
+    return fs.existsSync(resolved) ? resolved : null;
+  };
+  const direct = assertInside(path.join(extractDir, ...parts));
+  if (direct) return direct;
   try {
     for (const top of fs.readdirSync(extractDir, { withFileTypes: true })) {
       if (!top.isDirectory()) continue;
-      const alt = path.join(extractDir, top.name, ...parts);
-      if (fs.existsSync(alt)) return alt;
+      const alt = assertInside(path.join(extractDir, top.name, ...parts));
+      if (alt) return alt;
     }
   } catch {
     /* 目录不可读时按缺失处理 */
@@ -621,6 +633,8 @@ function deleteProjectCascade(tx: any, projectId: string): void {
   const taskIds = taskRows.map((t: any) => t.id as string);
 
   tx.delete(schema.assessmentRecords).where(eq(schema.assessmentRecords.projectId, projectId)).run();
+  // 与 project:remove 的级联保持一致：重大隐患判定无外键，删 issues 不会带走，必须显式清理
+  tx.delete(schema.majorRiskAnalysis).where(eq(schema.majorRiskAnalysis.projectId, projectId)).run();
   tx.delete(schema.issues).where(eq(schema.issues.projectId, projectId)).run();
   tx.delete(schema.projectMembers).where(eq(schema.projectMembers.projectId, projectId)).run();
   if (taskIds.length) {
@@ -706,10 +720,12 @@ export async function importProjectArchive(options: ImportArchiveOptions): Promi
       fs.mkdirSync(targetDir, { recursive: true });
       let target = path.join(targetDir, baseName);
       if (fs.existsSync(target)) {
-        // 同名文件已存在：内容一致就沿用（引用天然对齐），
-        // 内容不同则改名另存 —— 否则新记录会指向一个"名字相同但不是它"的旧文件
-        const sameSize = fs.statSync(target).size === fs.statSync(src).size;
-        if (!sameSize) {
+        // 同名文件已存在：只有内容完全一致才沿用（引用天然对齐）。
+        // 不能只比文件大小：两张不同截图恰好同为 N 字节时，会让证据指向错误文件。
+        const crypto = require('crypto');
+        const sha = (p: string) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+        const sameContent = sha(target) === sha(src);
+        if (!sameContent) {
           target = uniqueTargetPath(targetDir, baseName);
           fs.copyFileSync(src, target);
           restoredFiles++;
@@ -931,11 +947,15 @@ export async function importProjectArchive(options: ImportArchiveOptions): Promi
       insertAll(tx, schema.assets, assets);
 
       const connIdMap = new Map<string, string>();
-      const connections = (data.connectionProfiles || []).map(c => {
-        const newId = randomUUID();
-        connIdMap.set(c.id, newId);
-        return { ...c, id: newId };
-      });
+      // skip 策略下被跳过项目的资产不会进 assetIdMap；它们引用的连接配置（含口令密文）
+      // 不应写进本机成为孤儿。assetId 为空的公共配置保留，可能被仍存在的任务引用。
+      const connections = (data.connectionProfiles || [])
+        .filter((c: Row) => !c.assetId || assetIdMap.has(c.assetId))
+        .map(c => {
+          const newId = randomUUID();
+          connIdMap.set(c.id, newId);
+          return { ...c, id: newId };
+        });
       insertAll(tx, schema.connectionProfiles, connections);
 
       const taskIdMap = new Map<string, string>();

@@ -41,7 +41,23 @@ function isBlockedIp(hostname: string): boolean {
   // IPv6 回环 / 唯一本地 / 链路本地
   if (host === '::1' || host === '::' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:')) return true;
 
-  const ip = ipv4ToInt(host);
+  // IPv4-mapped IPv6 可绕过 IPv4 字面量判断访问回环与云元数据。
+  // Node 的 URL 会把 ::ffff:127.0.0.1 标准化为 ::ffff:7f00:1（十六进制），
+  // 因此点分十进制与十六进制两种写法都要还原成 IPv4 再走同一套网段检查。
+  let hostForIpv4 = host;
+  const mappedDec = host.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i);
+  if (mappedDec) {
+    hostForIpv4 = mappedDec[1];
+  } else {
+    const mappedHex = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+    if (mappedHex) {
+      const hi = parseInt(mappedHex[1], 16);
+      const lo = parseInt(mappedHex[2], 16);
+      hostForIpv4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    }
+  }
+
+  const ip = ipv4ToInt(hostForIpv4);
   if (ip !== null) {
     const inRange = (base: number, bits: number) => {
       const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;

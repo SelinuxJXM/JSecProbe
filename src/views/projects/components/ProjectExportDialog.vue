@@ -131,6 +131,8 @@ function selectAll() {
 }
 
 function close() {
+  // 导出进行中不允许关闭，否则结果提示会飘在别的页面且用户无法对应
+  if (props.busy) return;
   emit('update:visible', false);
 }
 

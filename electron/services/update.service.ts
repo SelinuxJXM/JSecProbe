@@ -822,6 +822,8 @@ async function verifyInstallerSignature(installerPath: string): Promise<Signatur
     return { ok: true, reason: '签名有效（证书已过期）', status: rawStatus };
   }
 
+  // 兼容历史开关名；默认仍放行未签名包（本工具暂无代码签名证书，强制签名会让全部更新失败）。
+  // 拿到证书后设 JSECPROBE_REQUIRE_INSTALLER_SIGNATURE=1 收紧；S16 彻底修复依赖签名证书落地。
   const requireSigned = process.env.JSECPROBE_REQUIRE_INSTALLER_SIGNATURE === '1';
 
   if (!rawStatus || BLOCKED_SIGNATURE_STATUS.has(rawStatus)) {

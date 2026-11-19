@@ -139,9 +139,17 @@ export function registerRiskAnalysisHandlers(): void {
     return toRow(updated);
   }, { moduleName: 'riskAnalysis' }));
 
-  ipcMain.handle('riskAnalysis:clear', wrap(async (_event, issueId: string) => {
+  ipcMain.handle('riskAnalysis:clear', wrap(async (_event, payload: { issueId: string; projectId: string }) => {
     const db = getDb();
-    if (!issueId) throw new Error('缺少问题ID');
+    // 必须同时带 issueId 与 projectId：早期兼容字符串调用的分支会因缺 projectId
+    // 跳过归属校验，构成跨项目清除的后门，已随前端一起移除。
+    const issueId = payload?.issueId;
+    const projectId = payload?.projectId;
+    if (!issueId || !projectId) throw new Error('缺少问题ID或项目ID');
+    const [issue] = await db.select().from(schema.issues)
+      .where(and(eq(schema.issues.id, issueId), eq(schema.issues.projectId, projectId)))
+      .limit(1);
+    if (!issue) throw new Error('问题不存在或不属于当前系统');
     await db.update(schema.issues).set({
       riskConsequence: null,
       riskAnalyst: null,

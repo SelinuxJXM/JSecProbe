@@ -66,23 +66,34 @@ export async function searchAssessmentRecords(params: {
     .leftJoin(schema.assets, eq(schema.assessmentRecords.assetId, schema.assets.id))
     .where(eq(schema.assessmentRecords.projectId, params.projectId));
 
-  const keywordNorm = normalizeText(params.keyword || '');
+  // 用短关键词而非整段描述做匹配：整段逐字匹配几乎永不命中，等于白给 5 分
+  const keywordParts = String(params.keyword || '')
+    .split(/[\s,，、;；:：()（）【】\[\]。!！?？"'"']+/)
+    .map(normalizeText)
+    .filter((k: string) => k.length >= 2)
+    .slice(0, 24);
   const kg = normalizeText(params.keyword || '');
   const keywordGrams = new Set<string>();
   for (let i = 0; i < kg.length - 1; i++) { const g = kg.slice(i, i + 2); if (g) keywordGrams.add(g); }
 
   const scored = records.map(r => {
-    const text = normalizeText(`${r.findings || ''} ${r.evidence || ''} ${r.commandOutput || ''}`);
+    const rawText = `${r.findings || ''} ${r.evidence || ''} ${r.commandOutput || ''}`;
+    const text = normalizeText(rawText);
     let score = 0;
     if (itemId && r.itemId === itemId) score += 10;
     if (assetId && r.assetId === assetId) score += 6;
-    if (keywordNorm && text.includes(keywordNorm)) score += 5;
+    // 短词命中才加分；同测评项/同资产的防护证据额外加权，避免无关记录靠"内网/备份"等泛词挤进 Top
+    let partHits = 0;
+    for (const part of keywordParts) if (part && text.includes(part)) partHits++;
+    const related = (itemId && r.itemId === itemId) || (assetId && r.assetId === assetId);
+    score += Math.min(partHits, 6) * 1.2;
     let hits = 0;
     for (const g of keywordGrams) if (text.includes(g)) hits++;
     score += Math.min(hits, 8) * 0.5;
-    // 全系统防护/环境上下文：让"防火墙严格策略、不连外网、专人专用账号"这类
-    // 缓解性证据也能被召回（上限 4.5 分，不会压过同测评项记录的 10 分权重）
-    score += Math.min(countMitigationHits(`${r.findings || ''} ${r.evidence || ''} ${r.commandOutput || ''}`), 3) * 1.5;
+    // 全系统防护/环境上下文仍要召回（严重性/高发性需要），但泛词权重压低；
+    // 与问题同测评项或同资产时给满权重，其余记录最多 1.5 分，不挤占核心证据
+    const mitigation = Math.min(countMitigationHits(rawText), 3);
+    score += mitigation * (related ? 1.0 : 0.5);
     if ((r.findings || '').trim()) score += 2;
     return { r, score };
   });

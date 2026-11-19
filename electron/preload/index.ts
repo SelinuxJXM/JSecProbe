@@ -14,11 +14,8 @@ const updateService = {
     ipcRenderer.on('update:status', handler);
     return () => ipcRenderer.removeListener('update:status', handler);
   },
-  onDownloadProgress: (callback: (info: any) => void) => {
-    const handler = (_e: IpcRendererEvent, info: any) => callback(info);
-    ipcRenderer.on('update:progress', handler);
-    return () => ipcRenderer.removeListener('update:progress', handler);
-  },
+  // 注：主进程从不发送 'update:progress'，下载进度随 'update:status' 的 downloadProgress 字段传递。
+  // 原先这里有一个监听该事件的 onDownloadProgress，无人调用且永不触发，已删除。
 };
 
 /**
@@ -142,6 +139,11 @@ const aiService = {
     ipcRenderer.on('ai:progress', handler);
     return () => ipcRenderer.removeListener('ai:progress', handler);
   },
+  onAssetIdentifyProgress: (callback: (data: { stage: string; message: string; percent: number; currentBatch?: number; totalBatches?: number; batchLabels?: string[] }) => void) => {
+    const handler = (_e: IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on('ai:assetIdentifyProgress', handler);
+    return () => ipcRenderer.removeListener('ai:assetIdentifyProgress', handler);
+  },
   onBatchIssueProgress: (callback: (data: { stage: string; message: string; percent: number; current: number; total: number }) => void) => {
     const handler = (_e: IpcRendererEvent, data: any) => callback(data);
     ipcRenderer.on('ai:batchIssueProgress', handler);
@@ -173,6 +175,30 @@ const aiService = {
     ipcRenderer.on('ai:batchRiskLevelProgress', handler);
     return () => ipcRenderer.removeListener('ai:batchRiskLevelProgress', handler);
   },
+};
+
+// AI 智能助手历史会话
+const aiConversationService = {
+  list: ipc<Array<{ id: string; title: string; projectId: string | null; createdAt: string; updatedAt: string }>>('aiConversation:list'),
+  create: ipc<{ id: string; title: string; createdAt: string; updatedAt: string }>('aiConversation:create'),
+  rename: ipc<void>('aiConversation:rename'),
+  delete: ipc<void>('aiConversation:delete'),
+  appendMessages: ipc<void>('aiConversation:appendMessages'),
+  clearMessages: ipc<void>('aiConversation:clearMessages'),
+  getMessages: ipc<Array<{ id: string; role: string; content: string; suggestions?: string[]; attachments?: Array<{ name: string; path: string; type: 'image' | 'document'; size: number }>; createdAt: string }>>('aiConversation:getMessages'),
+};
+
+// 等保测评点知识库（指导书导入）
+const checkpointService = {
+  pickFile: ipc<{ paths: string[] }>('checkpoint:pickFile'),
+  downloadTemplate: ipc<{ canceled?: boolean; path?: string }>('checkpoint:downloadTemplate'),
+  preview: ipc<any>('checkpoint:preview'),
+  commit: ipc<{ inserted: number; updated: number; skipped: number }>('checkpoint:commit'),
+  stats: ipc<{ total: number; withDevice: number; unmatched: number }>('checkpoint:stats'),
+  list: ipc<any[]>('checkpoint:list'),
+  update: ipc<{ ok: boolean; reason?: string; duplicateOf?: string }>('checkpoint:update'),
+  delete: ipc<{ ok: boolean }>('checkpoint:delete'),
+  clear: ipc<{ removed: number }>('checkpoint:clear'),
 };
 
 const api = {
@@ -239,7 +265,7 @@ const api = {
     update: ipc<any>('asset:update'),
     remove: ipc<void>('asset:remove'),
     batchRemove: ipc<void>('asset:batchRemove'),
-    importExcel: ipc<{ count: number; category?: string }>('asset:importExcel'),
+    importExcel: ipc<{ count: number; category?: string; skipped?: number; results?: Array<{ sheet: string; count: number }> }>('asset:importExcel'),
     exportExcel: ipc<string>('asset:exportExcel'),
     downloadTemplate: ipc<string>('asset:downloadTemplate'),
   },
@@ -369,6 +395,8 @@ const api = {
     list: ipc<{ list: any[]; total: number }>('log:list'),
   },
   ai: aiService,
+  aiConversation: aiConversationService,
+  checkpoint: checkpointService,
   ollama: {
     getStatus: ipc<{ state: string; models?: any[]; error?: string }>('ollama:getStatus'),
     listModels: ipc<any[]>('ollama:listModels'),
@@ -384,13 +412,8 @@ const api = {
       return () => ipcRenderer.removeListener('ollama:pullProgress', handler);
     },
   },
-  ocr: {
-    extractText: ipc<{ text: string; confidence: number; words: any[] }>('ocr:extractText'),
-    extractTextFromMultiple: ipc<Array<{ path: string; result: { text: string; confidence: number; words: any[] } }>>('ocr:extractTextFromMultiple'),
-    isEnabled: ipc<boolean>('ocr:isEnabled'),
-  },
   document: {
-    extractText: ipc<{ name: string; content: string }[]>('document:extractText'),
+    extractText: ipc<Array<{ name: string; content: string; error?: string }>>('document:extractText'),
   },
   attachment: {
     save: ipc<{ path: string; name: string; size: number; type: 'image' | 'document' }>('attachment:save'),
@@ -466,4 +489,6 @@ const api = {
   isPackaged: process.argv.includes('--jsecprobe-packaged=true'),
 };
 
+// 注：ApiBridge 中的 sendLog/on 为预留通道，preload 暂未暴露（主进程无对应监听），
+// 故此处不做整体 satisfies 校验；新增业务通道仍逐命名空间用 ApiBridge[...] 约束。
 contextBridge.exposeInMainWorld('api', api);

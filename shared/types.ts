@@ -931,7 +931,8 @@ export interface ApiBridge {
     update: (id: string, data: Partial<Asset>) => Promise<IpcResponse<Asset>>;
     remove: (id: string) => Promise<IpcResponse<void>>;
     batchRemove: (ids: string[]) => Promise<IpcResponse<void>>;
-    importExcel: (projectId: string, filePath: string) => Promise<IpcResponse<{ count: number; category?: string; results?: Array<{ sheet: string; count: number }> }>>;
+    // expectedCategory：用户在系统构成页当前选中的分类。单 sheet 导入时按此落库，避免靠 sheet 名/路径猜分类
+    importExcel: (projectId: string, filePath: string, expectedCategory?: string) => Promise<IpcResponse<{ count: number; category?: string; skipped?: number; results?: Array<{ sheet: string; count: number }> }>>;
     exportExcel: (projectId: string, category: string) => Promise<IpcResponse<string>>;
     downloadTemplate: (projectId: string) => Promise<IpcResponse<string>>;
   };
@@ -986,7 +987,8 @@ export interface ApiBridge {
   };
   assessment: {
     getItems: (standardId: string, domain?: string, projectLevel?: number, extensionType?: string | string[]) => Promise<IpcResponse<AssessmentItem[]>>;
-    getItemsByCategory: (category: string, projectLevel?: number, extensionType?: string) => Promise<IpcResponse<AssessmentItem[]>>;
+    // 第二参数是 projectId（用于行标项目的动态 sheet 名解析），不是项目等级
+    getItemsByCategory: (category: string, projectId?: string) => Promise<IpcResponse<AssessmentItem[]>>;
     getRecords: (projectId: string, itemId: string) => Promise<IpcResponse<AssessmentRecord[]>>;
     getRecordsByAsset: (projectId: string, assetId: string) => Promise<IpcResponse<AssessmentRecord[]>>;
     getProjectRecords: (projectId: string) => Promise<IpcResponse<AssessmentRecord[]>>;
@@ -1025,7 +1027,7 @@ export interface ApiBridge {
   riskAnalysis: {
     list: (params: { projectId: string }) => Promise<IpcResponse<RiskAnalysisListResult>>;
     save: (payload: RiskAnalysisSavePayload) => Promise<IpcResponse<IssueRiskAnalysis>>;
-    clear: (issueId: string) => Promise<IpcResponse<void>>;
+    clear: (payload: { issueId: string; projectId: string }) => Promise<IpcResponse<void>>;
     generateDraft: (projectId: string) => Promise<IpcResponse<{ count: number }>>;
     exportExcel: (projectId: string) => Promise<IpcResponse<string>>;
   };
@@ -1033,7 +1035,7 @@ export interface ApiBridge {
   majorRisk: {
     list: (params: { projectId: string }) => Promise<IpcResponse<MajorRiskListResult>>;
     save: (payload: MajorRiskSavePayload) => Promise<IpcResponse<MajorRiskRow>>;
-    clear: (issueId: string) => Promise<IpcResponse<void>>;
+    clear: (payload: { issueId: string; projectId: string }) => Promise<IpcResponse<void>>;
     exportExcel: (projectId: string) => Promise<IpcResponse<string>>;
     catalogList: () => Promise<IpcResponse<MajorRiskCatalogItem[]>>;
     catalogSave: (item: Partial<MajorRiskCatalogItem> & { id?: string }) => Promise<IpcResponse<MajorRiskCatalogItem>>;
@@ -1146,9 +1148,9 @@ export interface ApiBridge {
     chatStream: (params: { messages: ChatMessageWithAttachments[]; model?: string; temperature?: number; context?: string; requestId: string }) => Promise<IpcResponse<AiChatStreamResult>>;
     onChatChunk: (callback: (data: AiChatStreamChunk) => void) => () => void;
     cancelChat: () => Promise<IpcResponse<{ canceled: boolean }>>;
-    analyzeAssessment: (params: { controlPoint: string; requirement: string; command: string; result: string; screenshots?: string[]; ocrPreprocess?: boolean; standardId?: string; itemId?: string; domain?: string }) => Promise<IpcResponse<{ content: string }>>;
+    analyzeAssessment: (params: { controlPoint: string; requirement: string; command: string; result: string; screenshots?: string[]; ocrPreprocess?: boolean; standardId?: string; itemId?: string; domain?: string; assetCategory?: string; assetOs?: string }) => Promise<IpcResponse<{ content: string; recalledCount?: number; recalledCheckpoints?: string[] }>>;
     cancelSingleAnalysis: () => Promise<IpcResponse<{ canceled: boolean }>>;
-    batchAnalyzeScreenshots: (params: { items: { id: string; controlPoint: string; requirement: string }[]; screenshots: string[]; documents?: { name: string; content: string }[]; ocrPreprocess?: boolean }) => Promise<IpcResponse<{ content: string }>>;
+    batchAnalyzeScreenshots: (params: { items: { id: string; controlPoint: string; requirement: string; domain?: string; assetCategory?: string; assetOs?: string }[]; screenshots: string[]; documents?: { name: string; content: string }[]; ocrPreprocess?: boolean }) => Promise<IpcResponse<{ content: string }>>;
     cancelBatchScreenshots: () => Promise<IpcResponse<{ canceled: boolean }>>;
     analyzeIssue: (params: { issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; projectId?: string; itemId?: string }) => Promise<IpcResponse<{ content: string }>>;
     cancelIssue: () => Promise<IpcResponse<{ canceled: boolean }>>;
@@ -1204,7 +1206,7 @@ export interface ApiBridge {
         source: 'ai';
       }>;
     }>>;
-    identifyAssets: (params: { projectId?: string; systemName?: string; description?: string; imagePaths?: string[]; documents?: string[]; ocrPreprocess?: boolean }) => Promise<IpcResponse<{ assets: Array<Record<string, any>> }>>;
+    identifyAssets: (params: { projectId?: string; systemName?: string; description?: string; imagePaths?: string[]; documents?: string[]; ocrPreprocess?: boolean }) => Promise<IpcResponse<{ assets: Array<Record<string, any>>; warnings?: string[]; truncated?: boolean; capped?: boolean }>>;
     checkMissingAssets: (params: { projectId?: string; systemName?: string }) => Promise<IpcResponse<{ missing: Array<{ category: string; risk: string; suggestion: string }> }>>;
     dashboardInsight: () => Promise<IpcResponse<{
       insight: string;
@@ -1239,10 +1241,54 @@ export interface ApiBridge {
     testModelConnection: (modelId: string) => Promise<IpcResponse<any>>;
     getProgress: () => Promise<IpcResponse<{ stage: string; message: string; percent: number; timestamp: number } | null>>;
     onAnalysisProgress: (callback: (data: { stage: string; message: string; percent: number; scope?: string }) => void) => () => void;
+    onAssetIdentifyProgress: (callback: (data: { stage: string; message: string; percent: number; currentBatch?: number; totalBatches?: number; batchLabels?: string[] }) => void) => () => void;
     onBatchIssueProgress: (callback: (data: { stage: string; message: string; percent: number; current: number; total: number }) => void) => () => void;
     listPrompts: () => Promise<IpcResponse<AiPromptInfo[]>>;
     savePrompt: (payload: { key: string; template: string }) => Promise<IpcResponse<{ success: boolean }>>;
     resetPrompt: (payload: { key: string }) => Promise<IpcResponse<{ success: boolean }>>;
+  };
+  aiConversation: {
+    list: () => Promise<IpcResponse<Array<{ id: string; title: string; projectId: string | null; createdAt: string; updatedAt: string }>>>;
+    create: (data?: { title?: string; projectId?: string | null }) => Promise<IpcResponse<{ id: string; title: string; createdAt: string; updatedAt: string }>>;
+    rename: (id: string, title: string) => Promise<IpcResponse<void>>;
+    delete: (id: string) => Promise<IpcResponse<void>>;
+    appendMessages: (conversationId: string, messages: Array<{
+      id: string;
+      role: string;
+      content: string;
+      suggestions?: string[];
+      attachments?: Array<{ name: string; path: string; type: 'image' | 'document'; size: number }>;
+    }>) => Promise<IpcResponse<void>>;
+    clearMessages: (conversationId: string) => Promise<IpcResponse<void>>;
+    getMessages: (conversationId: string) => Promise<IpcResponse<Array<{
+      id: string;
+      role: string;
+      content: string;
+      suggestions?: string[];
+      attachments?: Array<{ name: string; path: string; type: 'image' | 'document'; size: number }>;
+      createdAt: string;
+    }>>>;
+  };
+  checkpoint: {
+    pickFile: () => Promise<IpcResponse<{ paths: string[] }>>;
+    downloadTemplate: () => Promise<IpcResponse<{ canceled?: boolean; path?: string }>>;
+    preview: (filePath: string) => Promise<IpcResponse<{
+      file: string;
+      rows: Array<{
+        seq: string; domain: string; controlPoint: string; requirement: string;
+        checkpoints: string[]; interpretation?: string; resultTemplate?: string;
+        catalogNo?: string; deviceKey: string; semanticKey: string;
+        match: 'auto' | 'fuzzy' | 'unmatched'; matchedItemId?: string; matchedRequirement?: string;
+        overwrite?: boolean;
+      }>;
+      stats: { total: number; auto: number; fuzzy: number; unmatched: number; sheets: number };
+    }>>;
+    commit: (rows: any[], clearFirst?: boolean) => Promise<IpcResponse<{ inserted: number; updated: number; skipped: number }>>;
+    stats: () => Promise<IpcResponse<{ total: number; withDevice: number; unmatched: number }>>;
+    list: (keyword?: string) => Promise<IpcResponse<any[]>>;
+    update: (input: any) => Promise<IpcResponse<{ ok: boolean; reason?: string; duplicateOf?: string }>>;
+    delete: (id: string) => Promise<IpcResponse<{ ok: boolean }>>;
+    clear: () => Promise<IpcResponse<{ removed: number }>>;
   };
   ollama: {
     getStatus: (url?: string, engine?: 'ollama' | 'herdsman', force?: boolean) => Promise<IpcResponse<{ state: string; models?: any[]; error?: string }>>;
@@ -1256,7 +1302,7 @@ export interface ApiBridge {
     onPullProgress: (callback: (data: { modelName: string; status: string; completed?: number; total?: number }) => void) => () => void;
   };
   document: {
-    extractText: (params: { filePaths: string[] }) => Promise<IpcResponse<{ name: string; content: string }[]>>;
+    extractText: (params: { filePaths: string[] }) => Promise<IpcResponse<Array<{ name: string; content: string; error?: string }>>>;
   };
   attachment: {
     save: (params: { name: string; base64Data: string }) => Promise<IpcResponse<{ path: string; name: string; size: number; type: 'image' | 'document' }>>;

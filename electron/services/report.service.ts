@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
-import { eq, sql, and, or, lte, inArray, count, asc } from 'drizzle-orm';
+import { eq, asc } from 'drizzle-orm';
 import log from 'electron-log';
 import { decryptSecret } from './credential.util';
 import { ensureApiUrl } from './ai-url';
@@ -47,7 +47,8 @@ interface ReportRiskItem {
 function collectRiskAnalysis(issues: any[]): ReportRiskItem[] {
   const LEVEL_TEXT: Record<string, string> = { high: '高', medium: '中', low: '低' };
   return (issues || [])
-    .filter((i: any) => !!i.riskAnalyzedAt && !!String(i.riskConsequence || '').trim())
+    // 只以分析内容为准：历史/导入数据可能只有 consequence 没有 analyzedAt，不应整段漏出报告
+    .filter((i: any) => !!String(i.riskConsequence || '').trim())
     .map((i: any) => ({
       title: String(i.issueTitle || ''),
       controlName: String(i.controlName || ''),
@@ -541,17 +542,33 @@ export class ReportService {
     const closed = issues.filter((i: any) => i.status === 'closed').length;
 
     const domainCounts: Record<string, number> = {};
+    // 4.2 表里的「风险等级」取该域下问题的真实最高等级，不再按问题条数臆断
+    const DOMAIN_RISK_WEIGHT: Record<string, number> = { high: 3, medium: 2, low: 1 };
+    const domainRisk: Record<string, string> = {};
     for (const issue of issues) {
       const name = domainNameMap[issue.securityDomain] || issue.securityDomain;
       domainCounts[name] = (domainCounts[name] || 0) + 1;
+      const w = DOMAIN_RISK_WEIGHT[issue.riskLevel] || 0;
+      const prev = domainRisk[name];
+      if (!prev || w > (DOMAIN_RISK_WEIGHT[prev] || 0)) domainRisk[name] = issue.riskLevel || 'low';
     }
-    const domainStats = Object.entries(domainCounts).map(([name, count]) => ({ name, count }));
+    const domainStats = Object.entries(domainCounts).map(([name, count]) => ({
+      name, count, maxRiskLevel: domainRisk[name] || 'low',
+    }));
 
-    const assessmentStats = await this.getAssessmentStats(projectId, standardId);
-
-    // 符合率统一走 services/assessment-progress（格内口径），与问题清单页、现场核查页一致。
-    // 此前读的是 projects.compliance_rate 字段，而该字段全仓无写入点（恒为 0），报告里的符合率一直是 0。
+    // 全部测评统计统一走 services/assessment-progress（格内口径），与问题清单页、
+    // 现场核查页、合册符合率完全同源。此前报告同时算 getAssessmentStats（动态域名映射、
+    // 无格内校验）和 progress，导致同一报告里"符合 150 项"与"符合率 87%"分母对不上。
     const progress = await computeAssessmentProgress(projectId, standardId);
+    const assessmentStats = {
+      total: progress.total,
+      tested: progress.tested,
+      compliant: progress.compliant,
+      partial: progress.partial,
+      nonCompliant: progress.nonCompliant,
+      notApplicable: progress.na, // progress 里叫 na，报告文字用 notApplicable
+      untested: progress.untested,
+    };
 
     return {
       project,
@@ -573,245 +590,6 @@ export class ReportService {
       assessmentStats,
       domainNameMap,
       standard,
-    };
-  }
-
-  private async getAssessmentStats(projectId: string, standardId: string): Promise<any> {
-    const db = getDb();
-
-    const EXT_TYPE_MAP: Record<string, string> = {
-      '安全通用要求': 'general',
-      '云计算安全扩展要求': 'cloud',
-      '移动互联安全扩展要求': 'mobile',
-      '物联网安全扩展要求': 'iot',
-      '工业控制系统安全扩展要求': 'industrial',
-      '大数据安全扩展要求': 'bigdata',
-      '大数据安全扩展要求（国标附录）': 'bigdata',
-      '关键信息基础设施安全扩展要求': 'cii',
-    };
-
-    const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
-    if (!project) {
-      return { total: 0, compliant: 0, nonCompliant: 0, partial: 0, notApplicable: 0, untested: 0, tested: 0 };
-    }
-
-    // 老项目/被删标准/空库 → standardId 空串；此时测评项集合为空，total=0 且按「未绑定标准」返回 0 计数，不报错
-    if (!standardId) {
-      return { total: 0, compliant: 0, nonCompliant: 0, partial: 0, notApplicable: 0, untested: 0, tested: 0 };
-    }
-
-    const projectExtCodes: string[] = [];
-    if (project.extensionType) {
-      for (const t of project.extensionType.split(',').filter(Boolean)) {
-        const code = EXT_TYPE_MAP[t.trim()] || t.trim();
-        if (!projectExtCodes.includes(code)) projectExtCodes.push(code);
-      }
-    }
-
-    const extOrConditions = [eq(schema.assessmentItems.extensionType, 'general')];
-    for (const ext of projectExtCodes) {
-      extOrConditions.push(eq(schema.assessmentItems.extensionType, ext));
-    }
-    const extOr = or(...extOrConditions);
-
-    const assets = await db.query.assets.findMany({
-      where: and(
-        eq(schema.assets.projectId, projectId),
-        eq(schema.assets.isAssessmentTarget, 1),
-      ),
-    });
-
-    // === A4 修复：资产类别 → 域 ID 的动态映射（兼容行标缺少 secure_computing / secure_boundary 的情况）===
-    // 1. 从项目 standard 加载 domainsMeta 构建：别名关键词 → 真实 domainId
-    // 2. 若标准元信息缺失，fallback 原 CATEGORY_TO_DOMAIN（国标十域）
-    // 3. 若标准完全没有匹配域，则退化：映射到标准第一个存在的资产域（避免 assetCount × 0）
-    const [stdRow] = await db.select({ domainsMeta: schema.standards.domainsMeta })
-      .from(schema.standards).where(eq(schema.standards.id, standardId)).limit(1);
-    type DomainMetaLite = { id: string; name?: string; keywords?: Set<string> };
-    const metas: DomainMetaLite[] = [];
-    if (stdRow?.domainsMeta) {
-      try {
-        const arr = JSON.parse(stdRow.domainsMeta);
-        if (Array.isArray(arr)) {
-          for (const d of arr) {
-            if (!d?.id) continue;
-            const name = String(d.name || d.id || '');
-            const kw = new Set<string>();
-            // 加入关键词（大小写/空格不敏感）
-            [d.id, name].forEach((s: string) => {
-              const t = String(s || '').toLowerCase().replace(/[\s_-]/g, '');
-              if (t) kw.add(t);
-            });
-            // 中文名关键词别名（用于中英文匹配）
-            if (/物理/.test(name)) kw.add('secure_physical'.replace(/_/g, ''));
-            if (/通信|网络/.test(name)) kw.add('secure_communication'.replace(/_/g, ''));
-            if (/边界/.test(name)) kw.add('secure_boundary'.replace(/_/g, ''));
-            if (/计算/.test(name)) kw.add('secure_computing'.replace(/_/g, ''));
-            if (/管理中心/.test(name)) kw.add('secure_management'.replace(/_/g, ''));
-            if (/制度|策略/.test(name)) kw.add('security_management'.replace(/_/g, ''));
-            if (/机构|组织/.test(name)) kw.add('security_organization'.replace(/_/g, ''));
-            if (/人员/.test(name)) kw.add('security_personnel'.replace(/_/g, ''));
-            if (/建设/.test(name)) kw.add('security_construction'.replace(/_/g, ''));
-            if (/运维|维护/.test(name)) kw.add('security_maintenance'.replace(/_/g, ''));
-            metas.push({ id: String(d.id), name, keywords: kw });
-          }
-        }
-      } catch { /* domainsMeta 解析失败，metas 保持空，走 fallback */ }
-    }
-
-    const findDomainByKeyword = (defaultId: string, keywordList: string[]) => {
-      // 先用 defaultId（国标域）在标准元信息中做精确匹配：domain.id 或关键词命中
-      const defKey = defaultId.toLowerCase().replace(/_/g, '');
-      const kwKeys = keywordList.map(k => k.toLowerCase().replace(/[\s_-]/g, '')).filter(Boolean);
-      const hit = metas.find(m => {
-        if (m.keywords?.has(defKey)) return true;
-        return kwKeys.some(k => m.keywords?.has(k));
-      });
-      return hit ? hit.id : defaultId;
-    };
-
-    const BASE_CATEGORY_MAP: Record<string, { defaultId: string; keywords: string[] }> = {
-      'server_storage':        { defaultId: 'secure_computing', keywords: ['计算', '主机', '服务器', '存储'] },
-      'sys_doc':               { defaultId: 'secure_computing', keywords: ['计算', '文档', '管理'] },
-      'network_device':        { defaultId: 'secure_computing', keywords: ['计算', '网络', '交换机', '路由器'] },
-      'security_device':       { defaultId: 'secure_computing', keywords: ['边界', '安全', '防护'] },
-      'business_app':          { defaultId: 'secure_computing', keywords: ['计算', '应用', '业务'] },
-      'terminal':              { defaultId: 'secure_computing', keywords: ['计算', '终端', '客户端'] },
-      'management_platform':   { defaultId: 'secure_computing', keywords: ['管理中心', '平台', '集中'] },
-      'machine_room':          { defaultId: 'secure_physical', keywords: ['物理', '机房', '环境'] },
-      'data_resource':         { defaultId: 'secure_computing', keywords: ['计算', '数据', '数据资源'] },
-      'network_boundary':      { defaultId: 'secure_boundary',  keywords: ['边界', '分区', '访问控制'] },
-      'data_category':         { defaultId: 'secure_computing', keywords: ['计算', '数据', '分类'] },
-    };
-
-    // 构建当前标准真实可用的 domain→count 映射
-    const globalItemsPre = await db.query.assessmentItems.findMany({
-      where: and(
-        eq(schema.assessmentItems.standardId, standardId),
-        extOr,
-        ...(project.level ? [lte(schema.assessmentItems.minLevel, project.level)] : []),
-      ),
-      columns: { domain: true },
-    });
-    const presentDomains = new Set(globalItemsPre.map(i => i.domain));
-    // 兜底域：取当前标准出现最多的域（作为当类别无法映射到标准内域时的「总兜底」，避免 0 乘积）
-    const fallbackDomainCounts: Record<string, number> = {};
-    for (const d of presentDomains) fallbackDomainCounts[d] = (fallbackDomainCounts[d] || 0) + 1;
-    const fallbackDomain = Object.entries(fallbackDomainCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'secure_computing';
-
-    const CATEGORY_TO_DOMAIN: Record<string, string> = {};
-    for (const [cat, rule] of Object.entries(BASE_CATEGORY_MAP)) {
-      const candidate = findDomainByKeyword(rule.defaultId, rule.keywords);
-      // 若映射结果在当前标准真实存在，则用它；否则 fallbackDomain
-      CATEGORY_TO_DOMAIN[cat] = presentDomains.has(candidate) ? candidate : fallbackDomain;
-    }
-
-    const domainAssetCounts: Record<string, number> = {};
-    for (const asset of assets) {
-      const domainId = CATEGORY_TO_DOMAIN[asset.category] || fallbackDomain;
-      domainAssetCounts[domainId] = (domainAssetCounts[domainId] || 0) + 1;
-    }
-
-    const globalItems = globalItemsPre;
-
-    const domainItemCounts: Record<string, number> = {};
-    for (const item of globalItems) {
-      domainItemCounts[item.domain] = (domainItemCounts[item.domain] || 0) + 1;
-    }
-
-    // 全局层面：从 domainItemCounts 中取不在 CATEGORY_TO_DOMAIN 值集合中的域
-    // （动态推导，替代硬编码 GLOBAL_DOMAINS 列表，兼容行标）
-    const assetDomainIds = new Set(Object.values(CATEGORY_TO_DOMAIN));
-    const GLOBAL_DOMAINS = Object.keys(domainItemCounts).filter(d => !assetDomainIds.has(d));
-
-    let total = 0;
-    for (const [domainId, assetCount] of Object.entries(domainAssetCounts)) {
-      const itemCount = domainItemCounts[domainId] || 0;
-      total += assetCount * itemCount;
-    }
-
-    for (const domainId of GLOBAL_DOMAINS) {
-      const itemCount = domainItemCounts[domainId] || 0;
-      total += itemCount;
-    }
-
-    const applicableConditions = [
-      eq(schema.assessmentItems.standardId, standardId),
-      extOr,
-    ];
-    if (project.level) {
-      applicableConditions.push(lte(schema.assessmentItems.minLevel, project.level));
-    }
-
-    const itemIdsSubquery = db
-      .select({ id: schema.assessmentItems.id })
-      .from(schema.assessmentItems)
-      .where(and(...applicableConditions));
-
-    const testedRecords = await db
-      .select({ value: count() })
-      .from(schema.assessmentRecords)
-      .where(and(
-        eq(schema.assessmentRecords.projectId, projectId),
-        inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-        sql`result IN ('compliant', 'conform', 'partial', 'non_compliant', 'nonconform', 'not_applicable')`
-      ));
-
-    const compliantRecords = await db
-      .select({ value: count() })
-      .from(schema.assessmentRecords)
-      .where(and(
-        eq(schema.assessmentRecords.projectId, projectId),
-        inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-        sql`result IN ('compliant', 'conform')`
-      ));
-
-    const partialRecords = await db
-      .select({ value: count() })
-      .from(schema.assessmentRecords)
-      .where(and(
-        eq(schema.assessmentRecords.projectId, projectId),
-        inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-        sql`result = 'partial'`
-      ));
-
-    const nonCompliantRecords = await db
-      .select({ value: count() })
-      .from(schema.assessmentRecords)
-      .where(and(
-        eq(schema.assessmentRecords.projectId, projectId),
-        inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-        sql`result IN ('non_compliant', 'nonconform')`
-      ));
-
-    const naRecords = await db
-      .select({ value: count() })
-      .from(schema.assessmentRecords)
-      .where(and(
-        eq(schema.assessmentRecords.projectId, projectId),
-        inArray(schema.assessmentRecords.itemId, itemIdsSubquery),
-        sql`result = 'not_applicable'`
-      ));
-
-    const tested = testedRecords[0]?.value || 0;
-    const compliant = compliantRecords[0]?.value || 0;
-    const partial = partialRecords[0]?.value || 0;
-    const nonCompliant = nonCompliantRecords[0]?.value || 0;
-    const notApplicable = naRecords[0]?.value || 0;
-    // 与 issue.ipc / assessment.ipc 口径对齐：tested 已含 'not_applicable'，
-    // 未测评 = 总数 - (已评测 - 不适用) = 总数 - 实际测评结果数，
-    // 若写成 total - tested - notApplicable 会对"不适用"重复扣减，导致未测评数偏小甚至被 clamp 到 0
-    const effectiveTested = Math.max(0, tested - notApplicable);
-    const untested = Math.max(0, total - effectiveTested);
-
-    return {
-      total,
-      tested,
-      compliant,
-      partial,
-      nonCompliant,
-      notApplicable,
-      untested,
     };
   }
 
@@ -1038,7 +816,8 @@ export class ReportService {
     let mediumRisk = 0;
     let lowRisk = 0;
     let issues = 0;
-    let rateSum = 0;
+    let compliantSum = 0;
+    let testedSum = 0; // 有效判定数 = 符合 + 部分符合 + 不符合（与单系统 complianceRate 的分母同口径）
     for (const s of systems) {
       assets += s.assets?.length ?? 0;
       assessmentTotal += Number(s.assessmentStats?.total) || 0;
@@ -1046,10 +825,17 @@ export class ReportService {
       mediumRisk += Number(s.summary?.mediumRisk) || 0;
       lowRisk += Number(s.summary?.lowRisk) || 0;
       issues += Number(s.summary?.total) || 0;
-      rateSum += Number(s.summary?.complianceRate) || 0;
+      const compliant = Number(s.assessmentStats?.compliant) || 0;
+      const partial = Number(s.assessmentStats?.partial) || 0;
+      const nonCompliant = Number(s.assessmentStats?.nonCompliant) || 0;
+      compliantSum += compliant;
+      testedSum += compliant + partial + nonCompliant;
     }
-    const count = systems.length || 1;
-    const avgComplianceRate = Math.round((rateSum / count) * 10) / 10;
+    // 按测评项数加权，而非各系统符合率的算术平均：
+    // 1000 项 10% + 10 项 100% 不能再显示成 55%
+    const avgComplianceRate = testedSum > 0
+      ? Math.round((compliantSum / testedSum) * 1000) / 10
+      : 0;
 
     const riskRank = systems
       .map((s, i) => ({
@@ -1105,7 +891,8 @@ export class ReportService {
         children: [createMixedFontRun(text, { size, bold: opts.bold, italics: opts.italics })],
       });
 
-    // ===== 总封面 =====
+    // ===== 总封面（受 includeSections 控制，与单系统报告一致） =====
+    if (options.includeSections.includes('cover')) {
     content.push(centered('等级保护测评项目综合报告', 56, { bold: true, before: 1800, after: 400 }));
     content.push(centered('Level Protection Assessment Project Report', 28, { italics: true, after: 500 }));
     const coverInfos = [
@@ -1118,8 +905,10 @@ export class ReportService {
     ];
     for (const info of coverInfos) content.push(centered(info, 28));
     content.push(new Paragraph({ children: [new PageBreak()] }));
+    }
 
-    // ===== 总目录 =====
+    // ===== 总目录（受 includeSections 控制） =====
+    if (options.includeSections.includes('toc')) {
     content.push(createHeadingParagraph({ text: '目  录', level: 'heading1' }));
     const tocLine = (text: string, indent = 0) =>
       new Paragraph({
@@ -1135,6 +924,7 @@ export class ReportService {
       content.push(tocLine(`第 ${i + 1} 分册　${name}（第 ${s.project?.level || '-'} 级 · ${s.standard.code}）`, 480));
     });
     content.push(new Paragraph({ children: [new PageBreak()] }));
+    }
 
     // ===== 一、项目综述 =====
     content.push(createHeadingParagraph({ text: '一、项目综述', level: 'heading1' }));
@@ -1383,16 +1173,20 @@ export class ReportService {
         })
       );
 
-      const tocItems = [
-        '一、报告概述',
-        '二、项目概况',
-        '三、测评方法',
-        '四、测评结果汇总',
-        '五、总体分析评价',
-        '六、问题清单及分析',
-        '七、整改建议及规划',
-        '八、附录',
+      // 目录只列实际会输出的章节（与 includeSections 同步），避免目录与正文不符
+      const allTocItems: Array<[string, string]> = [
+        ['overview', '一、报告概述'],
+        ['projectInfo', '二、项目概况'],
+        ['methodology', '三、测评方法'],
+        ['results', '四、测评结果汇总'],
+        ['analysis', '五、总体分析评价'],
+        ['issues', '六、问题清单及分析'],
+        ['recommendations', '七、整改建议及规划'],
+        ['appendix', '八、附录'],
       ];
+      const tocItems = allTocItems
+        .filter(([key]) => options.includeSections.includes(key))
+        .map(([, label]) => label);
       for (const item of tocItems) {
         content.push(
           new Paragraph({
@@ -1430,7 +1224,8 @@ export class ReportService {
     }
     } // end if (frontMatter)
 
-    // 一、报告概述
+    // 一、报告概述（受 overview 开关）
+    if (options.includeSections.includes('overview')) {
     content.push(
       createHeadingParagraph({
         text: '一、报告概述',
@@ -1458,6 +1253,7 @@ export class ReportService {
         spacingAfter: 200,
       })
     );
+    }
 
     // 简洁模板 - 直接到问题清单
     if (isSimple) {
@@ -1515,7 +1311,8 @@ export class ReportService {
       return content;
     }
 
-    // 二、项目概况
+    // 二、项目概况（受 projectInfo 开关，与 HTML 链对齐）
+    if (options.includeSections.includes('projectInfo')) {
     content.push(new Paragraph({ children: [new PageBreak()] }));
     content.push(
       createHeadingParagraph({
@@ -1534,8 +1331,11 @@ export class ReportService {
       ],
     });
     content.push(overviewTable);
+    }
 
     // 三、测评方法
+    // 三、测评方法（受 methodology 开关）
+    if (options.includeSections.includes('methodology')) {
     content.push(new Paragraph({ children: [new PageBreak()] }));
     content.push(
       createHeadingParagraph({
@@ -1559,19 +1359,24 @@ export class ReportService {
         })
       );
     }
+    }
 
-    // 四、测评结果汇总
-    content.push(new Paragraph({ children: [new PageBreak()] }));
+    // 四、测评结果汇总（与 HTML 链一致：子节按实际输出动态编号，避免跳号）
+    let wordSubNo = 1;
+    let wordChapter4Started = false; // 四章标题是否已输出（供 4.3/4.4 独立输出时补标题）
+    const ensureWordChapter4 = () => {
+      if (wordChapter4Started) return;
+      content.push(new Paragraph({ children: [new PageBreak()] }));
+      content.push(createHeadingParagraph({ text: '四、测评结果汇总', level: 'heading1' }));
+      wordChapter4Started = true;
+    };
+    // 4.1/4.2 受 results 开关；4.3/4.4 各自独立，关闭 results 时仍输出
+    if (options.includeSections.includes('results')) {
+    ensureWordChapter4();
+
     content.push(
       createHeadingParagraph({
-        text: '四、测评结果汇总',
-        level: 'heading1',
-      })
-    );
-
-    content.push(
-      createHeadingParagraph({
-        text: '4.1 风险评估统计',
+        text: `4.${wordSubNo++} 风险评估统计`,
         level: 'heading2',
       })
     );
@@ -1590,7 +1395,7 @@ export class ReportService {
 
     content.push(
       createHeadingParagraph({
-        text: '4.2 各安全域问题分布',
+        text: `4.${wordSubNo++} 各安全域问题分布`,
         level: 'heading2',
         spacingBefore: 300,
       })
@@ -1602,12 +1407,13 @@ export class ReportService {
         rows: [
           this.createHeaderRow('安全域', '问题数量', '风险等级'),
           ...summary.domainStats.map((d: any) => {
-            const level = d.count > 5 ? '高' : d.count > 2 ? '中' : '低';
+            const level = d.maxRiskLevel === 'high' ? '高' : d.maxRiskLevel === 'medium' ? '中' : '低';
             return this.createTableRow(d.name, `${d.count} 个`, level);
           }),
         ],
       });
       content.push(domainTable);
+    }
     }
 
     // 4.3 风险分析：问题清单式，每条问题一段「分析结果」（issues.risk_consequence）。
@@ -1615,7 +1421,8 @@ export class ReportService {
     if (options.includeSections.includes('riskAnalysis')) {
       const riskItems = collectRiskAnalysis(issues);
       if (riskItems.length > 0) {
-        content.push(createHeadingParagraph({ text: '4.3 风险分析', level: 'heading2', spacingBefore: 300 }));
+        ensureWordChapter4();
+        content.push(createHeadingParagraph({ text: `4.${wordSubNo++} 风险分析`, level: 'heading2', spacingBefore: 300 }));
         content.push(createBodyParagraph({
           text: `针对测评发现的问题逐条开展风险分析，说明每项问题可能导致的风险。本次共完成 ${riskItems.length} 个问题的风险分析，结果如下。`,
           spacingAfter: 200,
@@ -1637,7 +1444,8 @@ export class ReportService {
     if (options.includeSections.includes('majorRisk')) {
       const majorItems = collectMajorRisk(issues, (data as any).majorRiskAnalyses || []);
       if (majorItems.length > 0) {
-        content.push(createHeadingParagraph({ text: '4.4 重大风险隐患识别与分析', level: 'heading2', spacingBefore: 300 }));
+        ensureWordChapter4();
+        content.push(createHeadingParagraph({ text: `4.${wordSubNo++} 重大风险隐患识别与分析`, level: 'heading2', spacingBefore: 300 }));
         content.push(createBodyParagraph({
           text: `依据《重大风险隐患清单》，结合现场测评记录，按相关性、严重性、高发性三要素对测评发现的问题逐条开展重大风险隐患识别与分析。本次纳入 ${majorItems.length} 条已判定问题，结果如下。`,
           spacingAfter: 200,
@@ -1658,7 +1466,8 @@ export class ReportService {
       }
     }
 
-    // 五、总体分析评价
+    // 五、总体分析评价（受 analysis 开关）
+    if (options.includeSections.includes('analysis')) {
     content.push(new Paragraph({ children: [new PageBreak()] }));
     content.push(
       createHeadingParagraph({
@@ -1678,8 +1487,10 @@ export class ReportService {
         })
       );
     }
+    }
 
-    // 六、问题清单及分析
+    // 六、问题清单及分析（受 issues 开关）
+    if (options.includeSections.includes('issues')) {
     content.push(new Paragraph({ children: [new PageBreak()] }));
     content.push(
       createHeadingParagraph({
@@ -1912,8 +1723,10 @@ export class ReportService {
         }
       }
     }
+    }
 
-    // 七、整改建议及规划
+    // 七、整改建议及规划（受 recommendations 开关）
+    if (options.includeSections.includes('recommendations')) {
     content.push(new Paragraph({ children: [new PageBreak()] }));
     content.push(
       createHeadingParagraph({
@@ -1941,8 +1754,10 @@ export class ReportService {
         );
       }
     }
+    }
 
-    // 八、附录
+    // 八、附录（受 appendix 开关）
+    if (options.includeSections.includes('appendix')) {
     content.push(new Paragraph({ children: [new PageBreak()] }));
     content.push(
       createHeadingParagraph({
@@ -1977,6 +1792,7 @@ export class ReportService {
         ],
       });
       content.push(assetTable);
+    }
     }
 
     return content;
@@ -2685,13 +2501,16 @@ export class ReportService {
     // 报告 HTML 动辄数百 KB（含内联样式与全部问题清单），data: URL 会逼近 Chromium 的
     // URL 长度上限，大报告会加载失败；写临时文件 + file:// 没有长度限制。
     const os = require('os');
+    const crypto = require('crypto');
+    // 临时 HTML 含被测单位名称与全部问题细节：文件名用密码学随机，
+    // 且仅当前用户可读（mode 0600），避免同机其他用户在渲染期间读取
     const tmpHtmlPath = path.join(
       os.tmpdir(),
-      `jsecprobe-report-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.html`
+      `jsecprobe-report-${Date.now()}-${crypto.randomBytes(12).toString('hex')}.html`
     );
 
     try {
-      fs.writeFileSync(tmpHtmlPath, htmlContent, 'utf8');
+      fs.writeFileSync(tmpHtmlPath, htmlContent, { encoding: 'utf8', mode: 0o600 });
       await hiddenWindow.loadFile(tmpHtmlPath);
 
       // 固定 setTimeout(1000) 在慢机器上不够（分页与图片缺失）、在快机器上又白等。
@@ -2840,7 +2659,8 @@ export class ReportService {
 </head>
 <body>`;
 
-    // 总封面
+    // 总封面（与单系统报告一致，受 includeSections 控制）
+    if (options.includeSections.includes('cover')) {
     html += `
     <div class="cover">
       <h1>等级保护测评项目综合报告</h1>
@@ -2852,8 +2672,10 @@ export class ReportService {
       <p>报告日期：${timestamp}</p>
     </div>
     <div class="page-break"></div>`;
+    }
 
-    // 总目录
+    // 总目录（受 includeSections 控制）
+    if (options.includeSections.includes('toc')) {
     html += `
     <h2>目录</h2>
     <div class="toc project-toc">
@@ -2862,6 +2684,7 @@ export class ReportService {
 ${tocVolumes}
     </div>
     <div class="page-break"></div>`;
+    }
 
     // 一、项目综述
     html += `
@@ -3031,11 +2854,14 @@ ${riskTableRows}
     <div class="page-break"></div>`;
     }
 
-    // 测评结果汇总
+    // 测评结果汇总（4.1/4.2 受 results 开关；4.3/4.4 各自独立开关，与 Word 链对齐）。
+    // M23：4.3/4.4 此前嵌在 results 块内，取消 results 时连风险分析/重大隐患一起消失；
+    // T8：章节号按实际输出动态生成，避免只勾 majorRisk 时出现 4.2→4.4 跳号。
+    let subNo = 1; // 4.x 子节计数器：仅在子节真正输出时递增
     if (options.includeSections.includes('results')) {
       html += `
     <h2>四、测评结果汇总</h2>
-    <h3>4.1 风险评估统计</h3>
+    <h3>4.${subNo++} 风险评估统计</h3>
     <table>
       <tr><th>统计项</th><th>数量</th></tr>
       <tr><td class="risk-high">高风险问题</td><td>${summary.highRisk} 个</td></tr>
@@ -3044,56 +2870,57 @@ ${riskTableRows}
       <tr><td>问题总数</td><td>${summary.total} 个</td></tr>
     </table>
 
-    <h3>4.2 各安全域问题分布</h3>
+    <h3>4.${subNo++} 各安全域问题分布</h3>
     <table>
       <tr><th>安全域</th><th>问题数量</th><th>风险等级</th></tr>`;
       if (summary.domainStats && summary.domainStats.length > 0) {
         for (const d of summary.domainStats) {
-          const level = d.count > 5 ? '高' : d.count > 2 ? '中' : '低';
+          const level = d.maxRiskLevel === 'high' ? '高' : d.maxRiskLevel === 'medium' ? '中' : '低';
           html += `<tr><td>${escapeHtml(d.name)}</td><td>${d.count} 个</td><td>${level}</td></tr>`;
         }
       }
       html += `</table>`;
+    }
 
-      // 4.3 风险分析：与 Word 链同源（issues.risk_consequence），由独立章节开关控制。
-      // 所有来自问题清单的用户字段一律 escapeHtml，避免破坏表格结构或注入 HTML。
-      if (options.includeSections.includes('riskAnalysis')) {
-        const riskItems = collectRiskAnalysis(issues);
-        if (riskItems.length > 0) {
-          html += `
-    <h3>4.3 风险分析</h3>
+    // 4.3 风险分析：与 Word 链同源（issues.risk_consequence），由独立章节开关控制。
+    // 所有来自问题清单的用户字段一律 escapeHtml，避免破坏表格结构或注入 HTML。
+    if (options.includeSections.includes('riskAnalysis')) {
+      const riskItems = collectRiskAnalysis(issues);
+      if (riskItems.length > 0) {
+        html += `
+    <h3>4.${subNo++} 风险分析</h3>
     <p>针对测评发现的问题逐条开展风险分析，说明每项问题可能导致的风险。本次共完成 ${riskItems.length} 个问题的风险分析，结果如下。</p>
     <table>
       <tr><th>序号</th><th>问题标题</th><th>初判等级</th><th>问题分析</th></tr>`;
-          for (let i = 0; i < riskItems.length; i++) {
-            const r = riskItems[i];
-            html += `<tr><td>${i + 1}</td><td>${escapeHtml(r.title)}</td><td>${escapeHtml(r.level)}</td><td>${escapeHtml(r.result)}</td></tr>`;
-          }
-          html += `</table>`;
+        for (let i = 0; i < riskItems.length; i++) {
+          const r = riskItems[i];
+          html += `<tr><td>${i + 1}</td><td>${escapeHtml(r.title)}</td><td>${escapeHtml(r.level)}</td><td>${escapeHtml(r.result)}</td></tr>`;
         }
+        html += `</table>`;
       }
-
-      // 4.4 重大风险隐患识别与分析：与 Word 链同源，三要素各一段话 + 最终判定。
-      if (options.includeSections.includes('majorRisk')) {
-        const majorItems = collectMajorRisk(issues, (data as any).majorRiskAnalyses || []);
-        if (majorItems.length > 0) {
-          html += `<h3>4.4 重大风险隐患识别与分析</h3>`;
-          html += `<p>依据《重大风险隐患清单》，结合现场测评记录，按相关性、严重性、高发性三要素对测评发现的问题逐条开展重大风险隐患识别与分析。本次纳入 ${majorItems.length} 条已判定问题，结果如下。</p>`;
-          for (let i = 0; i < majorItems.length; i++) {
-            const m = majorItems[i];
-            html += `<div style="margin:0.8em 0;">`;
-            html += `<p style="margin:0.3em 0;"><strong>${i + 1}. 问题：</strong>${escapeHtml(m.title)}</p>`;
-            html += `<p style="margin:0.3em 0;">命中清单条目：${escapeHtml(m.catalogTitle)}</p>`;
-            if (m.relevance) html += `<p style="margin:0.3em 0;">相关性：${escapeHtml(m.relevance)}</p>`;
-            if (m.severity) html += `<p style="margin:0.3em 0;">严重性：${escapeHtml(m.severity)}</p>`;
-            if (m.frequency) html += `<p style="margin:0.3em 0;">高发性：${escapeHtml(m.frequency)}</p>`;
-            html += `<p style="margin:0.3em 0;">最终判定：<strong>${escapeHtml(m.verdictText)}</strong>${m.conclusion ? `。综合结论：${escapeHtml(m.conclusion)}` : ''}</p>`;
-            html += `</div>`;
-          }
-        }
-      }
-      html += `<div class="page-break"></div>`;
     }
+
+    // 4.4 重大风险隐患识别与分析：与 Word 链同源，三要素各一段话 + 最终判定。
+    if (options.includeSections.includes('majorRisk')) {
+      const majorItems = collectMajorRisk(issues, (data as any).majorRiskAnalyses || []);
+      if (majorItems.length > 0) {
+        html += `<h3>4.${subNo++} 重大风险隐患识别与分析</h3>`;
+        html += `<p>依据《重大风险隐患清单》，结合现场测评记录，按相关性、严重性、高发性三要素对测评发现的问题逐条开展重大风险隐患识别与分析。本次纳入 ${majorItems.length} 条已判定问题，结果如下。</p>`;
+        for (let i = 0; i < majorItems.length; i++) {
+          const m = majorItems[i];
+          html += `<div style="margin:0.8em 0;">`;
+          html += `<p style="margin:0.3em 0;"><strong>${i + 1}. 问题：</strong>${escapeHtml(m.title)}</p>`;
+          html += `<p style="margin:0.3em 0;">命中清单条目：${escapeHtml(m.catalogTitle)}</p>`;
+          if (m.relevance) html += `<p style="margin:0.3em 0;">相关性：${escapeHtml(m.relevance)}</p>`;
+          if (m.severity) html += `<p style="margin:0.3em 0;">严重性：${escapeHtml(m.severity)}</p>`;
+          if (m.frequency) html += `<p style="margin:0.3em 0;">高发性：${escapeHtml(m.frequency)}</p>`;
+          html += `<p style="margin:0.3em 0;">最终判定：<strong>${escapeHtml(m.verdictText)}</strong>${m.conclusion ? `。综合结论：${escapeHtml(m.conclusion)}` : ''}</p>`;
+          html += `</div>`;
+        }
+      }
+    }
+    // 四章有任一子节输出才分页
+    if (subNo > 1) html += `<div class="page-break"></div>`;
 
     // 总体分析评价
     if (options.includeSections.includes('analysis')) {

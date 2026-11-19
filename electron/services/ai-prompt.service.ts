@@ -12,7 +12,15 @@ export const MAX_PROMPT_LENGTH = 20000;
 export interface PromptVariable {
   name: string;
   description: string;
+  /** 可选变量：历史自定义模板可以不含它（如测评点清单是新增能力），不参与完整性校验 */
+  optional?: boolean;
 }
+
+/**
+ * S4：后加的可选变量名单。校验模板完整性时排除这些变量，
+ * 否则升级后所有历史自定义模板会因缺新变量被静默回退到内置，用户定制全部失效。
+ */
+const OPTIONAL_VARIABLE_NAMES: ReadonlySet<string> = new Set(['测评点清单']);
 
 interface PromptDefinition {
   key: PromptKey;
@@ -31,15 +39,17 @@ export const BUILTIN_PROMPTS: PromptDefinition[] = [
     variables: [
       { name: '安全控制点', description: '测评项所属的安全控制点名称' },
       { name: '测评项', description: '标准条款内容' },
+      { name: '测评点清单', description: '从作业指导书召回的逐条核查点（如有），AI 应逐点覆盖', optional: true },
     ],
     builtinTemplate: `你是一名专业的等级保护测评师。请根据以下信息撰写现场测评记录：
 
 安全控制点：{{安全控制点}}
 测评项（标准条款）：{{测评项}}
+{{测评点清单}}
 
 用户已在"关键证据点"中提供了核查证据（命令输出、配置信息、文件内容、截图等）。
 
-请严格基于证据，撰写一段详实的测评记录。参考以下示例格式：
+请严格基于证据，撰写现场测评记录。参考以下示例格式：
 
 示例1：经核查，执行命令返回系统用户列表。root用户UID为0，存在多个系统账户。已确认/etc/shadow文件中所有用户均设置了口令，口令字段非空。身份鉴别信息具有唯一性。
 
@@ -49,10 +59,13 @@ export const BUILTIN_PROMPTS: PromptDefinition[] = [
 - 以"经核查，"或"经访谈，"开头（根据证据来源自动选择）
 - 描述具体做了什么核查（执行了什么命令、查看了什么文件、检查了什么配置）
 - 引用具体的配置参数、数值、版本、文件名
+- 若上面给出了「测评点清单」，须逐条对照每个测评点进行核查，确保没有遗漏；证据未覆盖的测评点要如实说明，不得编造
+- conclusion 必须是一段连贯完整的描述：把各测评点的核查结果自然融合成一段话，**严禁**使用"【逐点核查】"小标题，也**严禁**用 1）2）3）、（1）（2）等编号逐条罗列；不得出现"测评点1：""核查点："这类分项标签
 - 语句连贯、事实清晰，形成一段完整描述
-- 必须根据实际证据情况，对测评项给出明确的符合性判定：符合/部分符合/不符合/不适用，绝不允许输出"证据不足"等模糊判定
+- 符合性判定只写进 compliance 字段（符合/部分符合/不符合/不适用，绝不允许输出"证据不足"等模糊判定）
+- **严禁**在 conclusion 正文里复述判定结果：不得出现"判定为符合/部分符合/不符合/不适用""判定结论""综合判定""因此判定为…""不符合…要求，判定为…"等表述。conclusion 只客观陈述核查到的事实与配置参数，是否符合由 compliance 字段独立承载
 - 严禁编造不存在的内容，所有结论必须有实际证据支撑
-- 结论末尾不要写"均满足二级要求"、"综合判定：符合"、"符合等保二级要求"等总结性套话
+- 结论末尾不要写"均满足二级要求"、"符合等保二级要求"等总结性套话
 
 请按照以下格式返回JSON结果（不要有其他说明文字）：
 {
@@ -62,7 +75,8 @@ export const BUILTIN_PROMPTS: PromptDefinition[] = [
   ],
   "compliance": "符合/部分符合/不符合/不适用",
   "conclusion": "经核查，执行命令返回系统用户列表。root用户UID为0，存在多个系统账户。已确认/etc/shadow文件中所有用户均设置了口令，口令字段非空。身份鉴别信息具有唯一性。"
-}`,
+}
+注意：conclusion 只写一段连贯正文，不要输出任何逐点罗列、编号列表或小标题；测评点清单只用于确保核查不遗漏，不体现在输出格式里。`,
   },
   {
     key: 'batch_match',
@@ -89,29 +103,37 @@ export const BUILTIN_PROMPTS: PromptDefinition[] = [
 - 智能匹配：匹配时必须仔细，且当只有内容与测评项相关时才返回该测评项的分析结果
 - 如果截图/文档内容与某个测评项无关，不要返回该测评项的结果
 - 一个截图/文档可能匹配多个测评项，某个测评项也可能匹配多个截图/文档
-- 对于匹配到的测评项，必须根据实际证据情况给出明确的符合性判定：符合/部分符合/不符合
+- 符合性判定只写进 compliance 字段（符合/部分符合/不符合）
+- **严禁**在 conclusion 正文里复述判定结果：不得出现"判定为符合/部分符合/不符合""判定结论""综合判定""因此判定为…""不符合…要求，判定为…"等表述。conclusion 只客观陈述核查到的事实与配置参数，是否符合由 compliance 字段独立承载
+- 若测评项带有 checkpoints（测评点清单），须逐条对照进行核查，确保没有遗漏；证据未覆盖的测评点要如实说明
+- 每个 conclusion 必须是一段连贯完整的描述：把各测评点核查结果自然融合成一段话，**严禁**使用"【逐点核查】"小标题，也**严禁**用 1）2）3）、（1）（2）等编号逐条罗列；不得出现"测评点1：""核查点："这类分项标签
+- 若测评项带有 interpretation（条款解读），以其作为理解条款含义与风险点的依据，但仍以实际证据判定
+- 若测评项带有 resultTemplate（预期结果参考），仅作为"核查通过时应看到什么"的参照来对照当前证据；它与本清单的测评点同源时不重复引用
 - 严禁编造不存在的内容，所有结论必须有实际证据支撑
-- 结论末尾不要写"均满足二级要求"、"综合判定：符合"、"符合等保二级要求"等总结性套话
-- 对于每个匹配到的测评项，必须从文件列表中选出与该测评项相关的截图或文档文件名，填入attachedFiles数组
-- 如果某个文件与多个测评项相关，可以在多个测评项的attachedFiles中都列出该文件名
+- 结论末尾不要写"均满足二级要求"、"符合等保二级要求"等总结性套话
+- 对于每个匹配到的测评项，从文件列表中选出与该测评项证据直接相关的截图或文档，填入 attachedFiles 数组（每项含 file 文件名与 requirement 该图证明的条款原文）
+- 极其重要：attachedFiles 里每个文件的 requirement 必须与本条 result 的 requirement 一致。程序会校验，不一致的文件会被判为错配并丢弃。宁可某个测评项的 attachedFiles 为空，也不要把不相关的文件硬塞进去——例如"防火墙特征库升级"截图不能作为"日志审计"测评项的证据
+- 如果某个文件与多个测评项都直接相关，可以在多个测评项的 attachedFiles 中都列出
+- 极其重要：每个结果的 itemId、requirement、conclusion、attachedFiles 必须严格属于同一个测评项。逐项独立撰写，**严禁**把 A 项的结论或附件写到 B 项的 itemId 下；多个测评项主题相近（如都涉及账户、权限、日志）时尤其要逐项核对，不得互换
 
 请严格按照以下JSON格式返回结果（不要有其他说明文字）：
 {
   "results": [
     {
       "itemId": "匹配到的测评项ID",
+      "requirement": "原样复制本条 result 所对应测评项的 requirement 标准条款原文，用于校验对应关系（必须是输入里那一条的原文，不得张冠李戴）",
       "keyEvidencePoints": [
         "具体描述1（仅列出与测评项相关的证据，如: FAIL_LOGIN_ENABLED=yes）"
       ],
       "attachedFiles": [
-        "截图：截图文件名1.png",
-        "文档：审计日志.docx"
+        {"file": "截图：截图文件名1.png", "requirement": "该截图证明的测评项条款原文（必须是本条 result 的 requirement，说明这张图为什么支撑本条结论）"}
       ],
       "compliance": "符合/部分符合/不符合",
       "conclusion": "经核查，/etc/login.defs中配置了FAIL_MAX_ENTRIES=5，FAIL_INTERVAL=300，表示连续登录失败5次后锁定账户300秒。"
     }
   ]
-}`,
+}
+注意：每个 conclusion 只写一段连贯正文，不要输出任何逐点罗列、编号列表或小标题；checkpoints 只用于确保核查不遗漏，不体现在输出格式里。requirement 字段必须原样回传对应测评项的条款原文，便于程序校验 itemId 与结论没有错配。`,
   },
   {
     key: 'rectify_suggestion',
@@ -470,7 +492,16 @@ export const BUILTIN_PROMPTS: PromptDefinition[] = [
 现有资产清单：{{现有资产清单}}
 
 要求：
-- 只提取系统描述或附件中有明确文字依据（出现具体设备、角色、数量、软件名称等线索）的资产；"系统信息"仅作为命名和分级的背景参考，不得作为资产依据
+- 只提取系统描述或附件中有明确文字依据（出现具体设备、角色、数量、软件名称、文档名称等线索）的资产；"系统信息"仅作为命名和分级的背景参考，不得作为资产依据
+- 文档类资产同样要识别：若描述或附件以清单形式列出制度、手册、操作规程、应急预案、记录表格等文档（如《xxx管理制度》《xxx应急预案》），必须作为 sys_doc（系统管理文档）类资产逐条提取，不得因"文档不是设备/软件"而跳过；name 填文档名称（含书名号可去掉），os 填该文档的主要内容，description 保持空字符串（它是备注列、不是"主要内容"列），deviceUsage 可填一句话用途，evidence 填该文档在清单中的名称行或主要内容原文
+- 字段必须与系统构成表格的列语义严格一致，严禁错列。不同资产类别里同一字段代表的表格列不同，按下列映射填写（未列出的字段按通用含义填，无信息填空字符串）：
+  * sys_doc（系统管理文档）：os=文档主要内容，name=文档名称，description=空（备注列）；绝不能把主要内容填进 description
+  * crypto_product（密码产品）：version=生产厂商（不是版本号），dbSystem=证书编号（不是数据库），middleware=密码算法（如 SM2/SM3/SM4），deviceUsage=用途（如 数据加密、签名验签），description=空
+  * security_personnel（安全相关人员）：name=姓名，deviceUsage=岗位/角色（如 安全管理员、审计员），os=所属单位（不是操作系统），ip=联系方式（电话/邮箱，不是IP地址），description=空
+  * management_platform（系统管理平台）：os=所在设备名称（平台部署的设备名，不是操作系统），version=平台版本，deviceUsage=主要功能，description=空
+  * data_resource（数据资源）：os=所属业务应用，deviceUsage=安全防护需求（如 保密性、完整性），description=空
+  * machine_room（管理机房）：os=机房位置；network_device/security_device（网络/安全设备）：os=系统及版本、version=品牌及型号、deviceUsage=设备用途；server_storage（服务器/存储）：os=操作系统及版本、dbSystem=数据库系统及版本、middleware=中间件及版本；business_app（业务应用）：os=软件及版本、deviceUsage=主要功能；terminal（终端）：os=操作系统及版本、deviceUsage=设备用途；network_boundary（区域边界）与 other_asset（其他）：按通用含义填
+  * description 字段：仅在明确有"补充说明"时填写，绝大多数类别应为空；严禁把本该属于其它字段的内容（主要内容、用途、厂商、岗位、单位、联系方式等）塞进 description
 - 严禁结合等保通用经验补充描述中未出现的"常见必备资产"（如服务器、数据库、防火墙、终端等）；若系统描述不含实质内容（如随机字符、无意义数字、测试文字）或识别不出任何资产，必须返回 {"assets": []}
 - 每个资产的 evidence 字段必须摘录描述或附件中支撑该资产的原文片段；给不出依据的资产一律不得输出
 - category 必须从资产分类说明列出的分类ID中选择，每个资产只归入一个最匹配的分类
@@ -482,7 +513,8 @@ export const BUILTIN_PROMPTS: PromptDefinition[] = [
 - isVirtual 表示是否为虚拟化设备（VMware 虚机、云主机、容器、超融合虚拟机等填 true，物理设备填 false，不确定时填 false）
 - dbSystem 仅在资产为数据库系统（分类 server_storage 且用途为数据库，或业务应用依赖的数据库实例）时填写具体数据库名称及版本（如 "Oracle 11g"、"MySQL 8.0"），其余填空字符串
 - middleware 仅在资产明确使用或承载中间件时填写具体中间件名称及版本（如 "Tomcat 9.0"、"Nginx 1.24"），其余填空字符串
-- 最多识别 30 个资产
+- 多个附件可能各对应一个资产分类（如按分类拆分的资产清单），应逐一提取后汇总，不得只处理第一个附件或遗漏任一分类
+- 最多识别 50 个资产；超出时按附件顺序完整保留，不得因总数而丢弃文档类资产
 
 请严格按照以下JSON格式返回（不要有其他说明文字）：
 {
@@ -651,7 +683,18 @@ export async function getPromptTemplate(key: PromptKey): Promise<string> {
       .where(eq(schema.aiPrompts.promptKey, key))
       .limit(1);
     if (rows[0]?.template) {
-      return rows[0].template;
+      const custom = rows[0].template;
+      // 读取时也校验变量完整性：保存时虽校验过，但 DB 可能被外部改动或是旧版本写入的模板。
+      // 缺变量的模板会让 renderPromptTemplate 留下 {{占位符}} 发给 AI，污染判定结果。
+      // S4：只校验必需变量，可选变量（后加的测评点清单）缺失不算回退理由
+      const required = extractVariables(def.builtinTemplate).filter(v => !OPTIONAL_VARIABLE_NAMES.has(v));
+      const actual = extractVariables(custom);
+      const missing = required.filter(v => !actual.includes(v));
+      if (missing.length > 0) {
+        log.warn(`[AI提示词] 自定义模板(${key})缺少变量 ${missing.join(',')}，回退内置默认`);
+        return def.builtinTemplate;
+      }
+      return custom;
     }
   } catch (e: any) {
     log.warn(`[AI提示词] 读取自定义模板失败(${key})，回退内置默认:`, e?.message || e);
@@ -674,7 +717,9 @@ export function extractVariables(template: string): string[] {
 export function validateTemplate(key: PromptKey, template: string): { ok: boolean; missing: string[] } {
   const def = getPromptDefinition(key);
   const used = new Set(extractVariables(template));
-  const missing = def.variables.filter(v => !used.has(v.name)).map(v => `{{${v.name}}}`);
+  const missing = def.variables
+    .filter(v => !v.optional && !OPTIONAL_VARIABLE_NAMES.has(v.name) && !used.has(v.name))
+    .map(v => `{{${v.name}}}`);
   return { ok: missing.length === 0, missing };
 }
 

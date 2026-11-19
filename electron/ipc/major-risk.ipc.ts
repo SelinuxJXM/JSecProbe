@@ -177,24 +177,27 @@ export function registerMajorRiskHandlers(): void {
       .map(it => ({ ...it, title: textOf(it?.title).trim() }))
       .filter(it => !!it.title)
       .slice(0, 3000);
-    // 全量替换：清单是用户提供的单一来源，导入即覆盖，避免重复累积
-    await db.delete(schema.majorRiskCatalog);
-    for (let i = 0; i < clean.length; i++) {
-      const it = clean[i];
-      await db.insert(schema.majorRiskCatalog).values({
-        id: randomUUID(),
-        code: textOf(it.code).slice(0, 80) || null,
-        title: it.title!.slice(0, 300),
-        category: textOf(it.category).slice(0, 120) || null,
-        criteria: textOf(it.criteria).slice(0, 4000) || null,
-        keywords: textOf(it.keywords).slice(0, 2000) || null,
-        source: textOf(it.source).slice(0, 300) || null,
-        sortOrder: Number.isFinite(it.sortOrder) ? Number(it.sortOrder) : i,
-        enabled: it.enabled === false ? 0 : 1,
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
+    // 全量替换：清单是用户提供的单一来源，导入即覆盖，避免重复累积。
+    // 删除与插入必须同一事务，否则中途失败会留下空清单或半套清单且不会自愈
+    db.transaction((tx) => {
+      tx.delete(schema.majorRiskCatalog).run();
+      for (let i = 0; i < clean.length; i++) {
+        const it = clean[i];
+        tx.insert(schema.majorRiskCatalog).values({
+          id: randomUUID(),
+          code: textOf(it.code).slice(0, 80) || null,
+          title: it.title!.slice(0, 300),
+          category: textOf(it.category).slice(0, 120) || null,
+          criteria: textOf(it.criteria).slice(0, 4000) || null,
+          keywords: textOf(it.keywords).slice(0, 2000) || null,
+          source: textOf(it.source).slice(0, 300) || null,
+          sortOrder: Number.isFinite(it.sortOrder) ? Number(it.sortOrder) : i,
+          enabled: it.enabled === false ? 0 : 1,
+          createdAt: now,
+          updatedAt: now,
+        }).run();
+      }
+    });
     return { count: clean.length, replaced: true };
   }, { moduleName: 'majorRisk' }));
 
@@ -242,10 +245,18 @@ export function registerMajorRiskHandlers(): void {
 
     const now = new Date().toISOString();
     const verdict = normalizeVerdict(payload.verdict);
+    let catalogId = textOf(payload.catalogId).slice(0, 100) || null;
+    // AI 来源二次校验：清单表里查不到的编号（模型编造）落库前清掉，
+    // catalogTitle 保留作为快照依据，但不再挂一个不存在的条目 id。
+    if (payload.source === 'ai' && catalogId) {
+      const [known] = await db.select({ id: schema.majorRiskCatalog.id })
+        .from(schema.majorRiskCatalog).where(eq(schema.majorRiskCatalog.id, catalogId)).limit(1);
+      if (!known) catalogId = null;
+    }
     const values = {
       projectId,
       issueId,
-      catalogId: textOf(payload.catalogId).slice(0, 100) || null,
+      catalogId,
       catalogTitle: textOf(payload.catalogTitle).slice(0, 300) || null,
       relevance: textOf(payload.relevance).slice(0, 3000) || null,
       severity: textOf(payload.severity).slice(0, 3000) || null,
@@ -264,10 +275,20 @@ export function registerMajorRiskHandlers(): void {
     let savedId: string;
     if (existing) {
       savedId = existing.id;
-      await db.update(schema.majorRiskAnalysis).set(values).where(eq(schema.majorRiskAnalysis.id, existing.id));
+      // reviewedAt 只记录人工复核：AI 草稿回写不制造"已复核"假象。
+      // 若此前已人工复核、现在重跑 AI，判定内容已变，复核时间同步清空，需重新复核。
+      const finalValues = values.source === 'ai'
+        ? { ...values, reviewedAt: null }
+        : values;
+      await db.update(schema.majorRiskAnalysis).set(finalValues).where(eq(schema.majorRiskAnalysis.id, existing.id));
     } else {
       savedId = randomUUID();
-      await db.insert(schema.majorRiskAnalysis).values({ id: savedId, ...values, createdAt: now });
+      await db.insert(schema.majorRiskAnalysis).values({
+        id: savedId,
+        ...values,
+        reviewedAt: values.source === 'ai' ? null : now,
+        createdAt: now,
+      });
     }
     const [saved] = await db.select().from(schema.majorRiskAnalysis)
       .where(eq(schema.majorRiskAnalysis.id, savedId)).limit(1);
@@ -277,10 +298,20 @@ export function registerMajorRiskHandlers(): void {
     return toRow(issue, saved, asset?.name);
   }, { moduleName: 'majorRisk' }));
 
-  ipcMain.handle('majorRisk:clear', wrap(async (_event, issueId: string) => {
+  ipcMain.handle('majorRisk:clear', wrap(async (_event, payload: { issueId: string; projectId: string }) => {
     const db = getDb();
-    if (!issueId) throw new Error('缺少问题ID');
-    await db.delete(schema.majorRiskAnalysis).where(eq(schema.majorRiskAnalysis.issueId, issueId));
+    // 必须同时带 issueId 与 projectId：早期兼容字符串调用会跳过归属校验构成越权后门，已移除
+    const issueId = payload?.issueId;
+    const projectId = payload?.projectId;
+    if (!issueId || !projectId) throw new Error('缺少问题ID或项目ID');
+    const [issue] = await db.select().from(schema.issues)
+      .where(and(eq(schema.issues.id, issueId), eq(schema.issues.projectId, projectId)))
+      .limit(1);
+    if (!issue) throw new Error('问题不存在或不属于当前系统');
+    await db.delete(schema.majorRiskAnalysis).where(and(
+      eq(schema.majorRiskAnalysis.issueId, issueId),
+      eq(schema.majorRiskAnalysis.projectId, projectId),
+    ));
   }, { moduleName: 'majorRisk' }));
 
   // ---- 导出 Excel ----

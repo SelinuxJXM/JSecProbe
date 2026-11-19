@@ -173,20 +173,47 @@ export class AuthService {
     return removed;
   }
 
+  /** 销毁指定用户的全部会话（管理员禁用/重置他人密码后必须调用，否则旧会话仍可访问业务数据） */
+  static destroyUserSessions(userId: string): number {
+    let removed = 0;
+    for (const [token, session] of sessions) {
+      if (session.userId === userId) {
+        sessions.delete(token);
+        if (activeToken === token) activeToken = null;
+        removed++;
+      }
+    }
+    if (removed > 0) persistActiveSession();
+    return removed;
+  }
+
   static getAllSessions(): ReadonlyMap<string, Session> {
     return sessions;
   }
 
-  /** 是否存在已登录的活动会话（单用户桌面应用：进程级判定，用于后端 IPC 会话强制校验） */
+  /** 是否存在已登录的活动会话（单用户桌面应用：进程级判定，用于后端 IPC 会话强制校验）。
+   *  同步校验超时：此前只判 token 存在，超时清理靠每小时定时器，导致过期后最长 1 小时仍放行。 */
   static isAuthenticated(): boolean {
-    return activeToken !== null && sessions.has(activeToken);
+    if (!activeToken) return false;
+    const session = sessions.get(activeToken);
+    if (!session) return false;
+    if (Date.now() - session.lastAccessedAt > SESSION_TIMEOUT_MS) {
+      this.destroySession(activeToken);
+      return false;
+    }
+    return true;
   }
 
-  /** 获取当前进程的活动会话（未登录返回 null）。
-   *  注意：不做过期清理，仅用于读取会话主体做权限判定；过期判定由 getSession 负责。 */
+  /** 获取当前进程的活动会话（未登录/已超时返回 null）。同样同步校验超时口径。 */
   static getActiveSession(): Session | null {
     if (!activeToken) return null;
-    return sessions.get(activeToken) || null;
+    const session = sessions.get(activeToken);
+    if (!session) return null;
+    if (Date.now() - session.lastAccessedAt > SESSION_TIMEOUT_MS) {
+      this.destroySession(activeToken);
+      return null;
+    }
+    return session;
   }
 
   /** 查询指定用户的角色（不存在或已禁用返回 null） */
@@ -283,8 +310,9 @@ export class AuthService {
    * 走 async 会迫使 `assertTrusted()`（ai.ipc.ts 中 22 处裸通道的守卫）连带改成异步，
    * 波及全部调用点。
    *
-   * 查询失败时返回 false（放行）—— 相较"因数据库抖动把整个应用锁死"，
-   * 短暂放开是更合理的取舍，且该状态在日志中会留痕。
+   * 查询失败时返回 true（fail-closed）：初始口令用户不得借 DB 抖动绕过强制改密。
+   * 数据库不可用时本来也无法读写业务数据，锁死不会损失实际可用性；
+   * 错误结果不以长 TTL 缓存（只缓存 3 秒），DB 恢复后自动放行。
    */
   static mustChangePassword(userId: string): boolean {
     const now = Date.now();
@@ -300,8 +328,9 @@ export class AuthService {
       this.mustChangeCache.set(userId, { value, expiresAt: now + this.MUST_CHANGE_TTL_MS });
       return value;
     } catch (e) {
-      log.warn('查询用户是否需强制改密失败:', e);
-      return false;
+      log.warn('查询用户是否需强制改密失败，已按 fail-closed 锁定非改密操作:', e);
+      // 不写缓存：DB 恢复后下一次立即重查，避免短暂抖动导致持续锁定
+      return true;
     }
   }
 

@@ -402,12 +402,19 @@ async function handleSave(): Promise<void> {
 }
 
 /** 批量完成：把成功草稿直接落库为 AI 草稿，用户随后逐条人工复核 */
-async function onBatchDone(results: Array<{ issueId: string; draft?: MajorRiskAiDraft; success: boolean; error?: string }>): Promise<void> {
+async function onBatchDone(results: Array<{ issueId: string; draft?: MajorRiskAiDraft; success: boolean; error?: string }>, canceled = false): Promise<void> {
+  // S6：用户中止后不落库已产出的半成品草稿——"中止"意味着不要应用结果
+  if (canceled) {
+    ElMessage.warning('批量识别已中止，已完成的部分未保存；如需应用请重新完整执行');
+    await loadData();
+    return;
+  }
   let saved = 0;
+  let failed = 0;
   for (const r of results) {
-    if (!r.success || !r.draft || !r.issueId) continue;
+    if (!r.success || !r.draft || !r.issueId) { failed++; continue; }
     const row = rows.value.find(x => x.issueId === r.issueId);
-    if (!row) continue;
+    if (!row) { failed++; continue; }
     try {
       const res = await window.api.majorRisk.save({
         issueId: r.issueId, projectId: row.projectId,
@@ -417,9 +424,19 @@ async function onBatchDone(results: Array<{ issueId: string; draft?: MajorRiskAi
         analyst: '', source: 'ai',
       });
       if (res.success) saved++;
-    } catch { /* 单条失败不影响其余 */ }
+      else failed++;
+    } catch {
+      // 单条落库失败不阻断其余条目，但必须计入失败数，不能全报成功
+      failed++;
+    }
   }
-  ElMessage.success(`批量识别完成，已保存 ${saved} 条 AI 草稿，请逐条人工复核`);
+  if (saved === 0) {
+    ElMessage.error(`批量识别未保存任何草稿（失败 ${failed} 条），请检查 AI 配置后重试`);
+  } else if (failed > 0) {
+    ElMessage.warning(`批量识别完成：保存 ${saved} 条，失败 ${failed} 条，请逐条人工复核`);
+  } else {
+    ElMessage.success(`批量识别完成，已保存 ${saved} 条 AI 草稿，请逐条人工复核`);
+  }
   await loadData();
 }
 
@@ -428,7 +445,7 @@ async function handleClear(row: MajorRiskRow): Promise<void> {
     await ElMessageBox.confirm(`确认清空「${row.issueTitle || '该问题'}」的分析结果？`, '提示', { type: 'warning' });
   } catch { return; }
   try {
-    const res = await window.api.majorRisk.clear(row.issueId);
+    const res = await window.api.majorRisk.clear({ issueId: row.issueId, projectId: row.projectId || projectId.value });
     if (!res.success) throw new Error(res.error?.message || '清空失败');
     ElMessage.success('已清空');
     await loadData();

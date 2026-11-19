@@ -36,6 +36,8 @@ export interface BackupManifest {
     logs: boolean;
   };
   totalSize: number;
+  /** 数据库文件 SHA-256（S15：明文包完整性校验；老备份无此字段时向后兼容跳过） */
+  databaseSha256?: string;
 }
 
 export interface BackupResult {
@@ -92,8 +94,26 @@ function checkBackupVersion(manifest: BackupManifest): string | null {
   if (manifest.appVersion && manifest.appVersion !== currentAppVersion) {
     log.warn(
       `[备份] 跨版本恢复：备份由 v${manifest.appVersion} 生成，当前程序为 v${currentAppVersion}。` +
-        `增量恢复仅覆盖项目/成员/资产/测评记录/问题 5 张表，其余表将保持当前数据不变。`
+        `增量恢复覆盖项目/成员/资产/测评记录/问题/重大隐患/采集数据及项目AI会话，测评点知识库为全局数据不随项目恢复迁移。`
     );
+  }
+  return null;
+}
+
+/**
+ * S15：校验备份数据库摘要。老备份无 databaseSha256 字段时跳过（向后兼容），
+ * 新备份摘要不匹配则拒绝恢复——明文包被篡改时防止整体替换数据库。
+ */
+function verifyDatabaseDigest(dbPath: string, manifest: BackupManifest): string | null {
+  if (!manifest.databaseSha256) return null; // 老包无摘要，兼容
+  try {
+    const crypto = require('crypto');
+    const actual = crypto.createHash('sha256').update(fs.readFileSync(dbPath)).digest('hex');
+    if (actual !== manifest.databaseSha256) {
+      return '备份数据库完整性校验失败（SHA-256 不匹配），可能已被篡改或损坏，已取消恢复';
+    }
+  } catch (e) {
+    return `备份数据库完整性校验无法完成：${String(e)}`;
   }
   return null;
 }
@@ -280,6 +300,10 @@ export async function createFullBackup(customPath?: string, password?: string): 
         throw new Error('备份数据库文件头验证失败，备份可能不完整');
       }
       manifest.contents.database = true;
+      // S15：写入数据库摘要，恢复时可识别明文包被篡改（老包无此字段则跳过校验）
+      const crypto = require('crypto');
+      manifest.databaseSha256 = crypto.createHash('sha256')
+        .update(fs.readFileSync(backupDbPath)).digest('hex');
     }
 
     for (const dirName of BACKUP_DIRS) {
@@ -465,6 +489,12 @@ async function restoreFromZipBackupInner(backupPath: string): Promise<BackupResu
       if (!buffer.toString('utf8').startsWith('SQLite format 3')) {
         fs.rmSync(tempExtractPath, { recursive: true, force: true });
         return { success: false, error: '备份数据库文件格式无效' };
+      }
+      // S15：明文包校验数据库摘要，识别 data 被篡改；无摘要的老包跳过（向后兼容）
+      const digestError = verifyDatabaseDigest(dbBackupPath, manifest);
+      if (digestError) {
+        fs.rmSync(tempExtractPath, { recursive: true, force: true });
+        return { success: false, error: digestError };
       }
     }
 
@@ -843,13 +873,19 @@ async function previewZipBackupInner(backupPath: string): Promise<BackupPreview 
     }
     const versionWarning =
       manifest.appVersion && manifest.appVersion !== app.getVersion()
-        ? `该备份由 v${manifest.appVersion} 生成，当前程序为 v${app.getVersion()}。增量恢复仅覆盖项目/成员/资产/测评记录/问题 5 张表。`
+        ? `该备份由 v${manifest.appVersion} 生成，当前程序为 v${app.getVersion()}。增量恢复覆盖项目/成员/资产/测评记录/问题/重大隐患/采集数据及项目AI会话，测评点知识库不随项目迁移。`
         : undefined;
 
     const dbBackupPath = path.join(tempExtractPath, 'mlps.db');
     if (!fs.existsSync(dbBackupPath)) {
       fs.rmSync(tempExtractPath, { recursive: true, force: true });
       return null;
+    }
+    // S15：增量恢复同样校验数据库摘要，防止明文包被篡改后部分写回
+    const digestError = verifyDatabaseDigest(dbBackupPath, manifest);
+    if (digestError) {
+      fs.rmSync(tempExtractPath, { recursive: true, force: true });
+      throw new Error(digestError);
     }
 
     let backupDb: Database.Database | null = null;
@@ -1122,6 +1158,8 @@ async function restoreFromZipBackupIncrementalInner(
                 projectId: member.project_id,
                 userId: member.user_id,
                 role: member.role,
+                // M15：assigned_domains 此前漏恢复，成员负责的安全域静默丢失
+                assignedDomains: member.assigned_domains || null,
                 createdAt: member.created_at,
               })
               .run();
@@ -1194,6 +1232,7 @@ async function restoreFromZipBackupIncrementalInner(
                 method: record.method,
                 commandOutput: record.command_output,
                 screenshotPaths: record.screenshot_paths,
+                assessor: record.assessor || null, // M15：测评人此前漏恢复
                 assessmentDate: record.assessment_date,
                 updatedAt: record.updated_at,
               })
@@ -1212,6 +1251,7 @@ async function restoreFromZipBackupIncrementalInner(
                 method: record.method,
                 commandOutput: record.command_output,
                 screenshotPaths: record.screenshot_paths,
+                assessor: record.assessor || null, // M15：测评人此前漏恢复
                 assessmentDate: record.assessment_date,
                 createdAt: record.created_at,
                 updatedAt: record.updated_at,
@@ -1237,6 +1277,18 @@ async function restoreFromZipBackupIncrementalInner(
                 fixedDate: issue.fixed_date,
                 assessor: issue.assessor,
                 evidenceFiles: issue.evidence_files,
+                // 风险分析 11 列：增量恢复必须一并带回，否则风险分析页全部退回待分析
+                riskLikelihood: issue.risk_likelihood,
+                riskImpact: issue.risk_impact,
+                riskScore: issue.risk_score,
+                riskEvaluatedLevel: issue.risk_evaluated_level,
+                riskThreat: issue.risk_threat,
+                riskConsequence: issue.risk_consequence,
+                riskStrategy: issue.risk_strategy,
+                riskCountermeasure: issue.risk_countermeasure,
+                riskResidual: issue.risk_residual,
+                riskAnalyst: issue.risk_analyst,
+                riskAnalyzedAt: issue.risk_analyzed_at,
                 updatedAt: issue.updated_at,
               })
               .where(eq(schema.issues.id, issue.id))
@@ -1262,12 +1314,142 @@ async function restoreFromZipBackupIncrementalInner(
                 fixedDate: issue.fixed_date,
                 assessor: issue.assessor,
                 evidenceFiles: issue.evidence_files,
+                riskLikelihood: issue.risk_likelihood,
+                riskImpact: issue.risk_impact,
+                riskScore: issue.risk_score,
+                riskEvaluatedLevel: issue.risk_evaluated_level,
+                riskThreat: issue.risk_threat,
+                riskConsequence: issue.risk_consequence,
+                riskStrategy: issue.risk_strategy,
+                riskCountermeasure: issue.risk_countermeasure,
+                riskResidual: issue.risk_residual,
+                riskAnalyst: issue.risk_analyst,
+                riskAnalyzedAt: issue.risk_analyzed_at,
                 createdAt: issue.created_at,
                 updatedAt: issue.updated_at,
               })
               .run();
           }
         }
+
+        // 重大隐患判定存在独立表，增量恢复同样要带回（否则第五阶段判定全丢）
+        const analysisTableExists = backupDb.prepare(
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='major_risk_analysis'"
+        ).get();
+        if (analysisTableExists) {
+          const analyses = backupDb.prepare(
+            `SELECT * FROM major_risk_analysis WHERE project_id IN (${backupProjectIds.map(() => '?').join(',')})`
+          ).all(...backupProjectIds) as any[];
+          for (const a of analyses) {
+            const exists = tx.select().from(schema.majorRiskAnalysis)
+              .where(eq(schema.majorRiskAnalysis.id, a.id)).get();
+            if (exists) {
+              tx.update(schema.majorRiskAnalysis).set({
+                projectId: a.project_id, issueId: a.issue_id,
+                catalogId: a.catalog_id, catalogTitle: a.catalog_title,
+                relevance: a.relevance, severity: a.severity, frequency: a.frequency,
+                verdict: a.verdict || 'pending', conclusion: a.conclusion,
+                analyst: a.analyst, analyzedAt: a.analyzed_at,
+                reviewedAt: a.reviewed_at, source: a.source || 'manual',
+                updatedAt: a.updated_at,
+              }).where(eq(schema.majorRiskAnalysis.id, a.id)).run();
+            } else {
+              tx.insert(schema.majorRiskAnalysis).values({
+                id: a.id, projectId: a.project_id, issueId: a.issue_id,
+                catalogId: a.catalog_id, catalogTitle: a.catalog_title,
+                relevance: a.relevance, severity: a.severity, frequency: a.frequency,
+                verdict: a.verdict || 'pending', conclusion: a.conclusion,
+                analyst: a.analyst, analyzedAt: a.analyzed_at,
+                reviewedAt: a.reviewed_at, source: a.source || 'manual',
+                createdAt: a.created_at, updatedAt: a.updated_at,
+              }).run();
+            }
+          }
+        }
+
+        // L10：AI 会话属于项目数据（ai_conversations.project_id），增量恢复必须带上，
+        // 否则把项目恢复到另一台机器后，该项目的对话历史全空。消息表按 conversation_id 关联。
+        const convTableExists = backupDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_conversations'").get();
+        const msgTableExists = backupDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_messages'").get();
+        if (convTableExists) {
+          const convs = backupDb.prepare(
+            `SELECT * FROM ai_conversations WHERE project_id IN (${backupProjectIds.map(() => '?').join(',')}) OR project_id IS NULL`
+          ).all(...backupProjectIds) as any[];
+          for (const c of convs) {
+            const exists = tx.select().from(schema.aiConversations).where(eq(schema.aiConversations.id, c.id)).get();
+            const vals = {
+              id: c.id, title: c.title, projectId: c.project_id || null,
+              createdAt: c.created_at, updatedAt: c.updated_at,
+            };
+            if (exists) tx.update(schema.aiConversations).set(vals).where(eq(schema.aiConversations.id, c.id)).run();
+            else tx.insert(schema.aiConversations).values(vals).run();
+          }
+          if (msgTableExists) {
+            const msgs = backupDb.prepare('SELECT * FROM ai_messages').all() as any[];
+            for (const m of msgs) {
+              const exists = tx.select().from(schema.aiMessages).where(eq(schema.aiMessages.id, m.id)).get();
+              const vals = {
+                id: m.id, conversationId: m.conversation_id, role: m.role, content: m.content,
+                suggestions: m.suggestions, attachments: m.attachments, createdAt: m.created_at,
+              };
+              if (exists) tx.update(schema.aiMessages).set(vals).where(eq(schema.aiMessages.id, m.id)).run();
+              else tx.insert(schema.aiMessages).values(vals).run();
+            }
+          }
+        }
+
+        // M15：采集引擎全链路表 + 连接配置此前完全漏恢复。
+        // 这些表与项目通过 project_id 或 task_id/asset_id 关联，恢复保持原 id（上面各表也如此），
+        // 故按 where 条件从备份库原样 insert（已存在则 update），字段用 DB 列名直接映射。
+        // columns 为 [DB列名, drizzle TS字段名] 对：drizzle .values() 只认 camelCase 字段名
+        const backupAssetIds = (backupDb.prepare(`SELECT id FROM assets WHERE project_id IN (${backupProjectIds.map(() => '?').join(',')})`).all(...backupProjectIds) as any[]).map(r => r.id);
+        const extraTables: Array<{
+          name: string; table: any; whereCol: string; ids: string[];
+          columns: Array<[string, string]>;
+        }> = [
+          {
+            name: 'connection_profiles', table: schema.connectionProfiles,
+            whereCol: 'asset_id', ids: backupAssetIds,
+            columns: [['id','id'],['name','name'],['conn_type','connType'],['host','host'],['port','port'],['username','username'],['auth_method','authMethod'],['password_encrypted','passwordEncrypted'],['private_key_path','privateKeyPath'],['timeout_ms','timeoutMs'],['extra_config','extraConfig'],['asset_id','assetId'],['created_at','createdAt'],['updated_at','updatedAt']],
+          },
+          {
+            name: 'asset_connections', table: schema.assetConnections,
+            whereCol: 'asset_id', ids: backupAssetIds,
+            columns: [['id','id'],['asset_id','assetId'],['connection_id','connectionId'],['command_scope','commandScope'],['created_at','createdAt']],
+          },
+          {
+            name: 'collection_tasks', table: schema.collectionTasks,
+            whereCol: 'project_id', ids: backupProjectIds,
+            columns: [['id','id'],['project_id','projectId'],['asset_id','assetId'],['connection_id','connectionId'],['status','status'],['total_commands','totalCommands'],['completed_commands','completedCommands'],['progress','progress'],['started_at','startedAt'],['finished_at','finishedAt'],['created_by','createdBy'],['created_at','createdAt'],['updated_at','updatedAt']],
+          },
+        ];
+        const restoreRows = (name: string, table: any, whereCol: string, ids: string[], columns: Array<[string, string]>) => {
+          const tableExists = backupDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
+          if (!tableExists || ids.length === 0) return;
+          const rows = backupDb.prepare(
+            `SELECT * FROM ${name} WHERE ${whereCol} IN (${ids.map(() => '?').join(',')})`
+          ).all(...ids) as any[];
+          for (const row of rows) {
+            const values: Record<string, any> = {};
+            for (const [dbCol, tsField] of columns) {
+              if (dbCol in row) values[tsField] = row[dbCol];
+            }
+            const exists = tx.select().from(table).where(eq(table.id, row.id)).get();
+            if (exists) tx.update(table).set(values).where(eq(table.id, row.id)).run();
+            else tx.insert(table).values(values).run();
+          }
+        };
+        for (const spec of extraTables) {
+          restoreRows(spec.name, spec.table, spec.whereCol, spec.ids, spec.columns);
+        }
+        // 采集结果/文档按 task_id 关联：先取回本项目的任务 id，再按之恢复
+        const backupTaskIds = (backupDb.prepare(`SELECT id FROM collection_tasks WHERE project_id IN (${backupProjectIds.map(() => '?').join(',')})`).all(...backupProjectIds) as any[]).map(r => r.id);
+        restoreRows('collection_results', schema.collectionResults, 'task_id', backupTaskIds, [
+          ['id','id'],['task_id','taskId'],['command_id','commandId'],['command','command'],['status','status'],['exit_code','exitCode'],['stdout','stdout'],['stderr','stderr'],['duration_ms','durationMs'],['parsed_data','parsedData'],['created_at','createdAt'],
+        ]);
+        restoreRows('collection_documents', schema.collectionDocuments, 'task_id', backupTaskIds, [
+          ['id','id'],['task_id','taskId'],['project_id','projectId'],['asset_id','assetId'],['asset_name','assetName'],['host','host'],['file_path','filePath'],['title','title'],['created_at','createdAt'],
+        ]);
       });
       } finally {
         backupDb.close();

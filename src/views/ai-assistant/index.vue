@@ -26,6 +26,24 @@
         <el-button :icon="EditPen" @click="showPromptDrawer = true">
           提示词
         </el-button>
+        <!-- 历史会话：进入页面自动恢复最近一次，可切换/新建/重命名/删除 -->
+        <el-select
+          v-model="activeConversationId"
+          placeholder="新对话"
+          style="width: 190px"
+          :loading="conversationsLoading"
+          @change="onSwitchConversation"
+        >
+          <el-option
+            v-for="c in conversations"
+            :key="c.id"
+            :label="c.title"
+            :value="c.id"
+          />
+        </el-select>
+        <el-button :icon="Plus" @click="createConversation" title="新建对话" />
+        <el-button :icon="EditPen" @click="renameCurrentConversation" :disabled="!activeConversationId" title="重命名当前会话" />
+        <el-button type="danger" :icon="Delete" @click="deleteCurrentConversation" :disabled="!activeConversationId" title="删除当前会话" />
         <el-button type="danger" :icon="Delete" @click="clearChat" :disabled="messages.length === 0">
           清空对话
         </el-button>
@@ -834,6 +852,7 @@ import {
   CircleCheck,
   Iphone,
   Check,
+  Plus,
 } from '@element-plus/icons-vue';
 import PromptManagerDrawer from './components/prompt-manager-drawer.vue';
 
@@ -841,7 +860,17 @@ const showSettings = ref(false);
 const showPromptDrawer = ref(false);
 
 const loading = ref(false);
-const messages = ref<{ id: number; role: string; content: string; suggestions?: string[]; attachments?: PendingAttachment[] }[]>([]);
+type ChatMessage = { id: number | string; role: string; content: string; suggestions?: string[]; attachments?: PendingAttachment[] };
+const messages = ref<ChatMessage[]>([]);
+
+// ── 历史会话持久化 ──
+// 用户已确认隐私模式也保存正文：本地历史保留原文，发送时对模型脱敏是两件事。
+type ConversationMeta = { id: string; title: string; projectId: string | null; createdAt: string; updatedAt: string };
+const conversations = ref<ConversationMeta[]>([]);
+const activeConversationId = ref<string>('');
+const conversationsLoading = ref(false);
+// 一轮对话里"用户消息 + AI 回复"收集齐后一次性落库，避免流式过程中写半截
+let pendingRound: ChatMessage[] = [];
 
 // ── AI 对话流式输出（只用 loading 气泡承载草稿，不进 messages，切页/取消都不会污染历史）──
 const streamingText = ref('');
@@ -1663,103 +1692,128 @@ async function sendMessage(customMessage?: string, context?: string) {
     return;
   }
 
-  // 等待设置加载完成
-  if (!settingsLoaded.value) {
-    loading.value = true;
-    let waitCount = 0;
-    while (!settingsLoaded.value && waitCount < 50) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      waitCount++;
-    }
-    loading.value = false;
+  // 没有活跃会话时自动建一个（首条消息即形成可恢复的历史）
+  if (!activeConversationId.value && window.api.aiConversation) {
+    try {
+      const created = await window.api.aiConversation.create({
+        title: (content || '附件分析').slice(0, 24),
+        projectId: selectedProjectId.value || null,
+      });
+      if (created.success && created.data) {
+        activeConversationId.value = created.data.id;
+        await loadConversations();
+      }
+    } catch { /* 建会话失败不阻断本次对话，只是这轮不落库 */ }
   }
 
-  // 重新检查配置
-  if (!isConfigured.value) {
+  // 记录本轮起始位置：finally 里把新增消息整轮落库，覆盖所有出口（含异常/取消）
+  const roundStart = messages.value.length;
+  try {
+    // 等待设置加载完成
+    if (!settingsLoaded.value) {
+      loading.value = true;
+      let waitCount = 0;
+      while (!settingsLoaded.value && waitCount < 50) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        waitCount++;
+      }
+      loading.value = false;
+    }
+
+    // 重新检查配置
+    if (!isConfigured.value) {
+      messages.value.push({
+        id: Date.now() + Math.random(),
+        role: 'user',
+        content: content || '请分析附件内容',
+        attachments: pendingAttachments.value.length > 0 ? [...pendingAttachments.value] : undefined,
+      });
+      messages.value.push({
+        id: Date.now() + Math.random(),
+        role: 'assistant',
+        content: 'AI 未配置，无法进行分析。请点击右上角的「AI设置」按钮配置 API Key。',
+        suggestions: ['配置AI API Key', '查看使用帮助'],
+      });
+      pendingAttachments.value = [];
+      nextTick(() => scrollToBottom());
+      return;
+    }
+
+    const messageAttachments = pendingAttachments.value.length > 0 ? [...pendingAttachments.value] : undefined;
     messages.value.push({
       id: Date.now() + Math.random(),
       role: 'user',
       content: content || '请分析附件内容',
-      attachments: pendingAttachments.value.length > 0 ? [...pendingAttachments.value] : undefined,
+      attachments: messageAttachments,
     });
+
+    inputMessage.value = '';
+    pendingAttachments.value = [];
+    loading.value = true;
+
+    await nextTick();
+    scrollToBottom();
+
+    // 已配置 AI：先走流式；流式不可用自动回退到原有一次性请求
+    if (isConfigured.value) {
+      const chatParams = {
+        messages: buildRequestMessages(),
+        model: aiSettings.mode === 'local' ? localEngineModel.value : aiSettings.model,
+        temperature: aiSettings.temperature,
+        context: context || undefined,
+      };
+      try {
+        const streamOutcome = await runStreamChat(chatParams);
+        if (streamOutcome !== 'fallback') {
+          loading.value = false;
+          nextTick(() => scrollToBottom());
+          return;
+        }
+
+        // 一次性请求（含完整多模型故障转移），行为与升级前完全一致
+        const res = await window.api.ai.chat(chatParams);
+        if (res.success && res.data) {
+          pushAssistantMessage(res.data.content, res.data.suggestions);
+          loading.value = false;
+          nextTick(() => scrollToBottom());
+          return;
+        }
+        // 用户主动停止：不写错误气泡，直接恢复可输入状态
+        if (res.error?.code === 'AI_CHAT_CANCELED') {
+          loading.value = false;
+          return;
+        }
+        throw new Error(res.error?.message || 'AI回复失败');
+      } catch (error: any) {
+        if (error?.message === '已停止生成') {
+          loading.value = false;
+          return;
+        }
+        // AI调用失败，显示错误信息，不降级
+        pushAssistantMessage(`AI调用失败：${error.message || '未知错误'}`, ['检查AI配置', '查看控制台日志']);
+        loading.value = false;
+        nextTick(() => scrollToBottom());
+        return;
+      }
+    }
+
+    // 未配置AI，提示用户配置
     messages.value.push({
       id: Date.now() + Math.random(),
       role: 'assistant',
       content: 'AI 未配置，无法进行分析。请点击右上角的「AI设置」按钮配置 API Key。',
       suggestions: ['配置AI API Key', '查看使用帮助'],
     });
-    pendingAttachments.value = [];
+    loading.value = false;
     nextTick(() => scrollToBottom());
-    return;
-  }
-
-  const messageAttachments = pendingAttachments.value.length > 0 ? [...pendingAttachments.value] : undefined;
-  messages.value.push({
-    id: Date.now() + Math.random(),
-    role: 'user',
-    content: content || '请分析附件内容',
-    attachments: messageAttachments,
-  });
-
-  inputMessage.value = '';
-  pendingAttachments.value = [];
-  loading.value = true;
-
-  await nextTick();
-  scrollToBottom();
-
-  // 已配置 AI：先走流式；流式不可用自动回退到原有一次性请求
-  if (isConfigured.value) {
-    const chatParams = {
-      messages: buildRequestMessages(),
-      model: aiSettings.mode === 'local' ? localEngineModel.value : aiSettings.model,
-      temperature: aiSettings.temperature,
-      context: context || undefined,
-    };
-    try {
-      const streamOutcome = await runStreamChat(chatParams);
-      if (streamOutcome !== 'fallback') {
-        loading.value = false;
-        nextTick(() => scrollToBottom());
-        return;
-      }
-
-      // 一次性请求（含完整多模型故障转移），行为与升级前完全一致
-      const res = await window.api.ai.chat(chatParams);
-      if (res.success && res.data) {
-        pushAssistantMessage(res.data.content, res.data.suggestions);
-        loading.value = false;
-        nextTick(() => scrollToBottom());
-        return;
-      }
-      // 用户主动停止：不写错误气泡，直接恢复可输入状态
-      if (res.error?.code === 'AI_CHAT_CANCELED') {
-        loading.value = false;
-        return;
-      }
-      throw new Error(res.error?.message || 'AI回复失败');
-    } catch (error: any) {
-      if (error?.message === '已停止生成') {
-        loading.value = false;
-        return;
-      }
-      // AI调用失败，显示错误信息，不降级
-      pushAssistantMessage(`AI调用失败：${error.message || '未知错误'}`, ['检查AI配置', '查看控制台日志']);
-      loading.value = false;
-      nextTick(() => scrollToBottom());
-      return;
+  } finally {
+    // 本轮新增的消息整体落库（含用户消息与 AI 回复）
+    const round = messages.value.slice(roundStart);
+    if (round.length > 0) {
+      pendingRound = round;
+      void persistRound();
     }
   }
-
-  // 未配置AI，提示用户配置
-  messages.value.push({
-    id: Date.now() + Math.random(),
-    role: 'assistant',
-    content: 'AI 未配置，无法进行分析。请点击右上角的「AI设置」按钮配置 API Key。',
-    suggestions: ['配置AI API Key', '查看使用帮助'],
-  });
-  loading.value = false;
-  nextTick(() => scrollToBottom());
 }
 
 function pushAssistantMessage(content: string, suggestions?: string[]) {
@@ -1818,6 +1872,23 @@ async function runStreamChat(params: {
 }
 
 /**
+ * 把 Vue 响应式 Proxy 包装的对象/数组剥离为纯数据。
+ *
+ * 为什么需要：ipcRenderer.invoke 跨 contextIsolation 时用结构化克隆传参，
+ * Vue 的 reactive Proxy 无法被克隆，会抛 "An object could not be cloned"。
+ * JSON 往返彻底剥离各层 Proxy；消息里的字段都是 string/string[]/boolean，
+ * 往返无损（undefined/null 直接透传，IPC 序列化本就不传，下游按空处理）。
+ */
+function stripReactive<T>(v: T): T {
+  if (v == null) return v;
+  try {
+    return JSON.parse(JSON.stringify(v)) as T;
+  } catch {
+    return v; // 消息数据都可序列化，兜底原值
+  }
+}
+
+/**
  * 构造发送给模型的消息窗口。
  * 此前每轮都把完整对话历史（含所有附件 base64）全量上报，长对话后请求体越滚越大，
  * 云端响应越来越慢、还容易撞上 token 上限。这里按「最近 N 条 + 总字符预算」截一个窗口，
@@ -1832,8 +1903,17 @@ function buildRequestMessages() {
   for (let i = messages.value.length - 1; i >= 0; i--) {
     const m = messages.value[i];
     const size = (m.content?.length || 0) + (m.attachments?.length ? 4000 : 0);
-    if (picked.length >= HISTORY_MAX_MESSAGES || chars + size > HISTORY_MAX_CHARS) break;
-    picked.unshift({ role: m.role, content: m.content, attachments: m.attachments });
+    if (picked.length >= HISTORY_MAX_MESSAGES) break;
+    if (chars + size > HISTORY_MAX_CHARS) {
+      // 单条本身超预算（超大附件/长文）：跳过它继续收更早的短消息，
+      // 不能用 break，否则窗口里一条都没有，发出空 messages 让模型答非所问。
+      // 但若一条都收不下，至少保留最新一条（截断内容），避免完全无上下文。
+      if (picked.length === 0) {
+        picked.unshift({ role: m.role, content: String(m.content || '').slice(0, 2000), attachments: undefined });
+      }
+      continue;
+    }
+    picked.unshift({ role: m.role, content: m.content, attachments: stripReactive(m.attachments) });
     chars += size;
   }
   return picked;
@@ -1861,6 +1941,134 @@ async function quickAction(action: string) {
   sendMessage(prompt, context);
 }
 
+// ── 历史会话：加载 / 新建 / 切换 / 重命名 / 删除 / 落库 ──
+
+async function loadConversations() {
+  if (!window.api?.aiConversation) return;
+  conversationsLoading.value = true;
+  try {
+    const res = await window.api.aiConversation.list();
+    if (res.success && res.data) {
+      conversations.value = res.data as ConversationMeta[];
+    }
+  } catch (e) {
+    console.warn('[会话] 加载历史失败:', e);
+  } finally {
+    conversationsLoading.value = false;
+  }
+}
+
+/** 打开某会话：加载其消息到界面（id 转 number 供现有渲染 key 使用） */
+async function openConversation(id: string) {
+  if (!id || !window.api?.aiConversation) return;
+  activeConversationId.value = id;
+  pendingRound = [];
+  try {
+    const res = await window.api.aiConversation.getMessages(id);
+    if (res.success && res.data) {
+      messages.value = res.data.map((m, idx) => ({
+        id: typeof m.id === 'number' ? m.id : Date.now() + idx,
+        role: m.role,
+        content: m.content,
+        suggestions: m.suggestions,
+        attachments: m.attachments,
+      }));
+      nextTick(() => scrollToBottom());
+    }
+  } catch (e) {
+    console.warn('[会话] 读取消息失败:', e);
+    ElMessage.warning('历史消息加载失败');
+  }
+}
+
+async function onSwitchConversation(id: string) {
+  if (loading.value) {
+    ElMessage.warning('请等待当前回答结束');
+    return;
+  }
+  await openConversation(id);
+}
+
+async function createConversation() {
+  if (!window.api?.aiConversation) return;
+  if (loading.value) {
+    ElMessage.warning('请等待当前回答结束');
+    return;
+  }
+  try {
+    const res = await window.api.aiConversation.create({ projectId: selectedProjectId.value || null });
+    if (res.success && res.data) {
+      await loadConversations();
+      activeConversationId.value = res.data.id;
+      messages.value = [];
+      pendingRound = [];
+      nextTick(() => scrollToBottom());
+    }
+  } catch (e) {
+    ElMessage.error('新建会话失败');
+  }
+}
+
+async function renameCurrentConversation() {
+  const id = activeConversationId.value;
+  if (!id) return;
+  const current = conversations.value.find(c => c.id === id);
+  try {
+    const { value } = await ElMessageBox.prompt('请输入会话名称', '重命名会话', {
+      inputValue: current?.title || '',
+      inputValidator: (v) => (v && v.trim() ? true : '名称不能为空'),
+    });
+    const res = await window.api.aiConversation.rename(id, value.trim());
+    if (res.success) {
+      current && (current.title = value.trim());
+    }
+  } catch { /* 用户取消 */ }
+}
+
+async function deleteCurrentConversation() {
+  const id = activeConversationId.value;
+  if (!id) return;
+  const current = conversations.value.find(c => c.id === id);
+  try {
+    await ElMessageBox.confirm(`确定删除会话「${current?.title || '未命名'}」及其全部对话记录吗？此操作不可恢复。`, '删除会话', { type: 'warning' });
+  } catch { return; }
+  try {
+    const res = await window.api.aiConversation.delete(id);
+    if (res.success) {
+      await loadConversations();
+      activeConversationId.value = '';
+      messages.value = [];
+      pendingRound = [];
+      ElMessage.success('会话已删除');
+    }
+  } catch {
+    ElMessage.error('删除会话失败');
+  }
+}
+
+/** 把一轮对话（用户消息 + AI 回复）落库。fire-and-forget，失败只告警不阻断 UI。 */
+async function persistRound() {
+  const id = activeConversationId.value;
+  if (!id || pendingRound.length === 0 || !window.api?.aiConversation) {
+    pendingRound = [];
+    return;
+  }
+  const round = pendingRound;
+  pendingRound = [];
+  try {
+    await window.api.aiConversation.appendMessages(id, round.map(m => ({
+      id: String(m.id),
+      role: m.role,
+      content: m.content,
+      suggestions: stripReactive(m.suggestions),
+      attachments: stripReactive(m.attachments),
+    })));
+    await loadConversations();
+  } catch (e) {
+    console.warn('[会话] 落库失败:', e);
+  }
+}
+
 async function clearChat() {
   if (messages.value.length > 0) {
     try {
@@ -1875,6 +2083,15 @@ async function clearChat() {
   }
   messages.value = [];
   pendingAttachments.value = [];
+  pendingRound = [];
+  // 同步清空库中该会话的消息，避免刷新后"清过的对话又回来了"
+  if (activeConversationId.value && window.api?.aiConversation) {
+    try {
+      await window.api.aiConversation.clearMessages(activeConversationId.value);
+    } catch (e) {
+      console.warn('[会话] 清空库中消息失败:', e);
+    }
+  }
 }
 
 function scrollToBottom() {
@@ -2004,6 +2221,11 @@ onMounted(async () => {
   }) || null;
   await loadSettings();
   loadProjects();
+  // 恢复历史：进入页面自动载入最近更新的会话（用户已确认隐私模式也保存正文）
+  await loadConversations();
+  if (conversations.value.length > 0) {
+    await openConversation(conversations.value[0].id);
+  }
 });
 
 onUnmounted(() => {

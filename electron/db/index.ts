@@ -114,19 +114,15 @@ export async function initDatabase(): Promise<void> {
         : bundledMigrationsPath);
     const metaJournalPath = join(migrationsPath, 'meta', '_journal.json');
 
-    // 权威建表路径：无条件执行。
-    // autoCreateTables 全部是 CREATE TABLE IF NOT EXISTS + PRAGMA 判存补列，幂等；
-    // 它覆盖的 25 张表与迁移 SQL 完全一致，还带有迁移 SQL 里没有的 JS 侧补列逻辑。
-    // 无论迁移文件是否存在都先跑一遍，可保证「存量库 / 全新库 / 打包版 / dev」
-    // 的结构都由同一套经过验证的逻辑建立，新增迁移文件不会改变建表结果。
-    await autoCreateTables(sqlite);
-
+    // M2 修复：先跑迁移，再跑 autoCreateTables 兜底。
+    // 旧顺序先 autoCreateTables 建出 projects，导致 migrator 的 hasExistingSchema()
+    // 把全新库误判成存量库、把所有迁移 baseline 登记为"已应用"却不执行任何 SQL
+    // ——迁移文件形同虚设，以后只写 SQL 迁移不带 JS 兜底就会静默不生效。
+    // 新顺序下：全新库真正执行建表 SQL；存量库仍走 baseline（不重放历史 DDL）；
+    // autoCreateTables 随后用 CREATE IF NOT EXISTS + 判存补列兜底，保证幂等。
     if (fs.existsSync(metaJournalPath)) {
       try {
         log.info('执行数据库迁移:', migrationsPath);
-        // 使用自建的幂等迁移器（见 ./migrator.ts）：存量库上 JS 兜底已建过的列会被跳过，
-        // 不会因 duplicate column name 导致整个迁移回滚；且对「无账本但结构已完整」的
-        // 存量库只补记账本、不重放历史 DDL（详见 migrator.ts 的 baseline 分支）。
         runMigrations(sqlite, migrationsPath);
         log.info('数据库迁移完成');
       } catch (migrateError) {
@@ -136,6 +132,9 @@ export async function initDatabase(): Promise<void> {
     } else {
       log.info('未找到迁移文件，仅使用自动建表');
     }
+
+    // 权威兜底建表路径：无条件执行，覆盖迁移未涉及的补列逻辑（幂等）。
+    await autoCreateTables(sqlite);
 
     // 兼容旧库补列：必须无条件执行（详见 ensureCompatColumns 注释）
     ensureCompatColumns(sqlite);
@@ -533,6 +532,51 @@ async function autoCreateTables(sqlite: Database.Database): Promise<void> {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS ai_conversations (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      project_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ai_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      suggestions TEXT,
+      attachments TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS assessment_checkpoints (
+      id TEXT PRIMARY KEY,
+      semantic_key TEXT NOT NULL,
+      device_key TEXT NOT NULL DEFAULT '',
+      domain TEXT,
+      control_point TEXT,
+      requirement TEXT NOT NULL,
+      checkpoints TEXT NOT NULL DEFAULT '[]',
+      interpretation TEXT,
+      result_template TEXT,
+      catalog_no TEXT,
+      source TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS assessment_checkpoints_semantic_device_unique
+      ON assessment_checkpoints(semantic_key, device_key);
+    CREATE INDEX IF NOT EXISTS assessment_checkpoints_semantic_idx
+      ON assessment_checkpoints(semantic_key);
+    CREATE INDEX IF NOT EXISTS assessment_checkpoints_control_point_idx
+      ON assessment_checkpoints(control_point);
+
+    CREATE INDEX IF NOT EXISTS ai_conversations_updated_idx ON ai_conversations(updated_at);
+    CREATE INDEX IF NOT EXISTS ai_conversations_project_idx ON ai_conversations(project_id);
+    CREATE INDEX IF NOT EXISTS ai_messages_conversation_idx ON ai_messages(conversation_id, created_at);
 
   `);
 
@@ -986,6 +1030,16 @@ function detectOrphanData(sqlite: Database.Database): void {
         sql: 'SELECT COUNT(*) AS c FROM asset_connections WHERE asset_id NOT IN (SELECT id FROM assets)',
       });
     }
+    if (has('major_risk_analysis') && has('issues')) {
+      checks.push({
+        name: 'major_risk_analysis 指向不存在的问题',
+        sql: 'SELECT COUNT(*) AS c FROM major_risk_analysis WHERE issue_id NOT IN (SELECT id FROM issues)',
+      });
+      checks.push({
+        name: 'major_risk_analysis 指向不存在的项目',
+        sql: 'SELECT COUNT(*) AS c FROM major_risk_analysis WHERE project_id NOT IN (SELECT id FROM projects)',
+      });
+    }
 
     const found: string[] = [];
     for (const c of checks) {
@@ -1179,7 +1233,8 @@ async function initDefaultData(): Promise<void> {
       createdAt: now,
       updatedAt: now,
     });
-    log.info('创建默认管理员账号: admin / admin123（首次登录需修改密码）');
+    // 不在日志里写明文口令：日志文件长期留存，泄露默认口令等于绕过首次改密防线
+    log.info('已创建默认管理员账号（首次登录需修改密码，初始口令见安装文档）');
   }
 
   const aiConfigCount = await dbInstance.select().from(schema.aiConfigs).limit(1);

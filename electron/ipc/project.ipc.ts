@@ -485,20 +485,22 @@ export function registerProjectHandlers(): void {
       // 不再生成编号，否则分组和系统会出现两个同格式编号、导出台账时分不清。
       let projectNo = data.projectNo;
       if (!projectNo && !data.groupId) {
+        // P7：无分组系统此前也用 DJCP-XXX，与项目分组编号空间撞号（都会从 001 起）。
+        // 改用独立前缀 SYS-XXX，两空间彻底分开；分组下系统仍不生成编号。
         const allProjects = await db.select({ projectNo: schema.projects.projectNo })
           .from(schema.projects)
-          .where(like(schema.projects.projectNo, 'DJCP-%'));
-        
+          .where(like(schema.projects.projectNo, 'SYS-%'));
+
         let maxNum = 0;
         for (const p of allProjects) {
-          const match = p.projectNo?.match(/DJCP-(\d+)/);
+          const match = p.projectNo?.match(/SYS-(\d+)/);
           if (match) {
             const num = parseInt(match[1], 10);
             if (num > maxNum) maxNum = num;
           }
         }
         const nextNum = maxNum + 1;
-        projectNo = `DJCP-${String(nextNum).padStart(3, '0')}`;
+        projectNo = `SYS-${String(nextNum).padStart(3, '0')}`;
       }
 
       await db.insert(schema.projects).values({
@@ -513,13 +515,15 @@ export function registerProjectHandlers(): void {
         extensionType: data.extensionType,
         level,
         standardId,
-        status: data.status || 'draft',
+        // 新系统一律草稿、零进度：状态由项目状态同步服务按系统状态推导，
+        // 不允许客户端直接指定 completed / 100 污染分组状态与统计口径
+        status: 'draft',
         customerName: data.customerName,
         assessor: data.assessor,
         startDate: data.startDate,
         endDate: data.endDate,
         description: data.description,
-        progress: data.progress || 0,
+        progress: 0,
         createdAt: now,
         updatedAt: now,
       });
@@ -529,9 +533,8 @@ export function registerProjectHandlers(): void {
       });
 
       // 新系统入组可能改变项目状态（如给已完成项目加了一个草稿系统）
-      syncGroupStatusFromSystems(data.groupId).catch((err) => {
-        log.error('[project:create] 项目状态同步失败:', err);
-      });
+      // P6：改为 await，同步失败要上抛，避免"列表显示已完成但筛选不到"的口径不一致
+      await syncGroupStatusFromSystems(data.groupId);
 
       const project = await db.query.projects.findFirst({
         where: eq(schema.projects.id, id),
@@ -587,9 +590,7 @@ export function registerProjectHandlers(): void {
         const updated = await db.query.projects.findFirst({
           where: eq(schema.projects.id, id),
         });
-        syncGroupStatusFromSystems(updated?.groupId).catch((err) => {
-          log.error('[project:update] 项目状态同步失败:', err);
-        });
+        await syncGroupStatusFromSystems(updated?.groupId);
       }
 
       const project = await db.query.projects.findFirst({
@@ -615,9 +616,7 @@ export function registerProjectHandlers(): void {
         cascadeDeleteProject(tx, id);
       });
       // 剩余系统可能全是已完成/草稿，项目状态跟着变
-      syncGroupStatusFromSystems(project?.groupId).catch((err) => {
-        log.error('[project:remove] 项目状态同步失败:', err);
-      });
+      await syncGroupStatusFromSystems(project?.groupId);
       writeOperationLog({
         action: 'delete',
         module: 'project',

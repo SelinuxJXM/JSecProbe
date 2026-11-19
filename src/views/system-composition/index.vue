@@ -90,6 +90,10 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             导出全部
           </button>
+          <button v-if="selectedAssets.length > 0" class="toolbar-btn danger" @click="handleBatchDelete">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            删除选中（{{ selectedAssets.length }}）
+          </button>
           <div class="toolbar-sep"></div>
           <div class="search-box">
             <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -134,12 +138,16 @@
 
       <div ref="tableWrapperRef" class="table-wrapper">
       <el-table
+        ref="assetTableRef"
         :data="visibleAssets"
         style="width: 100%"
         :row-height="44"
+        :row-key="(row: Asset) => String(row.id)"
         v-loading="loading"
         header-cell-class-name="design-header-cell"
+        @selection-change="onSelectionChange"
       >
+        <el-table-column type="selection" width="42" align="center" reserve-selection />
         <el-table-column type="index" label="序号" width="50" align="center" />
         <!--
           以下 6 组列的共同点：同一个资产字段在不同类别下叫不同名字。
@@ -406,6 +414,52 @@
             </div>
           </div>
         </div>
+        <!-- AI 识别进度：阶段进度条 + 批次概览 + 逐批清单（参照现场测评批量分析） -->
+        <div v-if="aiIdentifyProgress.visible" class="ai-identify-progress">
+          <div class="ai-identify-progress-head">
+            <span class="ai-identify-progress-msg">{{ aiIdentifyProgress.message || '处理中...' }}</span>
+            <span class="ai-identify-progress-pct">{{ aiIdentifyProgress.percent }}%</span>
+          </div>
+          <div
+            class="ai-identify-progress-bar"
+            :class="{
+              'is-error': aiIdentifyProgress.stage === 'error',
+              'is-done': aiIdentifyProgress.stage === 'done',
+            }"
+          >
+            <div class="ai-identify-progress-fill" :style="{ width: aiIdentifyProgress.percent + '%' }"></div>
+          </div>
+          <!-- 批次概览 -->
+          <div v-if="aiIdentifyProgress.totalBatches > 0" class="ai-identify-meta">
+            <span class="ai-identify-meta-item">
+              <span class="ai-identify-meta-label">批次</span>
+              <span class="ai-identify-meta-value">
+                {{ Math.min(aiIdentifyProgress.currentBatch || 1, aiIdentifyProgress.totalBatches) }} / {{ aiIdentifyProgress.totalBatches }}
+              </span>
+            </span>
+          </div>
+          <!-- 逐批清单：done=已完成 / processing=进行中 / pending=待处理 -->
+          <div v-if="aiIdentifyProgress.totalBatches > 1" class="ai-identify-batch-list">
+            <div
+              v-for="b in aiIdentifyProgress.totalBatches"
+              :key="b"
+              class="ai-identify-batch-item"
+              :class="{
+                done: aiIdentifyProgress.stage === 'done' || b < aiIdentifyProgress.currentBatch,
+                processing: aiIdentifyProgress.stage !== 'done' && aiIdentifyProgress.stage !== 'error' && b === aiIdentifyProgress.currentBatch,
+                pending: aiIdentifyProgress.stage !== 'done' && b > aiIdentifyProgress.currentBatch,
+              }"
+            >
+              <span class="ai-identify-batch-status">
+                <svg v-if="aiIdentifyProgress.stage === 'done' || b < aiIdentifyProgress.currentBatch" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <svg v-else-if="b === aiIdentifyProgress.currentBatch && aiIdentifyProgress.stage !== 'error'" class="ai-identify-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>
+                <span v-else class="ai-identify-batch-dot"></span>
+              </span>
+              <span class="ai-identify-batch-name">第 {{ b }} 批</span>
+              <span class="ai-identify-batch-label">{{ aiIdentifyProgress.batchLabels?.[b - 1] || '' }}</span>
+            </div>
+          </div>
+        </div>
         <div class="ai-identify-footer-left">
           <el-button type="primary" :loading="aiIdentifyLoading" @click="handleAiIdentify">
             {{ aiIdentifyLoading ? '识别中…' : '开始识别' }}
@@ -438,16 +492,16 @@
             <div v-show="item.expanded" class="ai-id-detail">
               <div class="ai-id-detail-grid">
                 <div class="ai-id-field">
-                  <label>操作系统</label>
-                  <el-input v-model="item.os" size="small" placeholder="如 Windows Server 2016 / CentOS 7.9" />
+                  <label>{{ previewFieldLabel(item.category, 'os') }}</label>
+                  <el-input v-model="item.os" size="small" :placeholder="previewFieldLabel(item.category, 'os')" />
                 </div>
                 <div class="ai-id-field">
-                  <label>版本</label>
-                  <el-input v-model="item.version" size="small" placeholder="如 V3R5 / 11g" />
+                  <label>{{ previewFieldLabel(item.category, 'version') }}</label>
+                  <el-input v-model="item.version" size="small" :placeholder="previewFieldLabel(item.category, 'version')" />
                 </div>
                 <div class="ai-id-field">
-                  <label>IP 地址</label>
-                  <el-input v-model="item.ip" size="small" placeholder="如 192.168.1.10 或 192.168.1.0/24" />
+                  <label>{{ previewFieldLabel(item.category, 'ip') }}</label>
+                  <el-input v-model="item.ip" size="small" :placeholder="previewFieldLabel(item.category, 'ip')" />
                 </div>
                 <div class="ai-id-field">
                   <label>数量</label>
@@ -458,19 +512,19 @@
                   <el-switch v-model="item.isVirtual" size="small" />
                 </div>
                 <div class="ai-id-field">
-                  <label>数据库系统</label>
-                  <el-input v-model="item.dbSystem" size="small" placeholder="如 Oracle 11g（数据库类资产填写）" />
+                  <label>{{ previewFieldLabel(item.category, 'dbSystem') }}</label>
+                  <el-input v-model="item.dbSystem" size="small" :placeholder="previewFieldLabel(item.category, 'dbSystem')" />
                 </div>
                 <div class="ai-id-field">
-                  <label>中间件</label>
-                  <el-input v-model="item.middleware" size="small" placeholder="如 Tomcat 9.0（承载中间件时填写）" />
+                  <label>{{ previewFieldLabel(item.category, 'middleware') }}</label>
+                  <el-input v-model="item.middleware" size="small" :placeholder="previewFieldLabel(item.category, 'middleware')" />
                 </div>
                 <div class="ai-id-field ai-id-field-full">
-                  <label>用途说明</label>
-                  <el-input v-model="item.deviceUsage" size="small" placeholder="一句话说明资产用途" />
+                  <label>{{ previewFieldLabel(item.category, 'deviceUsage') }}</label>
+                  <el-input v-model="item.deviceUsage" size="small" :placeholder="previewFieldLabel(item.category, 'deviceUsage')" />
                 </div>
                 <div class="ai-id-field ai-id-field-full">
-                  <label>备注描述</label>
+                  <label>{{ previewFieldLabel(item.category, 'description') }}</label>
                   <el-input v-model="item.description" type="textarea" :rows="2" maxlength="500" show-word-limit placeholder="补充说明信息" />
                 </div>
               </div>
@@ -527,6 +581,7 @@ import {
 import type { Asset, AssetCategory, AssetListResult } from '@shared/types';
 import { ASSET_CATEGORIES } from '@shared/asset-categories';
 import { useAssetAutoSave } from './composables/useAssetAutoSave';
+import { normalizeIdentifiedAsset } from './utils/asset-field-normalize';
 import PageHint from '@/components/PageHint/index.vue';
 import { useProjectNav } from '@/composables/useProjectNav';
 
@@ -540,6 +595,16 @@ const saving = ref(false);
 const project = ref<any>(null);
 const assetList = ref<Asset[]>([]);
 const tableWrapperRef = ref<HTMLElement | null>(null);
+const assetTableRef = ref<any>(null);
+// 表格勾选的资产（用于批量删除；分类切换/重载后清空，避免跨类误删）
+const selectedAssets = ref<Asset[]>([]);
+function onSelectionChange(rows: Asset[]) {
+  selectedAssets.value = rows || [];
+}
+function clearSelection() {
+  try { assetTableRef.value?.clearSelection(); } catch { /* 表格未就绪时忽略 */ }
+  selectedAssets.value = [];
+}
 const categories = ref<AssetCategory[]>([]);
 const showAddDialog = ref(false);
 const editingAsset = ref<Asset | null>(null);
@@ -669,6 +734,17 @@ const formData = reactive({
 // AI 资产识别 / 缺失提醒
 const aiIdentifyVisible = ref(false);
 const aiIdentifyLoading = ref(false);
+// AI 资产识别进度（读取附件 / 提交 / 解析），让多附件识别不再只有"识别中…"一个静态文案
+const aiIdentifyProgress = ref({
+  visible: false,
+  percent: 0,
+  message: '',
+  stage: '',
+  currentBatch: 0,
+  totalBatches: 0,
+  batchLabels: [] as string[],
+});
+let unsubscribeAssetIdentifyProgress: (() => void) | null = null;
 const aiIdentifyDescription = ref('');
 const aiIdentifyResults = ref<any[]>([]);
 const aiImportLoading = ref(false);
@@ -818,7 +894,16 @@ const osColumn = computed(() => resolveVariantColumn(OS_COLUMN, OS_COLUMN_FALLBA
 const versionColumn = computed(() => resolveVariantColumn(VERSION_COLUMN, null, null, 'version'));
 const dbSystemColumn = computed(() => resolveVariantColumn(DBSYSTEM_COLUMN, null, null, 'dbSystem'));
 const middlewareColumn = computed(() => resolveVariantColumn(MIDDLEWARE_COLUMN, null, null, 'middleware'));
-const usageColumn = computed(() => resolveVariantColumn(USAGE_COLUMN, USAGE_COLUMN_FALLBACK, null, 'deviceUsage'));
+// deviceUsage 列必须与该类别的可编辑字段保持一致：
+// 此前传 fallback + null 排除集，导致 EDITABLE_COLUMNS 里没有 deviceUsage 的类别
+// （如 sys_doc 系统管理文档）也显示一个兜底的"设备类别/用途"列——列显示出来了，
+// 但粘贴导入按 EDITABLE_COLUMNS 顺序铺数据时没有对应位置，会串列。
+// 直接以 getEditableColumns() 是否含 deviceUsage 为准，杜绝两处定义漂移。
+const usageColumn = computed(() =>
+  getEditableColumns().includes('deviceUsage')
+    ? resolveVariantColumn(USAGE_COLUMN, USAGE_COLUMN_FALLBACK, null, 'deviceUsage')
+    : null
+);
 const isDeviceCategory = computed(() => !NON_DEVICE_CATEGORIES.has(currentCategory.value));
 
 const EDITABLE_COLUMNS: Record<string, string[]> = {
@@ -839,6 +924,35 @@ const EDITABLE_COLUMNS: Record<string, string[]> = {
 
 function getEditableColumns() {
   return EDITABLE_COLUMNS[currentCategory.value] || ['name', 'isVirtual', 'os', 'deviceUsage', 'description', 'quantity', 'ip', 'importance', 'isAssessmentTarget'];
+}
+
+/**
+ * 预览对话框里按每个资产的 category 取字段显示名（与主表格列名完全一致）。
+ * 预览允许逐项改 category，所以不能用依赖 currentCategory 的 computed 列，
+ * 而要用这里的纯函数按传入 category 查同一份列配置表，避免"预览叫版本、导入后进生产厂商列"的认知错位。
+ */
+function previewFieldLabel(category: string, field: 'os' | 'version' | 'dbSystem' | 'middleware' | 'deviceUsage' | 'description' | 'ip'): string {
+  const specByField: Record<string, Record<string, VariantSpec> | null> = {
+    os: OS_COLUMN,
+    version: VERSION_COLUMN,
+    dbSystem: DBSYSTEM_COLUMN,
+    middleware: MIDDLEWARE_COLUMN,
+    deviceUsage: USAGE_COLUMN,
+  };
+  const fallbackByField: Record<string, VariantSpec | null> = {
+    os: OS_COLUMN_FALLBACK,
+    version: null,
+    dbSystem: null,
+    middleware: null,
+    deviceUsage: USAGE_COLUMN_FALLBACK,
+  };
+  if (field === 'description') return '备注';
+  if (field === 'ip') return category === 'security_personnel' ? '联系方式' : 'IP 地址';
+  // 该类别不显示此列时，回退到通用名（预览仍可编辑该字段，只是用中性标签）
+  const table = specByField[field];
+  const excluded = field === 'os' ? OS_COLUMN_EXCLUDED : null;
+  if (excluded?.has(category)) return fallbackByField[field]?.label || field;
+  return table?.[category]?.label || fallbackByField[field]?.label || field;
 }
 
 function handlePaste(event: ClipboardEvent, row: Asset, field: string) {
@@ -943,7 +1057,19 @@ async function loadAssets() {
   const projectId = route.params.id as string;
   if (!projectId) return;
   if (!window.api) return;
+  // 列表重建会 markClean：先落盘，避免搜索/导入/归档等入口直接调本函数时
+  // 把防抖窗口内的编辑静默丢弃（与 systems.vue 同一保护）
+  if (autoSave.hasUnsavedChanges.value) {
+    const ok = await autoSave.saveAllChanges();
+    // 落盘失败就中止重载：列表重建 + markClean 会抹掉未保存的编辑
+    if (!ok) {
+      ElMessage.error('有内容保存失败，已保留未保存改动，请重试后再刷新列表');
+      return;
+    }
+  }
   
+  // 列表即将被服务端数据整体替换，先清空勾选，避免选中态指向已失效的旧行对象导致误删
+  clearSelection();
   loading.value = true;
   try {
     const res = await window.api.asset.list({
@@ -1064,6 +1190,8 @@ async function reloadAssets() {
 function handleCategoryChange(categoryId: string) {
   currentCategory.value = categoryId;
   pagination.page = 1;
+  // 切换分类后当前勾选不再对应新列表，清空避免跨类误删
+  clearSelection();
   reloadAssets();
 }
 
@@ -1186,6 +1314,23 @@ async function handleAiIdentify() {
     return;
   }
   aiIdentifyLoading.value = true;
+  aiIdentifyProgress.value = {
+    visible: true, percent: 2, message: '正在准备识别...', stage: 'init',
+    currentBatch: 0, totalBatches: 0, batchLabels: [],
+  };
+  // 订阅识别进度；finally 中退订，避免重复识别叠加监听器
+  if (unsubscribeAssetIdentifyProgress) unsubscribeAssetIdentifyProgress();
+  unsubscribeAssetIdentifyProgress = window.api.ai.onAssetIdentifyProgress((data) => {
+    aiIdentifyProgress.value = {
+      visible: true,
+      percent: typeof data.percent === 'number' ? data.percent : aiIdentifyProgress.value.percent,
+      message: data.message || aiIdentifyProgress.value.message,
+      stage: data.stage || aiIdentifyProgress.value.stage,
+      currentBatch: typeof data.currentBatch === 'number' ? data.currentBatch : aiIdentifyProgress.value.currentBatch,
+      totalBatches: typeof data.totalBatches === 'number' ? data.totalBatches : aiIdentifyProgress.value.totalBatches,
+      batchLabels: data.batchLabels || aiIdentifyProgress.value.batchLabels,
+    };
+  });
   try {
     const imagePaths = aiIdentifyAttachments.value.filter(a => a.type === 'image').map(a => a.path);
     const documents = aiIdentifyAttachments.value.filter(a => a.type === 'document').map(a => a.path);
@@ -1204,13 +1349,30 @@ async function handleAiIdentify() {
       ocrPreprocess,
     });
     if (res.success && res.data) {
-      aiIdentifyResults.value = (res.data.assets || []).map(a => ({ ...a, selected: true }));
+      const warnings = (res.data as { warnings?: string[] }).warnings;
+      if (warnings && warnings.length > 0) {
+        ElMessage.warning(`部分附件未读出内容：${warnings.join('；')}`);
+      }
+      if ((res.data as { truncated?: boolean }).truncated) {
+        ElMessage.warning('部分批次 AI 输出过长被截断，已保留可识别的资产；如需更完整清单，请减少单次附件数量后重试');
+      }
+      if ((res.data as { capped?: boolean }).capped) {
+        ElMessage.warning('识别出的资产超过单次上限（300 个），已保留前 300 个；请将附件分成两批分别识别后合并');
+      }
+      // 识别结果按表格列语义纠正字段（如 sys_doc 的主要内容从 description 搬到 os），
+      // 让预览与导入后的数据一致，不会"识别时看着对、导入后跑到备注列"。
+      aiIdentifyResults.value = (res.data.assets || []).map(a => ({ ...normalizeIdentifiedAsset(a), selected: true }));
       if (aiIdentifyResults.value.length === 0) ElMessage.info('AI 未识别出资产，请补充系统描述细节或附件');
     } else {
       ElMessage.error(res.error?.message || 'AI 资产识别失败');
     }
   } finally {
     aiIdentifyLoading.value = false;
+    if (unsubscribeAssetIdentifyProgress) {
+      unsubscribeAssetIdentifyProgress();
+      unsubscribeAssetIdentifyProgress = null;
+    }
+    aiIdentifyProgress.value = { ...aiIdentifyProgress.value, visible: false };
   }
 }
 
@@ -1387,7 +1549,32 @@ function refreshData() {
   loadAssets();
 }
 
-// 删除
+/**
+ * 删除一批资产的核心逻辑（不含确认框与保存触发）。
+ * 单条删除与批量删除共用，保证「临时行直接移除 / 服务器行标记待删」口径一致。
+ */
+function deleteRows(rows: Asset[]): number {
+  const ids = new Set(rows.map(r => String(r.id)));
+  let count = 0;
+  for (const row of rows) {
+    const id = String(row.id);
+    if (id.startsWith('temp_')) {
+      // 临时行（尚未保存到服务器）：无需标记删除，直接从列表移除即可
+      modifiedRows.delete(id);
+    } else {
+      // 服务器已存在的行：标记为待删除，等待保存时统一删除
+      deletedIds.add(id);
+      modifiedRows.delete(id);
+    }
+    count++;
+  }
+  if (ids.size > 0) {
+    assetList.value = assetList.value.filter(r => !ids.has(String(r.id)));
+  }
+  return count;
+}
+
+// 删除（单条）
 async function handleDelete(row: Asset) {
   try {
     await ElMessageBox.confirm('确定要删除该资产吗？', '确认删除', {
@@ -1396,20 +1583,34 @@ async function handleDelete(row: Asset) {
   } catch {
     return;
   }
-  
-  if (String(row.id).startsWith('temp_')) {
-    // 临时行（尚未保存到服务器）：直接从列表中移除
-    assetList.value = assetList.value.filter(r => r.id !== row.id);
-    modifiedRows.delete(String(row.id));
-    return;
-  }
-  // 服务器已存在的行：标记为待删除，等待"保存修改"时统一删除
-  deletedIds.add(String(row.id));
-  modifiedRows.delete(String(row.id));
-  assetList.value = assetList.value.filter(r => r.id !== row.id);
+  deleteRows([row]);
+  // 若删除的是勾选行，同步清理选中态
+  if (selectedAssets.value.some(r => r.id === row.id)) clearSelection();
   // 必须触发自动保存：周期保存的门槛 hasUnsavedChanges 只在 debounceAutoSave 中置位，
   // 此前删除后不调用它，导致删除不手动保存就会被静默丢弃（切分类/翻页后"复活"）
   debounceAutoSave();
+}
+
+// 批量删除（当前勾选的资产）
+async function handleBatchDelete() {
+  const rows = selectedAssets.value.slice();
+  if (rows.length === 0) return;
+  let confirmed = false;
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除选中的 ${rows.length} 个资产吗？删除后需保存才会生效。`,
+      '批量删除',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+    );
+    confirmed = true;
+  } catch {
+    return;
+  }
+  if (!confirmed) return;
+  const count = deleteRows(rows);
+  clearSelection();
+  debounceAutoSave();
+  ElMessage.success(`已标记删除 ${count} 个资产，正在保存`);
 }
 
 // 导出全部
@@ -1453,14 +1654,16 @@ async function handleImport() {
   }
   
   const projectId = route.params.id as string;
-  const importRes = await window.api.asset.importExcel(projectId, res.data);
+  // 明确告诉后端当前页面选中的分类：单 sheet 导入时按此落库，
+  // 不再靠 sheet 名/文件名猜测（否则「业务应用系统」会因路径含「平台」串到系统管理平台）
+  const importRes = await window.api.asset.importExcel(projectId, res.data, currentCategory.value);
   
   if (importRes.success && importRes.data) {
-    const { count, results } = importRes.data;
+    const { count, results, skipped } = importRes.data;
     const detail = results && results.length > 1
       ? `共 ${count} 条资产（${(results || []).map((r: { sheet: string; count: number }) => `${r.sheet}: ${r.count}条`).join('，')}）`
       : `成功导入 ${count} 条资产`;
-    ElMessage.success(detail);
+    ElMessage.success(skipped ? `${detail}；${skipped} 行因名称为空被跳过` : detail);
     loadAssets();
   } else {
     ElMessage.error(importRes.error?.message || '导入失败');
@@ -2152,6 +2355,18 @@ onUnmounted(() => {
   }
 }
 
+// 批量删除：选中资产后出现的危险操作按钮
+.toolbar-btn.danger {
+  color: var(--el-color-danger, #dc2626);
+  border-color: rgba(220, 38, 38, 0.35);
+
+  &:hover:not(:disabled) {
+    color: var(--el-color-danger, #dc2626);
+    border-color: var(--el-color-danger, #dc2626);
+    background: rgba(220, 38, 38, 0.08);
+  }
+}
+
 .ai-tip {
   font-size: 13px;
   color: var(--color-text-tertiary);
@@ -2339,6 +2554,99 @@ onUnmounted(() => {
   justify-content: flex-end;
   margin-top: 12px;
 }
+
+/* AI 资产识别进度 */
+.ai-identify-progress {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--color-bg-base);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--radius-md, 6px);
+
+  .ai-identify-progress-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+
+    .ai-identify-progress-msg {
+      font-size: 12px;
+      color: var(--color-text-secondary, #6B7280);
+    }
+    .ai-identify-progress-pct {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--color-primary, #1B5FD9);
+    }
+  }
+  .ai-identify-progress-bar {
+    height: 8px;
+    background: var(--el-fill-color-light);
+    border-radius: 999px;
+    overflow: hidden;
+    &.is-done .ai-identify-progress-fill { background: linear-gradient(90deg, #16a34a 0%, #22c55e 100%); }
+    &.is-error .ai-identify-progress-fill { background: linear-gradient(90deg, #dc2626 0%, #ef4444 100%); }
+  }
+  .ai-identify-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #1B5FD9 0%, #3B82F6 100%);
+    border-radius: 999px;
+    transition: width 0.25s ease;
+  }
+  // 批次概览
+  .ai-identify-meta {
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+    .ai-identify-meta-item { display: inline-flex; align-items: center; gap: 6px; }
+    .ai-identify-meta-label { font-size: 11px; color: var(--color-text-secondary, #9CA3AF); }
+    .ai-identify-meta-value { font-size: 12px; font-weight: 700; color: var(--color-primary, #1B5FD9); }
+  }
+  // 逐批清单
+  .ai-identify-batch-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 6px;
+    margin-top: 8px;
+    max-height: 160px;
+    overflow-y: auto;
+  }
+  .ai-identify-batch-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 5px;
+    font-size: 12px;
+    min-width: 0;
+    &.done {
+      color: #16a34a;
+      background: rgba(22, 163, 74, 0.06);
+      border-color: rgba(22, 163, 74, 0.25);
+    }
+    &.processing {
+      color: var(--color-primary, #1B5FD9);
+      background: rgba(27, 95, 217, 0.06);
+      border-color: rgba(27, 95, 217, 0.35);
+    }
+    &.pending { color: var(--color-text-secondary, #9CA3AF); opacity: 0.65; }
+    .ai-identify-batch-status { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 14px; }
+    .ai-identify-batch-name { flex-shrink: 0; font-weight: 600; }
+    .ai-identify-batch-label {
+      flex: 1;
+      min-width: 0;
+      color: inherit;
+      opacity: 0.85;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+  .ai-identify-spin { animation: ai-identify-spin 1s linear infinite; }
+}
+
+@keyframes ai-identify-spin { to { transform: rotate(360deg); } }
 
 .ai-missing-body {
   min-height: 120px;

@@ -1266,6 +1266,12 @@ export function registerStandardHandlers(): void {
         }
 
         // 级联删除 records / issues / items
+        // 重大隐患判定无外键：删 issues 前先按 issueId 清理，避免留下不可见孤儿
+        const issueIds = tx.select({ id: schema.issues.id }).from(schema.issues)
+          .where(inArray(schema.issues.itemId, itemIds)).all().map((r: any) => r.id as string);
+        if (issueIds.length) {
+          tx.delete(schema.majorRiskAnalysis).where(inArray(schema.majorRiskAnalysis.issueId, issueIds)).run();
+        }
         tx.delete(schema.assessmentRecords).where(inArray(schema.assessmentRecords.itemId, itemIds)).run();
         tx.delete(schema.issues).where(inArray(schema.issues.itemId, itemIds)).run();
         tx.delete(schema.assessmentItems).where(eq(schema.assessmentItems.standardId, standardId)).run();

@@ -19,8 +19,12 @@ interface TableRow {
 
 export interface TableCellSelectionOptions {
   tableRows: Ref<TableRow[]>
-  hasUnsavedChanges: Ref<boolean>
-  saveStatus: Ref<string>
+  /**
+   * 标脏：清空单元格 / 批量设置符合性都是直接改写内存行对象，
+   * 必须先标脏，runSave 的 hasDirty 判定才成立，否则一次 IPC 都不会发。
+   */
+  markDirty: (row: TableRow) => void
+  /** 立即触发保存（autoSave.runSave） */
   triggerSave: () => void
   /** 清空成功后的回调（替代直接在工具函数内调用 ElMessage） */
   onClearSuccess?: (count: number) => void
@@ -50,7 +54,7 @@ function cellKey(rowIndex: number, field: string): string {
 }
 
 export function createTableCellSelection(options: TableCellSelectionOptions): TableCellSelectionInstance {
-  const { tableRows, hasUnsavedChanges, saveStatus, triggerSave } = options
+  const { tableRows, markDirty, triggerSave } = options
 
   const selectedCells = ref<Set<string>>(new Set())
   const selectionAnchor = ref<SelectionAnchor | null>(null)
@@ -123,17 +127,23 @@ export function createTableCellSelection(options: TableCellSelectionOptions): Ta
       'evidence': (row: TableRow) => { row.evidence = '' },
     }
 
+    const touched = new Set<TableRow>()
     for (const key of selectedCells.value) {
       const [rowIdxStr, field] = key.split(':')
       const rowIdx = parseInt(rowIdxStr)
-      if (rowIdx >= 0 && rowIdx < tableRows.value.length && fields[field]) {
-        fields[field](tableRows.value[rowIdx])
-      }
+      const row = tableRows.value[rowIdx]
+      if (!row || !fields[field]) continue
+      const before = String(row[field] ?? '')
+      fields[field](row)
+      // 值没变就不标脏，避免空跑一次保存
+      if (String(row[field] ?? '') !== before) touched.add(row)
     }
 
-    hasUnsavedChanges.value = true
-    saveStatus.value = 'unsaved'
-    triggerSave()
+    // 关键：先标脏再触发保存。此前只改内存，还试图给只读的 hasUnsavedChanges
+    // 赋值（无效），dirtyMap 始终为空 → runSave 直接 return false，
+    // 一次 IPC 都不发：界面显示「未保存」，手动保存却又提示「没有需要保存的修改」。
+    for (const row of touched) markDirty(row)
+    if (touched.size > 0) triggerSave()
 
     const count = selectedCells.value.size
     selectedCells.value.clear()
@@ -191,17 +201,20 @@ export function createTableCellSelection(options: TableCellSelectionOptions): Ta
     const complianceCells = Array.from(selectedCells.value).filter(key => key.endsWith(':compliance'))
     if (complianceCells.length === 0) return
 
+    const touched = new Set<TableRow>()
     for (const key of complianceCells) {
       const [rowIdxStr] = key.split(':')
       const rowIdx = parseInt(rowIdxStr)
-      if (rowIdx >= 0 && rowIdx < tableRows.value.length) {
-        tableRows.value[rowIdx].compliance = value
-      }
+      const row = tableRows.value[rowIdx]
+      if (!row) continue
+      const before = String(row.compliance ?? '')
+      row.compliance = value
+      if (String(row.compliance ?? '') !== before) touched.add(row)
     }
 
-    hasUnsavedChanges.value = true
-    saveStatus.value = 'unsaved'
-    triggerSave()
+    // 同 clearSelectedCells：先标脏再保存，否则改动只停留在内存
+    for (const row of touched) markDirty(row)
+    if (touched.size > 0) triggerSave()
     options.onBatchComplianceSuccess?.(complianceCells.length)
   }
 

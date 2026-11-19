@@ -182,6 +182,8 @@ function formatTime(iso: string): string {
 }
 
 function close() {
+  // 导入进行中不允许关闭：后台仍在写库，关闭会让用户误以为已取消
+  if (props.busy) return;
   emit('update:visible', false);
 }
 

@@ -84,3 +84,17 @@ export function effectiveTimeout(
   if (!coolingDown) return baseMs;
   return Math.min(baseMs, probeMs);
 }
+
+/**
+ * 是否为「模型配置/鉴权/限流」类错误：这类错误不该让模型进入 5 分钟降权，
+ * 否则用户修好 Key 后仍被冷处理、或限流秒级恢复后仍被 15s 探活冷处理。
+ * 仅超时（408）、5xx、连接类错误算模型故障。
+ *
+ * 429（速率限制）明确不降权：它是秒级恢复的临时状态。
+ */
+export function isModelConfigError(message: string): boolean {
+  const httpStatus = Number(/API请求失败\((\d{3})\)/.exec(message)?.[1] || 0);
+  if (httpStatus === 429) return true;
+  if (httpStatus >= 400 && httpStatus < 500 && httpStatus !== 408) return true;
+  return /API 地址无效|API地址无效|AI未配置|API Key未配置|API地址|API Key|鉴权|authentication|速率限制|rate limit/i.test(message);
+}

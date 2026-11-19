@@ -316,6 +316,42 @@ export const aiPrompts = sqliteTable('ai_prompts', {
   updatedAt: text('updated_at'),
 });
 
+/**
+ * 测评点知识库：从等保测评作业指导书（赛飞 V2.0）导入的「测评项 → 测评点」结构化数据。
+ *
+ * 语义键（semanticKey）而不是 itemId 关联：itemId 是内容 hash，换标准/重导入就变；
+ * 语义键 = 安全域 + 控制点 + 要求文本归一化（标准无关），跨二/三级、换标准都能复用。
+ * deviceKey 区分同一条款在不同设备上的不同核查方法（Linux 查 /etc/login.defs，网络设备查设备配置）。
+ *
+ * checkpoints 为 JSON 数组：['1) 应核查...', '2) 应核查...']，由指导书「测评方法/测评要求」列按编号拆分。
+ * interpretation 为「要求解读」列（扩展要求表），是条款含义解释，对 AI 理解极有价值。
+ * resultTemplate 为「预期结果/结果记录/现场记录」列，是逐点填空模板。
+ */
+export const assessmentCheckpoints = sqliteTable('assessment_checkpoints', {
+  id: text('id').primaryKey(),
+  semanticKey: text('semantic_key').notNull(),
+  deviceKey: text('device_key').notNull().default(''),
+  domain: text('domain'),
+  controlPoint: text('control_point'),
+  requirement: text('requirement').notNull(),
+  /** JSON: string[] 逐条测评点 */
+  checkpoints: text('checkpoints').notNull().default('[]'),
+  /** 要求解读（扩展要求表） */
+  interpretation: text('interpretation'),
+  /** 预期结果/结果记录模板 */
+  resultTemplate: text('result_template'),
+  /** 标准条款号（14列模板的 TestItemNumber） */
+  catalogNo: text('catalog_no'),
+  /** 来源文件/sheet */
+  source: text('source'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => ({
+  semanticDeviceUnique: uniqueIndex('assessment_checkpoints_semantic_device_unique').on(table.semanticKey, table.deviceKey),
+  semanticIdx: index('assessment_checkpoints_semantic_idx').on(table.semanticKey),
+  controlPointIdx: index('assessment_checkpoints_control_point_idx').on(table.controlPoint),
+}));
+
 export const systemSettings = sqliteTable('system_settings', {
   id: text('id').primaryKey().default('default'),
   dbVersion: integer('db_version').notNull().default(1),
@@ -527,5 +563,38 @@ export const majorRiskAnalysis = sqliteTable('major_risk_analysis', {
 }, (table) => ({
   projectIdx: index('major_risk_analysis_project_idx').on(table.projectId),
   issueUnique: uniqueIndex('major_risk_analysis_issue_unique').on(table.issueId),
+}));
+
+/**
+ * AI 智能助手会话与消息持久化。
+ *
+ * 会话按项目可选关联（project_id 为 null 表示通用会话），标题可自动生成/手工重命名。
+ * 消息正文原文落库：用户已确认「隐私模式开启时仍保存对话正文」，与脱敏发送是两件事——
+ * 发送可对模型脱敏，本地存储保留完整上下文，否则历史对话无法继续追问。
+ * 附件以 {name, path, type, size} JSON 存相对路径（由 attachment:save 落到受管目录），不存 base64。
+ */
+export const aiConversations = sqliteTable('ai_conversations', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  projectId: text('project_id'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => ({
+  updatedIdx: index('ai_conversations_updated_idx').on(table.updatedAt),
+  projectIdx: index('ai_conversations_project_idx').on(table.projectId),
+}));
+
+export const aiMessages = sqliteTable('ai_messages', {
+  id: text('id').primaryKey(),
+  conversationId: text('conversation_id').notNull(),
+  role: text('role').notNull(),
+  content: text('content').notNull(),
+  /** JSON: string[]，AI 的建议追问气泡 */
+  suggestions: text('suggestions'),
+  /** JSON: Array<{name,path,type,size}>，附件相对路径 */
+  attachments: text('attachments'),
+  createdAt: text('created_at').notNull(),
+}, (table) => ({
+  conversationIdx: index('ai_messages_conversation_idx').on(table.conversationId, table.createdAt),
 }));
 

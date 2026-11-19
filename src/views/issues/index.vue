@@ -374,7 +374,7 @@
       </el-form>
       <template #footer>
         <el-button @click="batchStatusVisible = false">取消</el-button>
-        <el-button type="primary" @click="confirmBatchStatus">确认修改</el-button>
+        <el-button type="primary" :loading="batchOperating" :disabled="batchOperating" @click="confirmBatchStatus">确认修改</el-button>
       </template>
     </el-dialog>
 
@@ -495,6 +495,7 @@ const formData = reactive<Partial<Issue>>({
 });
 
 const batchStatusVisible = ref(false);
+const batchOperating = ref(false); // 批量确认防重：接口耗时时禁止重复点击
 const batchNewStatus = ref('');
 
 // 改造：问题页安全域动态化（按项目标准加载；fallback 为国标十域）
@@ -603,10 +604,13 @@ function getRiskTagType(level: string) {
   return map[level] || 'info';
 }
 
+let summaryRequestToken = 0; // 统计刷新竞态：过期响应不覆盖新值
 async function loadSummary() {
   if (!window.api) return;
+  const token = ++summaryRequestToken;
   try {
     const res = await window.api.issue.getSummary(projectId.value);
+    if (token !== summaryRequestToken) return;
     if (res.success && res.data) {
       summary.value = res.data;
     }
@@ -742,10 +746,12 @@ function handleBatchStatus() {
 }
 
 async function confirmBatchStatus() {
+  if (batchOperating.value) return;
   if (!batchNewStatus.value) {
     ElMessage.warning('请选择状态');
     return;
   }
+  batchOperating.value = true;
   try {
     const ids = selectedRows.value.map(r => r.id);
     const res = await window.api.issue.batchUpdateStatus(ids, batchNewStatus.value, undefined);
@@ -760,6 +766,8 @@ async function confirmBatchStatus() {
     }
   } catch (error: any) {
     ElMessage.error(error?.message || '批量更新失败');
+  } finally {
+    batchOperating.value = false;
   }
 }
 
@@ -802,7 +810,8 @@ function handleAiBatchCommand(command: string) {
     return;
   }
 
-  const scopeText = selectedRows.value.length > 0 ? `选中的 ${selectedRows.value.length} 个` : '全部';
+  // 未选中时 targetIssues 只含当前分页，不能说"全部"，否则用户以为整项目都处理了
+  const scopeText = selectedRows.value.length > 0 ? `选中的 ${selectedRows.value.length} 个` : '当前页全部';
 
   // 批量操作耗时较长，先把范围显式告知用户，避免"点错范围却已经跑了一半"
   ElMessage.info(`开始分析${scopeText}问题（共 ${targetIssues.length} 个）`);

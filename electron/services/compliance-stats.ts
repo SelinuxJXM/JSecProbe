@@ -1,7 +1,7 @@
 // 合规差距统计公共模块
 // 统一 standard.ipc.ts（纯统计通道）与 ai.ipc.ts（AI 分析）两处的统计口径，
 // 避免双份实现漂移，并统一域名解析（domains_meta → DOMAIN_NAMES → 原值）。
-import { eq, and, inArray, lte, gte, or } from 'drizzle-orm';
+import { eq, and, inArray, lte, gte } from 'drizzle-orm';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
 
@@ -90,7 +90,11 @@ export async function computeComplianceStats(projectId: string, standardId: stri
   // 等级：用 ?? 兜底（避免 level=0 被 || 误判为 3）
   const rawLevel = Number(project.level);
   const level = Number.isFinite(rawLevel) && rawLevel > 0 ? rawLevel : 3;
-  const extType = String(project.extensionType || '').trim() || 'general';
+  // extensionType 是逗号分隔多值（如 "cloud,mobile"），不能用 eq 当单值匹配，
+  // 否则多扩展项目只统计通用要求项，扩展项全被漏掉。
+  const extCodes = String(project.extensionType || '')
+    .split(',').map(t => t.trim()).filter(Boolean);
+  const effectiveExtTypes = [...new Set(['general', ...extCodes])];
 
   // 适用条目
   const items = await db
@@ -106,7 +110,7 @@ export async function computeComplianceStats(projectId: string, standardId: stri
       eq(schema.assessmentItems.standardId, standardId),
       lte(schema.assessmentItems.minLevel, level),
       gte(schema.assessmentItems.maxLevel, level),
-      or(eq(schema.assessmentItems.extensionType, 'general'), eq(schema.assessmentItems.extensionType, extType)),
+      inArray(schema.assessmentItems.extensionType, effectiveExtTypes),
     ));
 
   // 域名解析（优先 domains_meta，fallback DOMAIN_NAMES，最后原值展示）

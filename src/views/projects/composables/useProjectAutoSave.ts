@@ -87,11 +87,17 @@ export function useProjectAutoSave(options: ProjectAutoSaveOptions) {
     let needsReload = false;
     let failed = 0;
     try {
+      // 删除失败的 id 必须留在队列里由周期保存/切页 flush 重试，
+      // 无条件清空会让用户以为删成功、刷新后却"复活"，且永不重试
+      const deleteSucceeded = new Set<string>();
       for (const id of deletedIds.value) {
         const res = await window.api.project.remove(id);
-        if (!res.success) failed++;
+        if (res.success) deleteSucceeded.add(id);
+        else failed++;
       }
-      deletedIds.value = [];
+      if (deleteSucceeded.size) {
+        deletedIds.value = deletedIds.value.filter(id => !deleteSucceeded.has(id));
+      }
 
       for (const row of projectList.value) {
         const key = String(row.id);

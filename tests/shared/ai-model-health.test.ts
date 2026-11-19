@@ -12,6 +12,7 @@ import {
   MODEL_PROBE_TIMEOUT_MS,
   ModelHealthTracker,
   effectiveTimeout,
+  isModelConfigError,
   orderByHealth,
 } from '../../shared/ai-model-health';
 
@@ -134,5 +135,28 @@ describe('故障转移接线反漂移', () => {
   it('两套执行器的超时都走 effectiveTimeout，没有绕过降权', () => {
     expect(main).toContain('effectiveTimeout(AI_FETCH_TIMEOUT_MS, coolingDown)');
     expect(main).toContain('effectiveTimeout(timeoutMs || 30000, coolingDown)');
+  });
+});
+
+describe('isModelConfigError：429 限流不该让模型降权', () => {
+  it('429 速率限制判定为配置类错误（不降权）', () => {
+    expect(isModelConfigError('API请求失败(429): 您已达到免费用户的 API 速率限制')).toBe(true);
+  });
+
+  it('其它 4xx 鉴权/配置错误不降权', () => {
+    expect(isModelConfigError('API请求失败(401): 无效的令牌')).toBe(true);
+    expect(isModelConfigError('API请求失败(403): Forbidden')).toBe(true);
+    expect(isModelConfigError('API Key未配置')).toBe(true);
+  });
+
+  it('408 超时与 5xx 仍算模型故障（会降权）', () => {
+    expect(isModelConfigError('API请求失败(408): timeout')).toBe(false);
+    expect(isModelConfigError('API请求失败(500): Internal Server Error')).toBe(false);
+    expect(isModelConfigError('API请求失败(503): unavailable')).toBe(false);
+  });
+
+  it('限流文案（无状态码）也识别为配置类', () => {
+    expect(isModelConfigError('rate limit exceeded')).toBe(true);
+    expect(isModelConfigError('请求过于频繁，请稍后再试 速率限制')).toBe(true);
   });
 });

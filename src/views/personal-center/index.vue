@@ -165,6 +165,10 @@ async function handleSubmit() {
       ElMessage.error(res.error?.message || '修改密码失败');
       return;
     }
+    // 先把新密码存到局部变量：改密成功后服务端作废全部会话，需要用它重新登录；
+    // 若先清空表单再 login，传的是空串，重登必然失败。
+    const newPassword = form.newPassword;
+    const username = userStore.user?.username || '';
     ElMessage.success('密码修改成功');
     form.oldPassword = '';
     form.newPassword = '';
@@ -172,11 +176,8 @@ async function handleSubmit() {
 
     // P3-9：改密成功后服务端会作废该用户的全部会话（见 auth.service.changePassword），
     // 若不重新登录，此后任何业务 IPC 都会报"会话无效或已过期"。
-    // change-password 页面会重新 login 并刷新 userStore，此处此前只清表单不刷新，
-    // 两处行为不一致 —— 在这里补齐同样的处理。
-    const username = userStore.user?.username || '';
     if (username) {
-      const loginRes = await window.api.auth.login(username, form.newPassword);
+      const loginRes = await window.api.auth.login(username, newPassword);
       if (loginRes.success && loginRes.data?.success && loginRes.data.user) {
         userStore.setUser({ user: loginRes.data.user, token: loginRes.data.token });
       } else {

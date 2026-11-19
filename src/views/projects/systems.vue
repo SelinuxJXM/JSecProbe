@@ -687,6 +687,16 @@ function addEmptyRow() {
 }
 
 async function loadProjects() {
+  // 列表会被整体重建并 markClean：任何调用点都必须先落盘，否则防抖窗口内的编辑丢失。
+  // 放在函数内部统一保护，避免搜索/删除/归档等入口漏调 reloadProjects。
+  if (autoSave.hasUnsavedChanges.value) {
+    const ok = await autoSave.saveAllChanges();
+    // 落盘失败就中止重载：否则列表重建 + markClean 会把未保存的编辑彻底抹掉
+    if (!ok) {
+      ElMessage.error('有内容保存失败，已保留未保存改动，请重试后再刷新列表');
+      return;
+    }
+  }
   loading.value = true;
   try {
     if (!window.api) return;
@@ -770,15 +780,22 @@ async function handleDelete(row: any) {
   // 之前点完"删除"行就消失了，但真正落库要等防抖或手动保存，
   // 用户此刻离开页面删除从未发生，回来项目还在。
   const snapshot = projectList.value;
+  // 保存该行的编辑标记快照：删除失败时要一起还原，
+  // 否则"改了一半未落库"的行删失败后改动会静默蒸发
+  const rowKey = String(row.id);
+  const wasEditing = editRowIds.value.includes(rowKey);
+  const wasDirty = editedRows.value.includes(rowKey);
   projectList.value = projectList.value.filter(r => r.id !== row.id);
-  editRowIds.value = editRowIds.value.filter(x => x !== String(row.id));
-  editedRows.value = editedRows.value.filter(x => x !== String(row.id));
-  const res = await window.api.project.remove(String(row.id));
+  editRowIds.value = editRowIds.value.filter(x => x !== rowKey);
+  editedRows.value = editedRows.value.filter(x => x !== rowKey);
+  const res = await window.api.project.remove(rowKey);
   if (res.success) {
     ElMessage.success('系统已删除');
     await loadProjects();
   } else {
     projectList.value = snapshot;
+    if (wasEditing && !editRowIds.value.includes(rowKey)) editRowIds.value.push(rowKey);
+    if (wasDirty && !editedRows.value.includes(rowKey)) editedRows.value.push(rowKey);
     ElMessage.error(res.error?.message || '删除失败，请重试');
   }
 }
