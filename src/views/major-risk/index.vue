@@ -313,7 +313,7 @@ async function handleBatchAnalyze(): Promise<void> {
   if (!targets.length) { ElMessage.warning('没有可识别的问题'); return; }
   try {
     await ElMessageBox.confirm(
-      `将对当前筛选出的 ${targets.length} 条问题逐条进行 AI 三要素识别，结果会先保存为 AI 草稿，之后仍需人工复核。是否继续？`,
+      `将对当前筛选出的 ${targets.length} 条问题分批进行 AI 三要素识别（每批最多5条），结果会先保存为 AI 草稿，之后仍需人工复核。是否继续？`,
       '批量AI识别',
       { confirmButtonText: '开始', cancelButtonText: '取消', type: 'info' }
     );

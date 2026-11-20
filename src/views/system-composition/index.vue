@@ -33,8 +33,16 @@
       </div>
     </div>
 
-    <!-- 资产分类导航栏（带图标） -->
+    <!-- 资产分类导航栏（带图标）：系统拓扑图作为首个页签，与管理机房等资产分类平级切换 -->
     <div class="category-nav-bar" data-guide="asset-category">
+      <div
+        class="category-tab topology-tab"
+        :class="{ active: isTopologyView }"
+        @click="switchToTopology"
+      >
+        <svg class="cat-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="5" rx="1"/><rect x="2" y="16" width="20" height="5" rx="1"/><line x1="12" y1="8" x2="12" y2="16"/></svg>
+        <span>系统拓扑图</span>
+      </div>
       <div
         v-for="cat in categories"
         :key="cat.id"
@@ -47,6 +55,8 @@
       </div>
     </div>
 
+    <!-- ============ 资产视图（非拓扑页签时显示） ============ -->
+    <template v-if="!isTopologyView">
     <!-- 首访提示：只在该页面首次进入时出现，关闭后不再打扰 -->
     <PageHint
       hint-key="system-composition"
@@ -297,6 +307,125 @@
         </div>
       </div>
     </div>
+    </template><!-- /资产视图 -->
+
+    <!-- ============ 系统拓扑图视图（首个页签，独立专属界面） ============ -->
+    <template v-if="isTopologyView">
+      <div class="topology-view">
+        <!-- 顶部说明与操作 -->
+        <div class="topology-view-head">
+          <div class="topology-view-desc">
+            <div class="topology-view-title">系统拓扑图与分区分域</div>
+            <div class="topology-view-sub">上传系统网络拓扑图，AI 按等级保护分区分域生成多段文字描述。描述与图片会写入测评报告「系统构成」章节。</div>
+          </div>
+          <div class="topology-view-actions">
+            <input
+              ref="topologyInput"
+              type="file"
+              accept=".jpg,.jpeg,.png,.gif,.bmp,.webp"
+              multiple
+              style="display:none"
+              @change="handleTopologyUpload"
+            />
+            <button class="toolbar-btn" :disabled="topologyUploading || topologyAttachments.length >= 20" @click="topologyInput?.click()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              {{ topologyUploading ? '上传中…' : '上传拓扑图' }}
+            </button>
+            <button class="toolbar-btn ai-btn" :disabled="topologyAnalyzing || topologyAttachments.length === 0" @click="analyzeTopology">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2m0 12v-2m4.77-7.77l-1.42 1.42M5.65 5.65L4.24 4.24m12.02 12.02l1.41 1.41M4.24 19.76l1.42-1.42M12 12l3-3"/><path d="M9.76 14.24a4 4 0 1 0 4.48-4.48"/></svg>
+              {{ topologyAnalyzing ? '识别中…' : 'AI 识别分区分域' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 识别进度：阶段步骤条 + 进度条 -->
+        <div v-if="topologyProgress.visible" class="topology-progress">
+          <div class="topology-progress-head">
+            <span class="topology-progress-msg">{{ topologyProgress.message || '处理中…' }}</span>
+            <span class="topology-progress-pct">{{ topologyProgress.percent }}%</span>
+          </div>
+          <div
+            class="topology-progress-bar"
+            :class="{
+              'is-error': topologyProgress.stage === 'error',
+              'is-done': topologyProgress.stage === 'done',
+            }"
+          >
+            <div class="topology-progress-fill" :style="{ width: topologyProgress.percent + '%' }"></div>
+          </div>
+          <!-- 阶段步骤条：done=已完成 / processing=进行中 / pending=待处理 -->
+          <div class="topology-stage-list">
+            <div
+              v-for="(s, i) in TOPOLOGY_STAGES"
+              :key="s.key"
+              class="topology-stage-item"
+              :class="{
+                done: topologyProgress.stage === 'done' || (topologyStageIndex >= 0 && i < topologyStageIndex),
+                processing: topologyProgress.stage !== 'done' && topologyProgress.stage !== 'error' && i === topologyStageIndex,
+                pending: topologyProgress.stage !== 'done' && (topologyProgress.stage === 'error' || i > topologyStageIndex),
+              }"
+            >
+              <span class="topology-stage-node">
+                <svg v-if="topologyProgress.stage === 'done' || (topologyStageIndex >= 0 && i < topologyStageIndex)" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                <svg v-else-if="i === topologyStageIndex && topologyProgress.stage !== 'error'" class="topology-stage-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>
+                <span v-else class="topology-stage-dot"></span>
+              </span>
+              <span class="topology-stage-label">{{ s.label }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 主体两栏：左拓扑图，右分区分域描述 -->
+        <div class="topology-view-body">
+          <div class="topology-panel">
+            <div class="topology-panel-title">拓扑图（{{ topologyAttachments.length }} 张）</div>
+            <div v-if="topologyAttachments.length > 0" class="topology-thumbs">
+              <div v-for="(att, idx) in topologyAttachments" :key="att.path + idx" class="topology-thumb">
+                <div class="topology-thumb-img" :class="{ 'has-pic': !!topologyThumbUrls[att.path] }" @click="previewTopology(att)" :title="'点击预览：' + att.name">
+                  <img v-if="topologyThumbUrls[att.path]" class="topology-thumb-pic" :src="topologyThumbUrls[att.path]" :alt="att.name" />
+                  <el-icon v-else :size="30"><Picture /></el-icon>
+                  <span class="topology-thumb-name">{{ att.name }}</span>
+                  <span class="topology-thumb-size">{{ formatAttachmentSize(att.size) }}</span>
+                </div>
+                <div class="topology-thumb-ops">
+                  <button class="topo-op" title="预览大图" @click="previewTopology(att)">预览</button>
+                  <button class="topo-op" title="下载" @click="downloadTopology(att)">下载</button>
+                  <button class="topo-op danger" title="删除" @click="removeTopologyAttachment(idx)">删除</button>
+                </div>
+              </div>
+            </div>
+            <div v-else class="topology-empty">
+              <el-icon :size="36"><Picture /></el-icon>
+              <p>尚未上传拓扑图</p>
+              <p class="topology-empty-hint">支持 JPG / PNG 等格式，可一次选择多张（最多 20 张）</p>
+            </div>
+          </div>
+
+          <div class="topology-panel">
+            <div class="topology-panel-title">
+              拓扑图描述<span v-if="topologyDomains.length > 0" class="topology-domain-count">（{{ topologyDomains.length }} 个安全域）</span>
+              <button v-if="topologyDocText" class="toolbar-btn" :disabled="topologySaving" @click="saveTopologyDescription">
+                {{ topologySaving ? '保存中…' : '保存描述' }}
+              </button>
+            </div>
+            <el-input
+              v-model="topologyDocText"
+              type="textarea"
+              class="topology-doc-editor"
+              :autosize="false"
+              resize="none"
+              placeholder="上传拓扑图后点击「AI 识别分区分域」生成描述，也可在此直接编辑。&#10;格式：首段为总述，之后每个区域以独占一行的『区域名：』开头，正文可换行分条。"
+            />
+            <div v-if="!topologyDocText" class="topology-doc-hint">上传拓扑图后点击「AI 识别分区分域」，AI 将按安全域生成整段描述；也可直接在此输入。</div>
+          </div>
+        </div>
+      </div>
+    </template><!-- /拓扑视图 -->
+
+    <!-- 拓扑图大图预览（视图外，两个视图共用） -->
+    <el-dialog v-model="topologyPreviewVisible" width="80%" :title="topologyPreview?.name || '拓扑图预览'" append-to-body>
+      <img v-if="topologyPreview" :src="topologyPreview.url" style="width:100%;max-height:75vh;object-fit:contain" />
+    </el-dialog>
 
     <!-- 编辑资产对话框（新增入口已移除：资产通过「导入资产 / AI 识别 / 新增一行」产生） -->
     <el-dialog
@@ -580,6 +709,7 @@ import {
 } from '@element-plus/icons-vue';
 import type { Asset, AssetCategory, AssetListResult } from '@shared/types';
 import { ASSET_CATEGORIES } from '@shared/asset-categories';
+import { parseTopologyDomainsText, serializeTopologyDoc } from '@shared/topology-domain-text';
 import { useAssetAutoSave } from './composables/useAssetAutoSave';
 import { normalizeIdentifiedAsset } from './utils/asset-field-normalize';
 import PageHint from '@/components/PageHint/index.vue';
@@ -609,6 +739,13 @@ const categories = ref<AssetCategory[]>([]);
 const showAddDialog = ref(false);
 const editingAsset = ref<Asset | null>(null);
 const currentCategory = ref('machine_room');
+/** 拓扑图为分类导航的首个页签，值与真实资产分类 id 不冲突 */
+const TOPOLOGY_VIEW_KEY = '__topology__';
+const isTopologyView = computed(() => currentCategory.value === TOPOLOGY_VIEW_KEY);
+function switchToTopology() {
+  currentCategory.value = TOPOLOGY_VIEW_KEY;
+  clearSelection();
+}
 const keyword = ref('');
 
 // 筛选（此前筛选图标是纯装饰，没有任何 @click，也无消费者）
@@ -763,6 +900,34 @@ const aiMissingVisible = ref(false);
 const aiMissingLoading = ref(false);
 const aiMissingResults = ref<Array<{ category: string; categoryName: string; risk: string; suggestion: string }>>([]);
 const selectedIdentifyCount = computed(() => aiIdentifyResults.value.filter(a => a.selected).length);
+
+// ============ 系统拓扑图（系统级，独立于资产） ============
+interface TopologyAttachment { name: string; path: string; size: number }
+const topologyAttachments = ref<TopologyAttachment[]>([]);
+/** 缩略图 dataURL 缓存（按附件相对路径索引），异步加载，失败则回退图标 */
+const topologyThumbUrls = reactive<Record<string, string>>({});
+/** 整段拓扑描述文本（唯一可编辑数据源）：总述 + 各域「域名：\n正文」，往返无损 */
+const topologyDocText = ref('');
+/** 由整段文本解析出的域数组，仅用于展示「N 个安全域」，不作为编辑源 */
+const topologyDomains = computed(() => parseTopologyDomainsText(topologyDocText.value));
+const topologyUploading = ref(false);
+const topologyAnalyzing = ref(false);
+const topologySaving = ref(false);
+const topologyInput = ref<HTMLInputElement | null>(null);
+const topologyProgress = ref({ visible: false, message: '', percent: 0, stage: '' });
+/** 拓扑识别阶段步骤条（与后端 sendProgress 的 stage 一一对应） */
+const TOPOLOGY_STAGES = [
+  { key: 'init', label: '准备识别' },
+  { key: 'encoding', label: '读取拓扑图' },
+  { key: 'sending', label: '提交 AI 识别' },
+  { key: 'parsing', label: '整理分区分域' },
+  { key: 'done', label: '识别完成' },
+];
+const topologyStageIndex = computed(() => TOPOLOGY_STAGES.findIndex(s => s.key === topologyProgress.value.stage));
+const topologyPreview = ref<{ url: string; name: string } | null>(null);
+let unsubTopologyProgress: (() => void) | null = null;
+
+const topologyPreviewVisible = computed({ get: () => !!topologyPreview.value, set: (v: boolean) => { if (!v) topologyPreview.value = null; } });
 
 // 分类名称映射（统一引用共享资产分类，避免与后端定义漂移）
 const CATEGORY_NAMES: Record<string, string> = Object.fromEntries(
@@ -1049,7 +1214,207 @@ async function loadProject() {
   const res = await window.api.project.get(projectId);
   if (res.success && res.data) {
     project.value = res.data;
+    // 加载系统拓扑图附件与分区分域描述
+    loadTopologyFromProject(res.data);
   }
+}
+
+function loadTopologyFromProject(p: any) {
+  try {
+    const attachments = JSON.parse(p?.topologyAttachments || '[]');
+    topologyAttachments.value = Array.isArray(attachments) ? attachments : [];
+  } catch { topologyAttachments.value = []; }
+  // DB 存的就是整段文本，直接作为编辑源；旧数据（域名正文同行）也能被下游解析
+  topologyDocText.value = String(p?.topologyDescription || '');
+  void loadTopologyThumbs();
+}
+
+/** 上传拓扑图（可多张，复用 attachment:save 受管落盘） */
+async function handleTopologyUpload(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files || []);
+  input.value = '';
+  if (!files.length) return;
+  const room = 20 - topologyAttachments.value.length;
+  if (room <= 0) { ElMessage.warning('拓扑图最多 20 张'); return; }
+  const picked = files.slice(0, room);
+  if (files.length > room) ElMessage.warning(`最多 20 张，已只取前 ${room} 张`);
+  topologyUploading.value = true;
+  // 记录本次落盘的附件，用于保存失败时回滚内存并清理物理文件，避免"提示成功但库里没有"的孤儿数据
+  const startIndex = topologyAttachments.value.length;
+  const added: TopologyAttachment[] = [];
+  let ok = 0;
+  for (const file of picked) {
+    try {
+      const base64Data = await readFileAsBase64(file);
+      const res = await window.api.attachment.save({ name: file.name, base64Data });
+      if (res.success && res.data) {
+        const att: TopologyAttachment = { name: res.data.name, path: res.data.path, size: res.data.size };
+        topologyAttachments.value.push(att);
+        added.push(att);
+        ok++;
+      } else {
+        ElMessage.error(`「${file.name}」保存失败：${res.error?.message || '未知错误'}`);
+      }
+    } catch (e: any) {
+      ElMessage.error(`「${file.name}」读取失败：${e.message || '未知错误'}`);
+    }
+  }
+  topologyUploading.value = false;
+  if (ok > 0) {
+    if (await saveTopology()) {
+      ElMessage.success(`已上传 ${ok} 张拓扑图`);
+      void loadTopologyThumbs();
+    } else {
+      // 落库失败：回滚内存新增项，并清理已落盘的物理文件，避免数据与磁盘双份残留
+      topologyAttachments.value.splice(startIndex, added.length);
+      for (const att of added) {
+        try { await window.api.attachment.delete(att.path); }
+        catch (e: any) { console.warn('[拓扑图] 回滚清理物理文件失败:', att.path, e?.message); }
+      }
+    }
+  }
+}
+
+/** 删除一张拓扑图 */
+async function removeTopologyAttachment(index: number) {
+  const removed = topologyAttachments.value[index];
+  if (!removed) return;
+  topologyAttachments.value.splice(index, 1);
+  if (topologyPreview.value?.name === removed?.name) topologyPreview.value = null;
+  const ok = await saveTopology();
+  if (!ok) {
+    // 保存失败则回滚，避免内存与库不一致
+    topologyAttachments.value.splice(index, 0, removed);
+    return;
+  }
+  // 库保存成功后清理物理文件与缩略图缓存（失败只告警，不影响主流程）
+  delete topologyThumbUrls[removed.path];
+  try {
+    await window.api.attachment.delete(removed.path);
+  } catch (e: any) {
+    console.warn('[拓扑图] 物理文件清理失败:', removed.path, e?.message);
+  }
+}
+
+/** 保存拓扑数据到项目 */
+async function saveTopology() {
+  const projectId = route.params.id as string;
+  if (!projectId) return false;
+  topologySaving.value = true;
+  try {
+    // IPC 走结构化克隆，不能传 Vue 的响应式 Proxy 对象：展开为纯字面量数组
+    const plainAttachments = topologyAttachments.value.map(a => ({ name: a.name, path: a.path, size: a.size }));
+    const res = await window.api.project.updateTopology(projectId, {
+      attachments: plainAttachments,
+      description: topologyDocText.value,
+    });
+    if (!res.success) {
+      ElMessage.error(res.error?.message || '拓扑图保存失败');
+      return false;
+    }
+    return true;
+  } finally {
+    topologySaving.value = false;
+  }
+}
+
+/** 预览拓扑图（复用 screenshot:getBase64 的路径校验与 MIME） */
+/** 异步加载单张缩略图 dataURL（受管路径经 screenshot:getBase64 校验），失败静默回退图标 */
+async function loadTopologyThumb(att: TopologyAttachment) {
+  if (!att?.path || topologyThumbUrls[att.path]) return;
+  try {
+    const res = await window.api.screenshot.getBase64({ filePath: att.path });
+    if (res.success && res.data?.base64) {
+      const mime = res.data.mimeType || 'image/png';
+      topologyThumbUrls[att.path] = `data:${mime};base64,${res.data.base64}`;
+    }
+  } catch { /* 读取失败保持图标占位，不影响主流程 */ }
+}
+
+/** 批量加载所有拓扑图缩略图 */
+async function loadTopologyThumbs() {
+  await Promise.all(topologyAttachments.value.map(a => loadTopologyThumb(a)));
+}
+
+async function previewTopology(att: TopologyAttachment) {
+  try {
+    const res = await window.api.screenshot.getBase64({ filePath: att.path });
+    if (res.success && res.data) {
+      const mime = res.data.mimeType || 'image/png';
+      topologyPreview.value = { url: `data:${mime};base64,${res.data.base64}`, name: att.name };
+    } else {
+      ElMessage.error(res.error?.message || '图片读取失败');
+    }
+  } catch (e: any) {
+    ElMessage.error(`图片读取失败：${e.message || '未知错误'}`);
+  }
+}
+
+/** 下载拓扑图：base64 → blob → 触发浏览器保存 */
+async function downloadTopology(att: TopologyAttachment) {
+  try {
+    const res = await window.api.screenshot.getBase64({ filePath: att.path });
+    if (!res.success || !res.data) { ElMessage.error(res.error?.message || '图片读取失败'); return; }
+    const mime = res.data.mimeType || 'image/png';
+    const bin = atob(res.data.base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = att.name;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e: any) {
+    ElMessage.error(`下载失败：${e.message || '未知错误'}`);
+  }
+}
+
+/** AI 识别分区分域（独立按钮，只生成描述，不碰资产） */
+async function analyzeTopology() {
+  if (topologyAttachments.value.length === 0) { ElMessage.warning('请先上传拓扑图'); return; }
+  topologyAnalyzing.value = true;
+  topologyProgress.value = { visible: true, message: '正在准备识别...', percent: 5, stage: 'init' };
+  if (unsubTopologyProgress) unsubTopologyProgress();
+  unsubTopologyProgress = window.api.ai.onTopologyProgress((data) => {
+    topologyProgress.value = { visible: true, message: data.message, percent: data.percent, stage: data.stage };
+  });
+  try {
+    const projectId = route.params.id as string;
+    const res = await window.api.ai.analyzeTopology({
+      projectId,
+      systemName: project.value?.systemName || project.value?.name,
+      imagePaths: topologyAttachments.value.map(a => a.path),
+    });
+    if (res.success && res.data) {
+      // 用总述 + 各域序列化为整段文本，填入可编辑文本框（往返无损）
+      topologyDocText.value = serializeTopologyDoc({
+        overview: res.data.overview || '',
+        domains: res.data.domains,
+      });
+      const saved = await saveTopology();
+      ElMessage.success(
+        `已识别 ${res.data.domains.length} 个安全域${res.data.partial ? '（部分内容被截断已忽略）' : ''}` +
+        (saved ? '，已自动保存' : '，自动保存失败，请手动点击「保存描述」')
+      );
+    } else {
+      ElMessage.error(res.error?.message || '拓扑图识别失败');
+    }
+  } catch (e: any) {
+    // 鉴权失败等场景下 IPC 会直接 reject，必须捕获并给出友好提示
+    ElMessage.error(e?.message || '拓扑图识别失败');
+  } finally {
+    topologyAnalyzing.value = false;
+    if (unsubTopologyProgress) { unsubTopologyProgress(); unsubTopologyProgress = null; }
+    topologyProgress.value = { ...topologyProgress.value, visible: false };
+  }
+}
+
+/** 描述手工编辑后保存 */
+async function saveTopologyDescription() {
+  if (await saveTopology()) ElMessage.success('拓扑描述已保存');
 }
 
 // 加载资产列表
@@ -1793,6 +2158,11 @@ onUnmounted(() => {
   if (pasteHandler && tableWrapperRef.value) {
     tableWrapperRef.value.removeEventListener('paste', pasteHandler as EventListener);
   }
+  // 拓扑识别进度监听：识别中途离开页面时退订，避免 ipcRenderer 监听器残留
+  if (unsubTopologyProgress) {
+    unsubTopologyProgress();
+    unsubTopologyProgress = null;
+  }
 });
 </script>
 
@@ -1880,27 +2250,29 @@ onUnmounted(() => {
   background: var(--color-bg-card);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
-  padding: 0 20px;
+  padding: 0 12px;
   margin-bottom: 16px;
   display: flex;
   align-items: center;
   overflow-x: auto;
   white-space: nowrap;
 
-  &::-webkit-scrollbar {
-    display: none;
-  }
+  // 兜底：窄屏仍可横向滚动，显示细滚动条让用户知道还有内容
+  &::-webkit-scrollbar { height: 4px; }
+  &::-webkit-scrollbar-thumb { background: var(--el-border-color, #dcdfe6); border-radius: 999px; }
 
   .category-tab {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 10px 14px;
-    font-size: 13px;
+    justify-content: center;
+    gap: 3px;
+    padding: 9px 6px;
+    font-size: 12px;
     color: var(--color-text-secondary);
     border-bottom: 2px solid transparent;
     cursor: pointer;
-    flex-shrink: 0;
+    flex: 0 1 auto;
+    min-width: 0;
     transition: color 0.15s, border-color 0.15s;
 
     &:hover {
@@ -1912,8 +2284,17 @@ onUnmounted(() => {
       border-bottom-color: var(--color-primary);
     }
 
+    // 文字可压缩、超长省略，保证 13 个页签尽量在一屏内显示全
+    > span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
     .cat-icon {
       flex-shrink: 0;
+      width: 14px;
+      height: 14px;
     }
   }
 }
@@ -2556,6 +2937,218 @@ onUnmounted(() => {
 }
 
 /* AI 资产识别进度 */
+/* ============ 系统拓扑图专属视图（首个页签） ============ */
+.category-tab.topology-tab { border-color: rgba(27, 95, 217, 0.35); }
+
+.topology-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+
+  .topology-view-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 16px 18px;
+    background: var(--color-bg-base);
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: var(--radius-md, 8px);
+  }
+  .topology-view-title { font-size: 15px; font-weight: 500; color: var(--color-text-primary, #1f2937); margin-bottom: 6px; }
+  .topology-view-sub { font-size: 12px; color: var(--color-text-secondary, #6b7280); line-height: 1.6; max-width: 620px; }
+  .topology-view-actions { display: flex; gap: 10px; flex-wrap: wrap; flex-shrink: 0; }
+
+  // 拓扑视图专属按钮：不依赖 .table-toolbar 作用域，主次分明、圆润精致
+  .topology-view-actions button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    height: 38px;
+    padding: 0 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.18s ease;
+
+    svg { flex-shrink: 0; }
+
+    // 上传：描边次级按钮
+    &.toolbar-btn:not(.ai-btn) {
+      border: 1px solid var(--color-border-default, #334155);
+      background: var(--color-bg-card, #1E293B);
+      color: var(--color-text-primary, #e2e8f0);
+      &:hover:not(:disabled) {
+        border-color: var(--color-primary);
+        color: var(--color-primary);
+        background: var(--color-primary-light, rgba(59,130,246,0.12));
+        transform: translateY(-1px);
+      }
+    }
+
+    // AI 识别：实心主按钮，紫色渐变背景 + 白字
+    &.ai-btn {
+      border: 1px solid transparent;
+      background: var(--color-ai, #7C3AED);
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(124, 58, 237, 0.25);
+      &:hover:not(:disabled) {
+        background: var(--color-ai-hover, #A78BFA);
+        color: #fff;
+        border-color: transparent;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(124, 58, 237, 0.35);
+      }
+    }
+
+    &:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+  }
+
+  .topology-progress {
+    padding: 12px 16px; background: var(--color-bg-base);
+    border: 1px solid var(--el-border-color-lighter); border-radius: 8px; margin-bottom: 14px;
+  }
+  .topology-progress-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; margin-bottom: 8px; }
+  .topology-progress-msg { color: var(--color-text-primary, #1f2937); font-weight: 500; }
+  .topology-progress-pct { color: var(--color-text-secondary, #6b7280); font-variant-numeric: tabular-nums; }
+  .topology-progress-bar { height: 7px; background: var(--el-fill-color-light); border-radius: 999px; overflow: hidden; }
+  .topology-progress-fill { height: 100%; background: #3B82F6; border-radius: 999px; transition: width 0.3s ease; }
+  .topology-progress-bar { &.is-done .topology-progress-fill { background: #16a34a; } &.is-error .topology-progress-fill { background: #dc2626; } }
+
+  // 阶段步骤条
+  .topology-stage-list { display: flex; margin-top: 14px; }
+  .topology-stage-item {
+    flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 5px;
+    position: relative; text-align: center;
+    // 阶段间连接线
+    &::before {
+      content: ''; position: absolute; top: 11px; left: -50%; width: 100%; height: 2px;
+      background: var(--el-border-color, #dcdfe6); z-index: 0;
+    }
+    &:first-child::before { display: none; }
+    &.done::before, &.processing::before { background: #3B82F6; }
+    .topology-stage-node {
+      position: relative; z-index: 1; width: 24px; height: 24px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+      border: 2px solid var(--el-border-color, #dcdfe6); background: var(--color-bg-base);
+      color: #fff;
+    }
+    .topology-stage-label {
+      position: relative; z-index: 1; font-size: 11px; line-height: 1.3;
+      color: var(--color-text-tertiary, #9CA3AF); padding: 0 2px;
+    }
+    &.done {
+      .topology-stage-node { border-color: #3B82F6; background: #3B82F6; }
+      .topology-stage-label { color: #3B82F6; }
+    }
+    &.processing {
+      .topology-stage-node { border-color: #3B82F6; background: #3B82F6; }
+      .topology-stage-label { color: var(--color-text-primary, #1f2937); font-weight: 500; }
+    }
+    &.pending .topology-stage-node { .topology-stage-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--el-border-color, #dcdfe6); } }
+  }
+  .topology-stage-spin { animation: topo-spin 1s linear infinite; }
+  @keyframes topo-spin { to { transform: rotate(360deg); } }
+
+  // 左右两栏固定齐平：等高 stretched，统一高度，内容各自在框内滚动
+  .topology-view-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: stretch; }
+  @media (max-width: 1100px) { .topology-view-body { grid-template-columns: 1fr; } }
+
+  .topology-panel {
+    display: flex; flex-direction: column;
+    height: clamp(440px, 62vh, 760px);
+    overflow: hidden;
+    padding: 16px 18px;
+    background: var(--color-bg-base);
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: var(--radius-md, 8px);
+  }
+  .topology-panel-title {
+    flex-shrink: 0;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 13px; font-weight: 500; color: var(--color-text-primary, #1f2937);
+    padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--el-border-color-lighter);
+
+    // 保存描述按钮：专属精致样式（不依赖 .table-toolbar 作用域）
+    .toolbar-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 30px; padding: 0 12px; border-radius: 6px;
+      border: 1px solid var(--color-primary, #3B82F6);
+      background: var(--color-primary, #3B82F6);
+      color: #fff; font-size: 12px; font-weight: 500; font-family: inherit;
+      cursor: pointer; transition: all 0.18s ease; white-space: nowrap;
+      &:hover:not(:disabled) { filter: brightness(1.12); transform: translateY(-1px); }
+      &:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    }
+  }
+
+  .topology-thumbs { flex: 1; min-height: 0; overflow-y: auto; align-content: start; display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+  .topology-thumb { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; overflow: hidden; }
+  .topology-thumb-img {
+    height: 130px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    color: var(--el-color-primary, #1B5FD9); background: var(--el-fill-color-light); cursor: pointer; overflow: hidden;
+    font-size: 12px; padding: 8px; text-align: center; word-break: break-all;
+    &:hover { background: var(--el-fill-color); }
+    .topology-thumb-name { max-height: 32px; overflow: hidden; }
+    // 有缩略图时：图片铺满，文件名/大小叠在底部深色带上
+    &.has-pic {
+      position: relative; padding: 0;
+      .topology-thumb-pic { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+      .topology-thumb-name {
+        position: absolute; left: 0; right: 0; bottom: 18px; z-index: 1;
+        padding: 3px 6px; color: #fff; font-size: 12px; line-height: 1.3;
+        background: linear-gradient(transparent, rgba(0,0,0,0.65));
+        white-space: nowrap; text-overflow: ellipsis;
+      }
+      .topology-thumb-size {
+        position: absolute; left: 0; right: 0; bottom: 0; z-index: 1;
+        padding: 0 6px 4px; color: #fff; font-size: 11px; background: rgba(0,0,0,0.55);
+      }
+    }
+  }
+  .topology-thumb-size { font-size: 11px; color: var(--color-text-tertiary, #9CA3AF); }
+  .topology-thumb-ops { display: flex; border-top: 1px solid var(--el-border-color-lighter); }
+  .topo-op {
+    flex: 1; padding: 7px 0; font-size: 12px; border: none; background: transparent; cursor: pointer;
+    color: var(--color-text-secondary, #6b7280);
+    &:hover { color: var(--el-color-primary, #1B5FD9); background: var(--el-fill-color-light); }
+    &.danger:hover { color: var(--el-color-danger, #dc2626); }
+  }
+
+  .topology-empty {
+    flex: 1; min-height: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 6px; color: var(--color-text-tertiary, #9CA3AF); text-align: center;
+    p { margin: 0; font-size: 13px; color: var(--color-text-secondary, #6b7280); }
+    .topology-empty-hint { font-size: 12px; color: var(--color-text-tertiary, #9CA3AF); line-height: 1.6; max-width: 300px; }
+  }
+
+  .topology-domain-count { color: var(--color-text-secondary, #6b7280); font-weight: 400; margin-left: 4px; }
+  .topology-doc-editor {
+    flex: 1; min-height: 0; width: 100%; display: flex;
+    :deep(.el-textarea) { flex: 1; display: flex; }
+    :deep(textarea) {
+      flex: 1; height: 100%; min-height: 0; resize: none;
+      line-height: 1.75; font-size: 13px; font-family: inherit;
+    }
+  }
+  .topology-doc-hint {
+    flex-shrink: 0;
+    margin-top: 10px; font-size: 12px; line-height: 1.6;
+    color: var(--color-text-tertiary, #9CA3AF);
+  }
+}
+
 .ai-identify-progress {
   margin-top: 12px;
   padding: 10px 12px;

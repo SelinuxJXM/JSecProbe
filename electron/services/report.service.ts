@@ -6,6 +6,8 @@ import { eq, asc } from 'drizzle-orm';
 import log from 'electron-log';
 import { decryptSecret } from './credential.util';
 import { ensureApiUrl } from './ai-url';
+import { toAbsolutePath } from '../utils/path-resolver';
+import { parseTopologyDoc } from '../../shared/topology-domain-text';
 
 /**
  * HTML 转义：报告 HTML 由模板字符串手工拼接，项目名/单位名/问题描述等
@@ -111,6 +113,7 @@ import {
   ShadingType,
   VerticalAlign,
   Packer,
+  ImageRun,
 } from 'docx';
 import { getMainWindow } from '../main';
 import { ASSET_CATEGORY_NAMES } from '../utils/excel-config';
@@ -966,6 +969,63 @@ export class ReportService {
     );
     content.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: overviewRows }));
 
+    // 系统拓扑与分区分域：按被测系统插入 AI 识别的多段描述与拓扑图（无数据则跳过）
+    for (let si = 0; si < systems.length; si++) {
+      const s = systems[si];
+      const desc = String(s.project?.topologyDescription || '').trim();
+      let attachments: Array<{ name: string; path: string; size: number }> = [];
+      try { attachments = JSON.parse(s.project?.topologyAttachments || '[]'); } catch { attachments = []; }
+      if (!desc && attachments.length === 0) continue;
+
+      const sysName = s.project?.systemName || s.project?.name || `系统 ${si + 1}`;
+      content.push(createHeadingParagraph({ text: `1.2.${si + 1} ${sysName} 网络拓扑与分区分域`, level: 'heading3' }));
+
+      // 与前端共用同一套解析，确保"存的=看的=报告的"：先总述，再各域（正文按行分条）
+      if (desc) {
+        const topo = parseTopologyDoc(desc);
+        if (topo.overview) content.push(createBodyParagraph({ text: topo.overview, spacingAfter: 120 }));
+        for (const d of topo.domains) {
+          content.push(createBodyParagraph({ text: `${d.name}：`, spacingAfter: 60 }));
+          for (const line of d.description.split('\n').map(l => l.trim()).filter(Boolean)) {
+            content.push(createBodyParagraph({ text: line, spacingAfter: 60 }));
+          }
+        }
+      }
+
+      // 拓扑图插图：受管相对路径 → 绝对路径 → ImageRun；单张宽 15cm
+      for (const att of attachments) {
+        try {
+          const abs = await toAbsolutePath(att.path);
+          if (!fs.existsSync(abs)) { log.warn('[报告] 拓扑图不存在:', abs); continue; }
+          const buf = fs.readFileSync(abs);
+          const ext = path.extname(abs).toLowerCase().replace('.', '');
+          // docx 的 ImageRun 仅接受 svg/png/jpg/gif/bmp：jpeg 归一为 jpg，webp 无法直接嵌入则跳过
+          if (ext === 'webp') {
+            log.warn('[报告] WebP 拓扑图无法直接嵌入 Word，请转存为 PNG/JPG:', att.name);
+            continue;
+          }
+          const type = (['png', 'jpg', 'gif', 'bmp'].includes(ext) ? ext : ext === 'jpeg' ? 'jpg' : 'png') as 'png' | 'jpg' | 'gif' | 'bmp';
+          content.push(new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 120, after: 120 },
+            children: [new ImageRun({
+              type,
+              data: buf,
+              transformation: { width: 560, height: 360 },
+              altText: { title: sysName, description: att.name, name: att.name },
+            })],
+          }));
+          content.push(new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 160 },
+            children: [new TextRun({ text: `图：${sysName} 网络拓扑图（${att.name}）`, size: 20, color: '666666' })],
+          }));
+        } catch (e: any) {
+          log.warn('[报告] 拓扑图插入失败:', att.name, e.message);
+        }
+      }
+    }
+
     content.push(createHeadingParagraph({ text: '1.3 问题分布与综合评价', level: 'heading2' }));
     const riskRows: TableRow[] = [
       this.createHeaderRow('序号', '系统名称', '高风险', '中风险', '低风险', '合计'),
@@ -1253,6 +1313,48 @@ export class ReportService {
         spacingAfter: 200,
       })
     );
+
+    // 网络拓扑与分区分域（单系统报告：frontMatter=true；合册分册在综述 1.2 已统一插入，此处跳过避免重复）
+    if (frontMatter) {
+      const desc = String(project?.topologyDescription || '').trim();
+      let attachments: Array<{ name: string; path: string; size: number }> = [];
+      try { attachments = JSON.parse(project?.topologyAttachments || '[]'); } catch { attachments = []; }
+      if (desc || attachments.length > 0) {
+        content.push(createHeadingParagraph({ text: '1.1 网络拓扑与分区分域', level: 'heading2' }));
+        const topo = parseTopologyDoc(desc);
+        if (topo.overview) content.push(createBodyParagraph({ text: topo.overview, spacingAfter: 120 }));
+        for (const d of topo.domains) {
+          content.push(createBodyParagraph({ text: `${d.name}：`, spacingAfter: 60 }));
+          for (const line of d.description.split('\n').map(l => l.trim()).filter(Boolean)) {
+            content.push(createBodyParagraph({ text: line, spacingAfter: 60 }));
+          }
+        }
+        for (const att of attachments) {
+          try {
+            const abs = await toAbsolutePath(att.path);
+            if (!fs.existsSync(abs)) { log.warn('[报告] 拓扑图不存在:', abs); continue; }
+            const ext = path.extname(abs).toLowerCase().replace('.', '');
+            if (ext === 'webp') { log.warn('[报告] WebP 无法嵌入 Word:', att.name); continue; }
+            const type = (['png', 'jpg', 'gif', 'bmp'].includes(ext) ? ext : ext === 'jpeg' ? 'jpg' : 'png') as 'png' | 'jpg' | 'gif' | 'bmp';
+            content.push(new Paragraph({
+              alignment: AlignmentType.CENTER,
+              spacing: { before: 120, after: 120 },
+              children: [new ImageRun({
+                type, data: fs.readFileSync(abs),
+                transformation: { width: 560, height: 360 },
+                altText: { title: project?.systemName || '系统拓扑', description: att.name, name: att.name },
+              })],
+            }));
+            content.push(new Paragraph({
+              alignment: AlignmentType.CENTER, spacing: { after: 160 },
+              children: [new TextRun({ text: `图：网络拓扑图（${att.name}）`, size: 20, color: '666666' })],
+            }));
+          } catch (e: any) {
+            log.warn('[报告] 拓扑图插入失败:', att.name, e.message);
+          }
+        }
+      }
+    }
     }
 
     // 简洁模板 - 直接到问题清单
@@ -2700,6 +2802,38 @@ ${tocVolumes}
       html += `    <p>项目说明：${escapeHtml(group.description)}</p>`;
     }
 
+    // 系统拓扑与分区分域（HTML 版）：描述按段输出，图片以 data URI 内联，报告自包含
+    let topologyHtml = '';
+    for (let si = 0; si < systems.length; si++) {
+      const s = systems[si];
+      const desc = String(s.project?.topologyDescription || '').trim();
+      let attachments: Array<{ name: string; path: string; size: number }> = [];
+      try { attachments = JSON.parse(s.project?.topologyAttachments || '[]'); } catch { attachments = []; }
+      if (!desc && attachments.length === 0) continue;
+      const sysName = escapeHtml(s.project?.systemName || s.project?.name || `系统 ${si + 1}`);
+      topologyHtml += `<h4>1.2.${si + 1} ${sysName} 网络拓扑与分区分域</h4>`;
+      const topo = parseTopologyDoc(desc);
+      if (topo.overview) topologyHtml += `<p>${escapeHtml(topo.overview)}</p>`;
+      for (const d of topo.domains) {
+        topologyHtml += `<p class="topo-domain-title"><strong>${escapeHtml(d.name)}：</strong></p>`;
+        for (const line of d.description.split('\n').map(l => l.trim()).filter(Boolean)) {
+          topologyHtml += `<p>${escapeHtml(line)}</p>`;
+        }
+      }
+      for (const att of attachments) {
+        try {
+          const abs = await toAbsolutePath(att.path);
+          if (!fs.existsSync(abs)) continue;
+          const ext = path.extname(abs).toLowerCase().replace('.', '');
+          const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'gif' ? 'image/gif' : ext === 'bmp' ? 'image/bmp' : ext === 'webp' ? 'image/webp' : 'image/png';
+          const b64 = fs.readFileSync(abs).toString('base64');
+          topologyHtml += `<div class="topology-figure" style="text-align:center;margin:12px 0;"><img src="data:${mime};base64,${b64}" alt="${escapeHtml(att.name)}" style="max-width:100%;max-height:520px;" /><p style="font-size:12px;color:#666;">图：${sysName} 网络拓扑图（${escapeHtml(att.name)}）</p></div>`;
+        } catch (e: any) {
+          log.warn('[报告HTML] 拓扑图插入失败:', att.name, e.message);
+        }
+      }
+    }
+
     html += `
     <h3>1.2 系统构成与测评概况</h3>
     <table>
@@ -2707,6 +2841,7 @@ ${tocVolumes}
 ${overviewTableRows}
       <tr><td class="text-center">合计</td><td>—</td><td class="text-center">—</td><td>—</td><td class="text-center">${agg.assets}</td><td class="text-center">${agg.assessmentTotal}</td><td class="text-center">${agg.avgComplianceRate}%</td></tr>
     </table>
+${topologyHtml}
     <h3>1.3 问题分布与综合评价</h3>
     <table>
       <tr><th>序号</th><th>系统名称</th><th>高风险</th><th>中风险</th><th>低风险</th><th>合计</th></tr>
@@ -2841,6 +2976,38 @@ ${riskTableRows}
       <tr><td>资产数量</td><td>${assets.length} 台/套</td><td>-</td><td>-</td></tr>
     </table>
     <div class="page-break"></div>`;
+    }
+
+    // 网络拓扑与分区分域（单系统 HTML/PDF）：独立于「项目概况」开关，只要有数据就插入，
+    // 与单系统 Word、合册报告的拓扑章节保持一致。图片以 data URI 内联供 PDF 渲染读取。
+    {
+      const topoDesc = String(project?.topologyDescription || '').trim();
+      let topoAttachments: Array<{ name: string; path: string; size: number }> = [];
+      try { topoAttachments = JSON.parse(project?.topologyAttachments || '[]'); } catch { topoAttachments = []; }
+      if (topoDesc || topoAttachments.length > 0) {
+        html += `\n    <h2>网络拓扑与分区分域</h2>`;
+        const topo = parseTopologyDoc(topoDesc);
+        if (topo.overview) html += `\n    <p>${escapeHtml(topo.overview)}</p>`;
+        for (const d of topo.domains) {
+          html += `\n    <p class="topo-domain-title"><strong>${escapeHtml(d.name)}：</strong></p>`;
+          for (const line of d.description.split('\n').map(l => l.trim()).filter(Boolean)) {
+            html += `\n    <p>${escapeHtml(line)}</p>`;
+          }
+        }
+        for (const att of topoAttachments) {
+          try {
+            const abs = await toAbsolutePath(att.path);
+            if (!fs.existsSync(abs)) { log.warn('[报告HTML] 拓扑图不存在:', abs); continue; }
+            const ext = path.extname(abs).toLowerCase().replace('.', '');
+            const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'gif' ? 'image/gif' : ext === 'bmp' ? 'image/bmp' : ext === 'webp' ? 'image/webp' : 'image/png';
+            const b64 = fs.readFileSync(abs).toString('base64');
+            html += `\n    <div class="topology-figure" style="text-align:center;margin:12px 0;"><img src="data:${mime};base64,${b64}" alt="${escapeHtml(att.name)}" style="max-width:100%;max-height:520px;" /><p style="font-size:12px;color:#666;text-indent:0;">图：网络拓扑图（${escapeHtml(att.name)}）</p></div>`;
+          } catch (e: any) {
+            log.warn('[报告HTML] 拓扑图插入失败:', att.name, e.message);
+          }
+        }
+        html += `\n    <div class="page-break"></div>`;
+      }
     }
 
     // 测评方法

@@ -6,7 +6,7 @@ import { randomUUID } from 'crypto';
 import type { ProjectGroup, ProjectGroupListParams } from '../../shared/types';
 import { writeOperationLog } from '../utils/operation-log';
 import { wrap } from '../utils/ipc-wrapper';
-import { cascadeDeleteProject } from './project.ipc';
+import { cascadeDeleteProject, cleanupTopologyAttachments } from './project.ipc';
 import { deriveGroupStatus, syncGroupStatusFromSystems } from '../services/project-status.service';
 
 /**
@@ -235,12 +235,15 @@ export function registerProjectGroupHandlers(): void {
       .from(schema.projects)
       .where(eq(schema.projects.groupId, id));
 
+    const allTopologyPaths: string[] = [];
     db.transaction((tx: any) => {
       for (const system of systems) {
-        cascadeDeleteProject(tx, system.id);
+        allTopologyPaths.push(...cascadeDeleteProject(tx, system.id));
       }
       tx.delete(schema.projectGroups).where(eq(schema.projectGroups.id, id)).run();
     });
+    // 事务已提交，清理所有系统的拓扑附件物理文件（best-effort）
+    await cleanupTopologyAttachments(allTopologyPaths);
 
     await writeOperationLog({
       action: 'delete',

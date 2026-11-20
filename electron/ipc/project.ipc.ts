@@ -1,4 +1,6 @@
 import { ipcMain, dialog } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
 import log from 'electron-log';
 import { getDb } from '../db';
 import * as schema from '../db/schema';
@@ -17,6 +19,32 @@ import {
   isArchiveEncrypted,
 } from '../services/project-archive.service';
 import { validateFsPath, validateReadablePath, authorizeUserFiles } from '../utils/path-resolver';
+import { getAppDataPath } from '../main/paths';
+
+/**
+ * 事务提交后清理系统的拓扑附件物理文件（best-effort，失败只告警不影响主流程）。
+ * 白名单：仅删除受管 ai-chat-attachments 目录内的文件，拒绝任意路径。
+ */
+export async function cleanupTopologyAttachments(relativePaths: string[]): Promise<void> {
+  if (!Array.isArray(relativePaths) || relativePaths.length === 0) return;
+  try {
+    const resolvedDir = path.resolve(path.join(await getAppDataPath(), 'ai-chat-attachments'));
+    for (const rel of relativePaths) {
+      try {
+        const abs = await validateFsPath(rel);
+        if (!abs.startsWith(resolvedDir + path.sep)) {
+          log.warn('[project:remove] 拒绝清理非受管拓扑附件路径:', rel);
+          continue;
+        }
+        await fs.promises.unlink(abs);
+      } catch (e: any) {
+        if (e?.code !== 'ENOENT') log.warn('[project:remove] 清理拓扑附件失败:', rel, e?.message);
+      }
+    }
+  } catch (e: any) {
+    log.warn('[project:remove] 清理拓扑附件时异常:', e?.message);
+  }
+}
 
 async function calcProjectProgress(projectId: string): Promise<number> {
   try {
@@ -207,8 +235,21 @@ export async function recalculateProjectAssetCounts(force = false): Promise<void
  * 顺序与线上行为保持一致：子表 → 父表；并额外清理「无资产归属」的孤儿连接配置
  * （它们携带 password_encrypted，残留等同凭据泄露）。
  * 导出给 `projectGroup:remove` 复用，避免删除项目分组时另写一份枚举而漏掉子表。
+ *
+ * @returns 该系统的拓扑附件相对路径列表，供调用方在事务提交后清理物理文件（事务内不碰文件系统）。
  */
-export function cascadeDeleteProject(tx: any, id: string): void {
+export function cascadeDeleteProject(tx: any, id: string): string[] {
+  // 删除前收集拓扑附件路径，交给调用方在事务提交后清理，避免磁盘孤儿文件
+  let topologyPaths: string[] = [];
+  try {
+    const row = tx.select({ attachments: schema.projects.topologyAttachments })
+      .from(schema.projects).where(eq(schema.projects.id, id)).get() as { attachments: string | null } | undefined;
+    const parsed = JSON.parse(row?.attachments || '[]');
+    if (Array.isArray(parsed)) {
+      topologyPaths = parsed.map((a: any) => a?.path).filter((p: any) => typeof p === 'string' && p);
+    }
+  } catch { /* 拓扑字段缺失或非法 JSON：无附件可清理 */ }
+
   // 先收集关联 id，再级联删除，避免遗留孤儿数据
   const assetRows = tx.select({ id: schema.assets.id }).from(schema.assets).where(eq(schema.assets.projectId, id)).all() as Array<{ id: string }>;
   const assetIds = assetRows.map(a => a.id);
@@ -257,6 +298,7 @@ export function cascadeDeleteProject(tx: any, id: string): void {
   }
   tx.delete(schema.assets).where(eq(schema.assets.projectId, id)).run();
   tx.delete(schema.projects).where(eq(schema.projects.id, id)).run();
+  return topologyPaths;
 }
 
 export function registerProjectHandlers(): void {
@@ -553,6 +595,59 @@ export function registerProjectHandlers(): void {
   );
 
 
+  /**
+   * 系统拓扑图专用更新通道。
+   *
+   * 独立于 project:update 的原因：
+   * 1. 白名单之外的拓扑字段不能走通用 update（防 Mass Assignment），这里单独放行并校验；
+   * 2. 拓扑变化不影响测评进度，不该触发 calcProjectProgress 重算；
+   * 3. 附件 JSON 与描述文本都可能较大，独立通道便于后续做体积/结构校验。
+   */
+  ipcMain.handle('project:updateTopology', wrap(async (_event, id: string, data: {
+    attachments?: Array<{ name: string; path: string; size: number }>;
+    description?: string;
+  }) => {
+    if (!id) throw new Error('系统 ID 无效');
+    const patch: Record<string, any> = { updatedAt: new Date().toISOString() };
+
+    if (data.attachments !== undefined) {
+      if (!Array.isArray(data.attachments)) throw new Error('拓扑图附件格式无效');
+      // 复用附件落盘规范：只接受受管相对路径 JSON，拒绝绝对路径与路径穿越
+      const cleaned = data.attachments.map((a) => {
+        const name = String(a?.name || '').trim();
+        const p = String(a?.path || '').trim();
+        const size = Number(a?.size);
+        if (!name || !p) throw new Error('拓扑图附件缺名称或路径');
+        if (p.includes('..') || path.isAbsolute(p) || p.includes('\0')) {
+          throw new Error('拓扑图附件路径非法');
+        }
+        return { name: name.slice(0, 200), path: p.slice(0, 500), size: Number.isFinite(size) && size >= 0 ? size : 0 };
+      });
+      if (cleaned.length > 20) throw new Error('拓扑图最多 20 张');
+      patch.topologyAttachments = JSON.stringify(cleaned);
+    }
+
+    if (data.description !== undefined) {
+      const desc = String(data.description || '');
+      if (desc.length > 50000) throw new Error('拓扑描述过长，请控制在 50000 字以内');
+      patch.topologyDescription = desc;
+    }
+
+    const db = getDb();
+    await db.update(schema.projects).set(patch).where(eq(schema.projects.id, id));
+    const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, id) });
+    if (!project) throw new Error('系统不存在');
+    await writeOperationLog({
+      action: 'update',
+      module: 'project',
+      targetId: id,
+      targetName: project.systemName || project.name,
+      description: '更新系统拓扑图/分区分域描述',
+    });
+    return project;
+  })
+  );
+
   ipcMain.handle('project:update', wrap(async (_event, id: string, data: any) => {
       const db = getDb();
       const now = new Date().toISOString();
@@ -612,9 +707,12 @@ export function registerProjectHandlers(): void {
   ipcMain.handle('project:remove', wrap(async (_event, id: string) => {
       const db = getDb();
       const project = db.select().from(schema.projects).where(eq(schema.projects.id, id)).get();
+      let topologyPaths: string[] = [];
       db.transaction((tx) => {
-        cascadeDeleteProject(tx, id);
+        topologyPaths = cascadeDeleteProject(tx, id);
       });
+      // 事务已提交，清理拓扑附件物理文件（best-effort）
+      await cleanupTopologyAttachments(topologyPaths);
       // 剩余系统可能全是已完成/草稿，项目状态跟着变
       await syncGroupStatusFromSystems(project?.groupId);
       writeOperationLog({

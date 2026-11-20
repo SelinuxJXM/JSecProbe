@@ -27,6 +27,10 @@ export interface Project {
   startDate?: string;
   endDate?: string;
   description?: string;
+  /** JSON 字符串：Array<{name,path,size}>，系统拓扑图（可多张），受管相对路径 */
+  topologyAttachments?: string;
+  /** AI 按等保安全域分段生成的拓扑描述，纯文本，段落间换行分隔 */
+  topologyDescription?: string;
   assetCount: number;
   complianceRate?: number;
   progress: number;
@@ -894,6 +898,11 @@ export interface ApiBridge {
     getTrend: () => Promise<IpcResponse<{ months: string[]; created: number[]; cumulative: number[] }>>;
     create: (data: Partial<Project>) => Promise<IpcResponse<Project>>;
     update: (id: string, data: Partial<Project>) => Promise<IpcResponse<Project>>;
+    /** 系统拓扑图专用更新（附件列表与分区分域描述），不影响测评进度 */
+    updateTopology: (id: string, data: {
+      attachments?: Array<{ name: string; path: string; size: number }>;
+      description?: string;
+    }) => Promise<IpcResponse<Project>>;
     remove: (id: string) => Promise<IpcResponse<void>>;
     export: (projectId: string) => Promise<IpcResponse<{ path: string }>>;
     /** 导出项目字段清单（Excel，不可回导）；不传 projectIds 则导出全部 */
@@ -1155,6 +1164,8 @@ export interface ApiBridge {
     analyzeIssue: (params: { issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; projectId?: string; itemId?: string }) => Promise<IpcResponse<{ content: string }>>;
     cancelIssue: () => Promise<IpcResponse<{ canceled: boolean }>>;
     analyzeIssueDescription: (params: { issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; projectId?: string; itemId?: string }) => Promise<IpcResponse<{ content: string }>>;
+    /** 批量分析问题描述（分批次，一次多条） */
+    batchAnalyzeIssueDescriptions: (params: { issues: Array<{ issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string }> }) => Promise<IpcResponse<{ results: Array<{ issueId: string; content: string; success: boolean; error?: string }>; canceled?: boolean }>>;
     cancelIssueDescription: () => Promise<IpcResponse<{ canceled: boolean }>>;
     batchAnalyzeIssues: (params: { issues: Array<{ issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string; standardId?: string; itemId?: string }>; projectId?: string }) => Promise<IpcResponse<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }>; canceled?: boolean }>>;
     cancelBatchIssueAnalysis: () => Promise<IpcResponse<{ canceled: boolean }>>;
@@ -1242,7 +1253,11 @@ export interface ApiBridge {
     getProgress: () => Promise<IpcResponse<{ stage: string; message: string; percent: number; timestamp: number } | null>>;
     onAnalysisProgress: (callback: (data: { stage: string; message: string; percent: number; scope?: string }) => void) => () => void;
     onAssetIdentifyProgress: (callback: (data: { stage: string; message: string; percent: number; currentBatch?: number; totalBatches?: number; batchLabels?: string[] }) => void) => () => void;
+    /** 拓扑图分区分域识别（独立按钮，不触碰资产） */
+    analyzeTopology: (params: { projectId?: string; systemName?: string; imagePaths?: string[] }) => Promise<IpcResponse<{ domains: Array<{ name: string; description: string }>; overview?: string; partial?: boolean }>>;
+    onTopologyProgress: (callback: (data: { stage: string; message: string; percent: number }) => void) => () => void;
     onBatchIssueProgress: (callback: (data: { stage: string; message: string; percent: number; current: number; total: number }) => void) => () => void;
+    onBatchIssueDescProgress: (callback: (data: { stage: string; message: string; percent: number; current: number; total: number }) => void) => () => void;
     listPrompts: () => Promise<IpcResponse<AiPromptInfo[]>>;
     savePrompt: (payload: { key: string; template: string }) => Promise<IpcResponse<{ success: boolean }>>;
     resetPrompt: (payload: { key: string }) => Promise<IpcResponse<{ success: boolean }>>;
@@ -1306,6 +1321,8 @@ export interface ApiBridge {
   };
   attachment: {
     save: (params: { name: string; base64Data: string }) => Promise<IpcResponse<{ path: string; name: string; size: number; type: 'image' | 'document' }>>;
+    /** 删除受管附件（仅允许应用附件目录内的文件） */
+    delete: (filePath: string) => Promise<IpcResponse<boolean>>;
   };
   image: {
     saveScreenshot: (base64Data: string, fileName: string) => Promise<IpcResponse<{ filePath: string; fileName: string }>>;

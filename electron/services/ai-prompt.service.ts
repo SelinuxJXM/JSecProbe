@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import log from 'electron-log';
 
 // 提示词功能键白名单
-export const PROMPT_KEYS = ['analyze_record', 'batch_match', 'rectify_suggestion', 'issue_desc', 'risk_analysis', 'risk_level', 'major_risk', 'report_overview', 'report_rectification', 'knowledge_qa', 'command_recommend', 'asset_identify', 'asset_missing', 'dashboard_insight', 'standard_diff_explain', 'standard_compliance_gap'] as const;
+export const PROMPT_KEYS = ['analyze_record', 'batch_match', 'rectify_suggestion', 'issue_desc', 'risk_analysis', 'risk_level', 'major_risk', 'batch_issue_desc', 'batch_risk_analysis', 'batch_risk_level', 'batch_major_risk', 'batch_rectify_suggestion', 'report_overview', 'report_rectification', 'knowledge_qa', 'command_recommend', 'asset_identify', 'asset_missing', 'topology_analyze', 'dashboard_insight', 'standard_diff_explain', 'standard_compliance_gap'] as const;
 export type PromptKey = (typeof PROMPT_KEYS)[number];
 
 export const MAX_PROMPT_LENGTH = 20000;
@@ -662,6 +662,141 @@ export const BUILTIN_PROMPTS: PromptDefinition[] = [
     { "domain": "安全层面/域", "gap": "差距描述", "risk": "风险说明", "priority": "high或medium或low", "suggestion": "建议" }
   ]
 }`,
+  },
+  {
+    key: 'topology_analyze',
+    name: '拓扑图分区分域描述',
+    description: '根据系统拓扑图按等级保护分区分域生成多段落文字描述（返回JSON）',
+    variables: [
+      { name: '系统信息', description: '项目名称/被测单位/定级信息等上下文' },
+    ],
+    builtinTemplate: `你是一名专业的等级保护测评师，擅长解读网络拓扑图。请根据提供的系统拓扑图，按等级保护「分区分域」原则生成一段详尽、专业的系统网络拓扑描述。
+
+系统信息：{{系统信息}}
+
+要求：
+- 只描述图中**可见**的内容：区域划分、区域名称、设备的具体名称/型号/数量、区域之间的边界与访问关系、已标注的防护措施。图上没有标注的不要编造，不要凭经验补出不存在的设备型号或数量。
+- 先写一段 overview 总述（一句话到两句话）：概括该拓扑属于什么系统、按哪几个维度/区域划分、整体实现了什么（如隔离与分层防护）。总述要基于图面与系统信息，不要空泛套话。
+- 再按区域分段写入 domains，每个域一项：name 用图中标注的区域名称（如安全边界区、核心交换区、服务器区、安全管理区、运维终端区等，也可含终端/接入设备区）；**务必把图中所有区域都列出，包括带虚线框的子区域和框外成组的终端/接入设备，不得遗漏、不得合并**。
+- 每个域的 description 要写得详尽、有层次（一般 150-400 字），结构遵循参考范例：
+  1) 开头一句点明该区域的定位与核心作用；
+  2) 分条说明区域内的具体设备/资产：凡图上标了名称、型号、数量（如"防火墙""核心交换机""CNA01-CNA04""2台电子病历服务器""4台物理机"）都要如实写出；
+  3) 说明与其它区域的边界、访问方向、隔离与防护措施（防火墙、安全组、网闸、VLAN 等）。
+  子项用"标签：说明；"的行内格式（如"对接互联网方向：部署数外防火墙，对公网访问做安全校验；"），多条子项之间用换行分隔，便于报告排版。
+- 语言正式、客观、专业，符合等保测评报告文风。不要输出 Markdown 小标题、编号列表或总结性套话。
+- 若完全无法从图中识别有效的区域信息，domains 返回空数组，不要编造。
+
+请严格按照以下JSON格式返回（不要有其他说明文字、不要代码围栏）：
+{
+  "overview": "该拓扑图是XX系统分级网络架构，严格按照……等N个维度完成区域划分，实现不同业务流量的隔离与分层防护。",
+  "domains": [
+    { "name": "安全边界区", "description": "该区域是整个网络的对外接入入口，负责对接三类外部网络：\\n对接互联网方向：部署数外防火墙，对公网访问做安全校验；\\n对接医保专网方向：部署医保防火墙，保障医保结算业务合规传输；" },
+    { "name": "核心交换区", "description": "……" }
+  ]
+}`,
+  },
+  {
+    key: 'batch_issue_desc',
+    name: '批量·一句话问题描述',
+    description: '一次为多条问题生成一句话核心描述（返回带issueId的JSON数组）',
+    variables: [{ name: '问题清单', description: '多条问题，每条以 --- 问题 issueId=xxx --- 分隔' }],
+    builtinTemplate: `你是一名专业的等级保护测评师。请为下面每一条问题各提取一句核心问题描述。
+
+{{问题清单}}
+
+要求：
+- 为清单中的每一条问题各输出一项，不得遗漏、不得合并
+- 每项用一句话（不超过50字）概括问题本质，直接指出安全风险或合规缺失，不描述核查过程
+- 不要包含"经核查""经访谈"等前缀，不要包含命令、路径等细节
+- issueId 必须原样取自对应问题的 issueId，严禁改写或编造；description 只写该问题的内容，不得串到别的问题
+- 若某条信息不足无法提炼，description 填空字符串 ""
+
+只输出 JSON 对象（不要代码围栏、不要解释）：
+{"results":[{"issueId":"原样id","description":"一句话描述"}]}`,
+  },
+  {
+    key: 'batch_risk_analysis',
+    name: '批量·问题风险分析',
+    description: '一次为多条问题生成风险分析结果（返回带issueId的JSON数组）',
+    variables: [{ name: '问题清单', description: '多条问题，每条以 --- 问题 issueId=xxx --- 分隔' }],
+    builtinTemplate: `你是一名专业的网络安全等级保护测评专家。请为下面每一条问题各写一段「风险分析结果」。
+
+{{问题清单}}
+
+要求：
+- 为清单中的每一条问题各输出一项，不得遗漏、不得合并
+- 每项以"可能导致……的风险"句式组织，紧扣该问题的描述事实，点明受影响资产/数据与可能后果，控制 120 字以内
+- 严格依据事实，不得编造资产、威胁或后果；信息不足时用"需结合现场复核"的审慎口径
+- issueId 必须原样取自对应问题，严禁改写或编造；analysis 只写该问题的内容，不得串到别的问题
+- 若某条信息不足，analysis 填空字符串 ""
+
+只输出 JSON 对象（不要代码围栏、不要解释）：
+{"results":[{"issueId":"原样id","analysis":"可能导致……的风险。"}]}`,
+  },
+  {
+    key: 'batch_risk_level',
+    name: '批量·高风险判定指引自动定级',
+    description: '一次为多条问题按高风险判定指引定级（返回带issueId的JSON数组）',
+    variables: [{ name: '问题清单', description: '多条问题，每条以 --- 问题 issueId=xxx --- 分隔，含判定指引候选' }],
+    builtinTemplate: `你是一名资深网络安全等级保护测评专家。请依据给定的《等保测评高风险指引库》候选条目，为下面每一条问题判定风险等级。
+
+{{问题清单}}
+
+判定规则：
+1. 只有当问题描述中的事实与某条指引的「问题场景」实质一致，且现场不存在该条目列出的「可能缓解措施」时，才判 high。
+2. 事实基本符合高风险场景但存在缓解措施或影响有限，判 medium；轻微影响且已有其他有效防护可判 low。
+3. 没有任何候选条目实质匹配时不得判 high，按影响判 medium/low；现场信息不足时保留现有等级。
+4. matchedId 必须原样取自该问题候选条目的 ID；未匹配填空字符串 ""，严禁编造 ID。
+5. reason 用 40～90 字说明判定依据，不复述整段指引。
+
+要求：为每条问题各输出一项，不得遗漏；issueId 必须原样取自对应问题，严禁改写或编造；不得把某条的判定串到另一条。
+
+只输出 JSON 对象（不要代码围栏、不要解释）：
+{"results":[{"issueId":"原样id","level":"high或medium或low","matchedId":"条目ID或空","reason":"判定依据"}]}`,
+  },
+  {
+    key: 'batch_rectify_suggestion',
+    name: '批量·整改建议',
+    description: '一次为多条问题生成整改建议（返回带issueId的JSON数组）',
+    variables: [{ name: '问题清单', description: '多条问题，每条以 --- 问题 issueId=xxx --- 分隔' }],
+    builtinTemplate: `你是一名专业的等级保护测评师。请为下面每一条问题各撰写一段整改建议。
+
+{{问题清单}}
+
+要求：
+- 为清单中的每一条问题各输出一项，不得遗漏、不得合并
+- 每项整改建议以"整改措施："开头，描述具体要执行的操作、修改的配置、部署的安全机制，引用具体技术手段，语句连贯成一段（不要分点列举）
+- 严禁编造问题中不存在的内容，所有建议必须基于该问题的实际情况
+- issueId 必须原样取自对应问题，严禁改写或编造；suggestion 只写该问题的建议，不得串到别的问题
+- 若某条信息不足，suggestion 填空字符串 ""
+
+只输出 JSON 对象（不要代码围栏、不要解释）：
+{"results":[{"issueId":"原样id","suggestion":"整改措施：……"}]}`,
+  },
+  {
+    key: 'batch_major_risk',
+    name: '批量·重大风险隐患三要素分析',
+    description: '一次为多条问题做重大隐患三要素分析（返回带issueId的JSON数组）',
+    variables: [{ name: '问题清单', description: '多条问题，每条以 --- 问题 issueId=xxx --- 分隔，含清单候选与现场测评记录' }],
+    builtinTemplate: `你是一名资深网络安全等级保护测评专家。请依据给定的《重大风险隐患清单》候选条目和现场测评记录，为下面每一条问题做三要素分析。
+
+{{问题清单}}
+
+判定原则（须同时满足三要素才判为重大风险隐患）：
+- 相关性：问题是测评发现且可能导致高风险的安全问题，且未采取任一缓解措施。
+- 严重性：一旦发生将导致业务中断、重要数据泄露/篡改、获得管理或业务权限等严重后果。
+- 高发性：综合全系统已部署防护措施与是否发现实际被利用痕迹，判断发生概率是否较大。
+
+分析要求：
+- 为每条问题各输出一项，不得遗漏、不得合并
+- relevance/severity/frequency 各写一段（各 100～250 字），先事实后判断，落到该问题现场记录的具体证据上；严禁臆造记录中不存在的事实
+- verdict：major=三要素同时满足且有清单条目实质吻合；non_major=任一不满足；pending=信息严重不足
+- catalogId/catalogTitle 必须原样取自该问题候选条目，未命中均填空字符串 ""，严禁编造
+- conclusion 按句式："经综合以上分析，该问题满足……不满足……，未触发重大风险隐患。"（三要素均满足则写"判定为重大风险隐患"）
+- issueId 必须原样取自对应问题，严禁改写或编造；不得把某条的分析串到另一条
+
+只输出 JSON 对象（不要代码围栏、不要解释）：
+{"results":[{"issueId":"原样id","catalogId":"编号或空","catalogTitle":"标题或空","relevance":"相关性一段","severity":"严重性一段","frequency":"高发性一段","verdict":"major或non_major或pending","conclusion":"综合判定理由"}]}`,
   },
 ];
 

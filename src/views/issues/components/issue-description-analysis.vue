@@ -380,6 +380,11 @@ async function cancelBatchAnalysis() {
 
 async function batchAnalyzeIssueDescriptions(issues: Issue[]) {
   if (!window.api || issues.length === 0) return;
+  // 并发守卫：上一批仍在分析中时拒绝新请求，避免两次调用竞争同一个 abort 控制器导致取消错乱
+  if (batchProgress.value.visible && !['done', 'error', 'canceled'].includes(batchProgress.value.stage)) {
+    ElMessage.warning('批量 AI 分析进行中，请稍候');
+    return;
+  }
   batchCancelled = false;
 
 
@@ -406,63 +411,55 @@ async function batchAnalyzeIssueDescriptions(issues: Issue[]) {
     }
   }, 1000);
 
+  // 进度订阅提到 try 外声明，确保异常/取消路径也能在 finally 中退订（避免监听器泄漏）
+  let unsubProgress: (() => void) | null = null;
   try {
-    // 批量分析：逐个调用API（避免并发过多导致API限流）
+    // 分批量：一次提交多条给后端，后端按每批5条调用 AI（进度由专用通道推送）
+    if ((window.api.ai as any).onBatchIssueDescProgress) {
+      unsubProgress = (window.api.ai as any).onBatchIssueDescProgress((data: any) => {
+        batchProgress.value = { ...batchProgress.value, ...data };
+      });
+    }
+    const res = await window.api.ai.batchAnalyzeIssueDescriptions({
+      issues: issues.map(issue => ({
+        issueId: issue.id,
+        issueTitle: issue.issueTitle,
+        issueDescription: issue.issueDescription || '',
+        securityDomain: props.getIssueDomainId(issue.securityDomain || ''),
+        controlPoint: issue.controlPoint || '',
+        controlName: issue.controlName || '',
+      })),
+    });
+
     const results: Array<{ issueId: string; description: string; success: boolean }> = [];
-    
-    for (let i = 0; i < issues.length; i++) {
-      if (batchCancelled) break;
-      const issue = issues[i];
-      try {
-        batchProgress.value = { 
-          ...batchProgress.value, 
-          percent: Math.round((i / issues.length) * 100),
-          message: `正在分析: ${issue.issueTitle}`,
-          current: i + 1,
-        };
-        
-        
-        const res = await window.api.ai.analyzeIssueDescription({
-          issueId: issue.id,
-          issueTitle: issue.issueTitle,
-          issueDescription: issue.issueDescription || '',
-          securityDomain: props.getIssueDomainId(issue.securityDomain || ''),
-          controlPoint: issue.controlPoint || '',
-          controlName: issue.controlName || '',
-          // Phase 4：每条问题附带标准上下文关联
-          standardId: props.standardId,
-          projectId: props.projectId,
-          itemId: (issue as any).itemId,
-        });
-        
-        if (res.success && res.data) {
-          results.push({ issueId: issue.id, description: res.data.content, success: true });
-          batchSuccessCount.value++;
-        } else {
-          results.push({ issueId: issue.id, description: '', success: false });
+    if (res.success && res.data) {
+      for (const r of res.data.results) {
+        results.push({ issueId: r.issueId, description: r.content, success: r.success });
+        if (r.success) batchSuccessCount.value++;
+        else {
           batchFailedCount.value++;
-          const item = batchIssueList.value.find(item => item.issueId === issue.id);
+          const item = batchIssueList.value.find(x => x.issueId === r.issueId);
           if (item) item.failed = true;
-          console.error(`[issue-description-analysis.batchAnalyzeIssueDescriptions] [${i + 1}/${issues.length}] 分析失败: ${res.error?.message || '未知错误'}`);
         }
-      } catch (err: any) {
-        results.push({ issueId: issue.id, description: '', success: false });
-        batchFailedCount.value++;
-        const item = batchIssueList.value.find(item => item.issueId === issue.id);
-        if (item) item.failed = true;
-        console.error(`[issue-description-analysis.batchAnalyzeIssueDescriptions] [${i + 1}/${issues.length}] 异常: ${err.message}`);
       }
+    } else {
+      // 后端整体失败：标记错误并停止，不能继续走到下面的"分析完成"分支误报成功
+      batchFailedCount.value = issues.length;
+      const errMsg = res.error?.message || 'AI批量分析失败，请稍后重试';
+      console.error('[issue-description-analysis.batchAnalyzeIssueDescriptions] 批量失败:', errMsg);
+      batchProgress.value = { ...batchProgress.value, percent: 100, message: errMsg, stage: 'error', current: 0 };
+      ElMessage.error(errMsg);
+      return;
     }
 
     const success = results.filter(r => r.success).length;
-    if (batchCancelled) {
+    if (batchCancelled || res.data?.canceled) {
       batchProgress.value = { ...batchProgress.value, percent: 100, message: `已中止，完成 ${success}/${issues.length}`, stage: 'canceled', current: results.length };
     } else {
       batchProgress.value = { ...batchProgress.value, percent: 100, message: '分析完成', stage: 'done', current: issues.length };
     }
-    
-    
-    // 逐个回填结果（取消后已完成的部分照常回填，未完成的保持原样）
+
+    // 逐个回填结果（已完成的部分照常回填，未完成的保持原样）
     for (const result of results) {
       if (result.success && result.description) {
         emit('applyDescription', result.issueId, result.description);
@@ -477,6 +474,11 @@ async function batchAnalyzeIssueDescriptions(issues: Issue[]) {
       batchProgress.value = { ...batchProgress.value, stage: 'canceled', message: '已中止分析', percent: 100 };
     }
   } finally {
+    // 成功/失败/取消/异常四条路径统一退订进度监听
+    if (unsubProgress) {
+      unsubProgress();
+      unsubProgress = null;
+    }
     if (batchTimerInterval) {
       clearInterval(batchTimerInterval);
       batchTimerInterval = null;

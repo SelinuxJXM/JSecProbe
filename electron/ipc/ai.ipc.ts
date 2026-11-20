@@ -51,7 +51,9 @@ import {
 } from '../services/ai-prompt.service';
 import { ASSET_CATEGORIES } from '../../shared/asset-categories';
 import { SseDeltaParser } from '../../shared/ai-stream';
-import { parseAssetsJson } from '../../shared/ai-json-rescue';
+import { parseAssetsJson, parseDomainsJson } from '../../shared/ai-json-rescue';
+import { imageMimeFromBase64 } from '../../shared/image-mime';
+import { parseBatchResultsById } from '../../shared/batch-result-parser';
 import { planAssetIdentifyBatches } from '../../shared/asset-identify-batch';
 import {
   MODEL_PROBE_TIMEOUT_MS,
@@ -548,6 +550,71 @@ async function generateMajorRiskDraft(params: MajorRiskAiParams, signal: AbortSi
   return draft;
 }
 
+/**
+ * 通用批量 AI 调用骨架：把已构造好的"问题文本块"按 BATCH_SIZE 分批，
+ * 每批一次 AI 调用（模板返回 {results:[{issueId,...}]}），解析后按 issueId 合并。
+ *
+ * @param blocks 每条问题的文本块（已含 issueId 标记与各自的召回内容）
+ * @param promptKey 批量提示词模板 key
+ * @param systemContent 系统提示
+ * @param isValid 判断单条结果是否有效（过滤空结果）
+ * @param onProgress 进度回调 (当前批, 总批数)
+ * @param signal 取消信号
+ * @returns { byId, partial, failedBatches } —— byId 为 issueId→结果对象
+ */
+async function runBatchAiGeneric(params: {
+  blocks: string[];
+  promptKey: string;
+  systemContent: string;
+  isValid: (item: any) => boolean;
+  onProgress: (currentBatch: number, totalBatches: number) => void;
+  signal: AbortSignal;
+  temperature?: number;
+}): Promise<{ byId: Map<string, any>; partial: boolean; failedBatches: number }> {
+  const { blocks, promptKey, systemContent, isValid, onProgress, signal } = params;
+  const BATCH_SIZE = 5;
+  const byId = new Map<string, any>();
+  let partial = false;
+  let failedBatches = 0;
+
+  const db = getDb();
+  const configs = await db.select().from(schema.aiConfigs).limit(1);
+  if (configs.length === 0) throw new Error('AI未配置');
+  const config = normalizeConfig(sanitize(configs[0]));
+  const mode = config.mode || 'cloud';
+  const temperature = params.temperature ?? config.temperature ?? 0.2;
+
+  const totalBatches = Math.max(1, Math.ceil(blocks.length / BATCH_SIZE));
+  for (let bi = 0; bi < totalBatches; bi++) {
+    if (signal.aborted) break;
+    onProgress(bi + 1, totalBatches);
+    const batchBlocks = blocks.slice(bi * BATCH_SIZE, (bi + 1) * BATCH_SIZE);
+    const problemList = batchBlocks.map((b, i) => `--- 问题 ${bi * BATCH_SIZE + i + 1} ---\n${b}`).join('\n\n');
+    const template = await getPromptTemplate(promptKey as any);
+    const rendered = renderPromptTemplate(template, { '问题清单': problemList });
+    const messages = [
+      { role: 'system', content: systemContent },
+      { role: 'user', content: rendered },
+    ];
+    try {
+      const runResult = await runWithFailover(config, mode, {
+        build: (ep) => ({
+          body: JSON.stringify({ model: ep.model, messages, temperature, max_tokens: 16000 }),
+          timeoutMs: 90000,
+        }),
+      }, signal);
+      const parsed = parseBatchResultsById<any>(runResult.content, isValid);
+      if (parsed.partial) partial = true;
+      for (const [id, val] of parsed.byId) byId.set(id, val);
+    } catch (err: any) {
+      if (signal.aborted) break;
+      failedBatches++;
+      log.warn(`[批量AI] 第 ${bi + 1}/${totalBatches} 批失败:`, err?.message);
+    }
+  }
+  return { byId, partial, failedBatches };
+}
+
 function calculateTimeout(itemCount: number, imageCount: number, totalImageSizeKB: number, privacyMode: boolean): number {
   const baseTimeout = 60000;
   const perItemTimeout = 3000;
@@ -786,7 +853,7 @@ async function buildChatMessageContent(msg: { role: string; content: string; att
       if (att.type === 'image') {
         const base64 = await encodeImageToBase64(absPath);
         if (base64) {
-          userContent.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } });
+          userContent.push({ type: 'image_url', image_url: { url: `data:${imageMimeFromBase64(base64)};base64,${base64}` } });
         } else {
           failedDocs.push(`${att.name}（图片读取失败）`);
         }
@@ -2171,7 +2238,7 @@ export function registerAIHandlers(): void {
             userContent.push({
               type: 'image_url',
               image_url: {
-                url: `data:image/jpeg;base64,${base64}`,
+                url: `data:${imageMimeFromBase64(base64)};base64,${base64}`,
               },
             });
           }
@@ -2184,7 +2251,7 @@ export function registerAIHandlers(): void {
             userContent.push({
               type: 'image_url',
               image_url: {
-                url: `data:image/jpeg;base64,${base64}`,
+                url: `data:${imageMimeFromBase64(base64)};base64,${base64}`,
               },
             });
           }
@@ -2452,7 +2519,7 @@ export function registerAIHandlers(): void {
               userContent.push({
                 type: 'image_url',
                 image_url: {
-                  url: `data:image/jpeg;base64,${base64}`,
+                  url: `data:${imageMimeFromBase64(base64)};base64,${base64}`,
                 },
               });
             }
@@ -2697,6 +2764,66 @@ export function registerAIHandlers(): void {
     }
   });
 
+  /** 批量分析问题描述：分批次一次多条，按 issueId 回填（前端 issue-description-analysis 用） */
+  ipcMain.handle('ai:batchAnalyzeIssueDescriptions', async (_event, rawParams: {
+    issues: Array<{
+      issueId: string;
+      issueTitle: string;
+      issueDescription: string;
+      securityDomain: string;
+      controlPoint: string;
+      controlName: string;
+    }>;
+  }) => {
+    assertTrusted(_event);
+    const sendProgress = (data: { stage: string; message: string; percent: number; current: number; total: number }) => {
+      try { _event.sender.send('ai:batchIssueDescProgress', data); } catch { /* 前端可能已关闭 */ }
+    };
+    const params = sanitize(rawParams) as typeof rawParams;
+    const issues = Array.isArray(params?.issues) ? params.issues : [];
+    if (issues.length === 0) return sanitize({ success: false, error: { code: 'NO_ISSUES', message: '没有问题' } });
+
+    const controller = new AbortController();
+    issueDescriptionAbortController = controller; // 复用现有 cancelIssueDescription 通道，前端取消按钮可中断批量
+    const results: Array<{ issueId: string; content: string; success: boolean; error?: string }> = [];
+    try {
+      const blocks = issues.map(issue =>
+        `issueId：${issue.issueId}\n问题标题：${issue.issueTitle || ''}\n安全域：${issue.securityDomain || ''}\n` +
+        `控制点：${issue.controlPoint || ''}\n控制项：${issue.controlName || ''}\n当前问题描述：${issue.issueDescription || ''}`
+      );
+      const batch = await runBatchAiGeneric({
+        blocks,
+        promptKey: 'batch_issue_desc',
+        systemContent: '你是专业的等级保护测评师。为每条问题各提炼一句核心问题描述（不超过50字），直接指出风险或防护缺失，issueId 原样对应，只输出 JSON。',
+        isValid: (item: any) => typeof item.description === 'string' && !!item.description.trim(),
+        onProgress: (cur, total) => sendProgress({
+          stage: 'analyzing', message: `正在分析第 ${cur}/${total} 批`, percent: Math.round(((cur - 1) / total) * 100), current: cur, total,
+        }),
+        signal: controller.signal,
+      });
+      for (const issue of issues) {
+        if (controller.signal.aborted) break;
+        const item = batch.byId.get(issue.issueId);
+        if (item) results.push({ issueId: issue.issueId, content: String(item.description).trim(), success: true });
+        else results.push({ issueId: issue.issueId, content: '', success: false, error: 'AI 未返回该条结果' });
+      }
+      const canceled = controller.signal.aborted;
+      sendProgress({
+        stage: canceled ? 'canceled' : 'done',
+        message: canceled ? '已取消' : '分析完成',
+        percent: 100,
+        current: issues.length,
+        total: issues.length,
+      });
+      return sanitize({ success: true, data: { results, canceled } });
+    } catch (error: any) {
+      log.error('[ai:batchAnalyzeIssueDescriptions] 错误:', error?.message);
+      return sanitize({ success: false, error: { code: 'AI_BATCH_ISSUE_DESC_ERROR', message: error?.message || '批量分析失败' } });
+    } finally {
+      if (issueDescriptionAbortController === controller) issueDescriptionAbortController = null;
+    }
+  });
+
   ipcMain.handle('ai:analyzeIssueDescription', async (_event, rawParams: {
     issueId: string;
     issueTitle: string;
@@ -2871,22 +2998,46 @@ export function registerAIHandlers(): void {
     riskAnalysisAborts.register(controller);
     const results: Array<{ issueId: string; draft?: ReturnType<typeof parseRiskAiDraft>; success: boolean; error?: string }> = [];
     try {
-      for (let i = 0; i < issues.length; i++) {
-        if (controller.signal.aborted) break;
-        const issue = issues[i];
-        sendProgress({
+      // 读一次配置拿脱敏设置（runBatchAiGeneric 内部会再读一次拿模型/温度，无副作用）
+      const cfgRows = await getDb().select().from(schema.aiConfigs).limit(1);
+      const cfg = cfgRows.length ? normalizeConfig(sanitize(cfgRows[0])) : null;
+      const privacyMode = cfg?.privacyMode === 1;
+      const extraWords = cfg?.sensitiveWords
+        ? String(cfg.sensitiveWords).split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
+        : [];
+      const clean = (v: string): string => (privacyMode ? desensitizeText(v || '', extraWords) : (v || ''));
+
+      // 构造每条问题文本块（字段与单条 risk_analysis 模板一致）
+      const blocks = issues.map(issue =>
+        `issueId：${issue.issueId}\n问题标题：${clean(issue.issueTitle)}\n安全域：${clean(issue.securityDomain)}\n` +
+        `控制点：${clean(issue.controlPoint)}\n控制项：${clean(issue.controlName)}\n测评对象：${clean(issue.assetName || '')}\n` +
+        `问题描述：${clean(issue.issueDescription)}\n初判等级：${clean(issue.riskLevel || '')}\n整改建议：${clean(issue.rectificationSuggestion || '')}`
+      );
+
+      const batch = await runBatchAiGeneric({
+        blocks,
+        promptKey: 'batch_risk_analysis',
+        systemContent: '你是网络安全等级保护测评专家。严格依据每条问题事实各写一段"可能导致……的风险"分析，issueId 原样对应，只输出 JSON。',
+        isValid: (item: any) => typeof item.analysis === 'string' && !!item.analysis.trim(),
+        onProgress: (cur, total) => sendProgress({
           stage: 'analyzing',
-          message: `正在分析第 ${i + 1}/${issues.length} 条：${issue.issueTitle || ''}`,
-          percent: Math.round((i / issues.length) * 100),
-          current: i,
-          total: issues.length,
-        });
-        try {
-          const draft = await generateRiskDraft(issue, controller.signal);
-          results.push({ issueId: issue.issueId, draft, success: true });
-        } catch (err: any) {
-          if (controller.signal.aborted) break;
-          results.push({ issueId: issue.issueId, success: false, error: err?.message || '分析失败' });
+          message: `正在分析第 ${cur}/${total} 批（每批最多5条）`,
+          percent: Math.round(((cur - 1) / total) * 100),
+          current: cur,
+          total,
+        }),
+        signal: controller.signal,
+        temperature: 0.3,
+      });
+
+      // 按 issues 顺序回填，缺结果/失败的项明确标失败
+      for (const issue of issues) {
+        if (controller.signal.aborted) break;
+        const item = batch.byId.get(issue.issueId);
+        if (item) {
+          results.push({ issueId: issue.issueId, draft: { result: String(item.analysis).slice(0, 800) }, success: true });
+        } else {
+          results.push({ issueId: issue.issueId, success: false, error: 'AI 未返回该条结果' });
         }
       }
       const canceled = controller.signal.aborted;
@@ -2987,22 +3138,77 @@ export function registerAIHandlers(): void {
     majorRiskAborts.register(controller);
     const results: Array<{ issueId: string; draft?: MajorRiskAiDraft; success: boolean; error?: string }> = [];
     try {
-      for (let i = 0; i < issues.length; i++) {
+      const cfgRows = await getDb().select().from(schema.aiConfigs).limit(1);
+      const cfg = cfgRows.length ? normalizeConfig(sanitize(cfgRows[0])) : null;
+      const privacyMode = cfg?.privacyMode === 1;
+      const extraWords = cfg?.sensitiveWords
+        ? String(cfg.sensitiveWords).split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
+        : [];
+      const clean = (v: string): string => (privacyMode ? desensitizeText(v || '', extraWords) : (v || ''));
+
+      // 清单候选（全系统共用一份）+ 每条召回现场记录，构造文本块
+      const catalogRows = await getDb().select().from(schema.majorRiskCatalog)
+        .where(eq(schema.majorRiskCatalog.enabled, 1));
+      const catalogItems: MajorRiskCatalogItem[] = catalogRows.map(r => ({
+        id: r.id, code: r.code || undefined, title: r.title, category: r.category || undefined,
+        criteria: r.criteria || undefined, keywords: r.keywords || undefined, source: r.source || undefined,
+        sortOrder: r.sortOrder, enabled: r.enabled === 1, createdAt: r.createdAt, updatedAt: r.updatedAt,
+      }));
+      const allowedByIssue = new Map<string, string[]>();
+      const blocks: string[] = [];
+      for (const issue of issues) {
         if (controller.signal.aborted) break;
-        const issue = issues[i];
-        sendProgress({
-          stage: 'analyzing',
-          message: `正在识别第 ${i + 1}/${issues.length} 条：${issue.issueTitle || ''}`,
-          percent: Math.round((i / issues.length) * 100),
-          current: i,
-          total: issues.length,
+        const candidates = matchCatalogCandidates(issue, catalogItems);
+        allowedByIssue.set(issue.issueId, candidates.map(c => c.code || c.id).filter(Boolean) as string[]);
+        const snippets = await searchAssessmentRecords({
+          projectId: issue.projectId,
+          issueId: issue.issueId,
+          keyword: `${issue.issueDescription || ''} ${issue.issueTitle || ''}`,
+          limit: 12,
         });
+        blocks.push(
+          `issueId：${issue.issueId}\n问题标题：${clean(issue.issueTitle || '')}\n安全域：${clean(issue.securityDomain || '')}\n` +
+          `控制点：${clean(issue.controlPoint || '')}\n控制项：${clean(issue.controlName || '')}\n测评对象：${clean(issue.assetName || '')}\n` +
+          `问题描述：${clean(issue.issueDescription || '')}\n初判等级：${clean(issue.riskLevel || '')}\n整改建议：${clean(issue.rectificationSuggestion || '')}\n` +
+          `《重大风险隐患清单》候选条目：\n${formatCatalogCandidates(candidates)}\n` +
+          `相关现场测评记录：\n${formatRecordSnippets(snippets)}`
+        );
+      }
+      if (controller.signal.aborted) throw new Error('用户已取消');
+
+      const batch = await runBatchAiGeneric({
+        blocks,
+        promptKey: 'batch_major_risk',
+        systemContent: '你是网络安全等级保护测评专家。严格按每条问题的清单候选与全系统现场记录做三要素分析，catalogId 原样取自候选不得编造，issueId 原样对应，只输出 JSON。',
+        isValid: (item: any) => ['major', 'non_major', 'pending'].includes(String(item.verdict || '')),
+        onProgress: (cur, total) => sendProgress({
+          stage: 'analyzing',
+          message: `正在识别第 ${cur}/${total} 批（每批最多5条，含现场记录检索）`,
+          percent: Math.round(((cur - 1) / total) * 100),
+          current: cur,
+          total,
+        }),
+        signal: controller.signal,
+        temperature: 0.2,
+      });
+
+      for (const issue of issues) {
+        if (controller.signal.aborted) break;
+        const item = batch.byId.get(issue.issueId);
+        if (!item) {
+          results.push({ issueId: issue.issueId, success: false, error: 'AI 未返回该条结果' });
+          continue;
+        }
         try {
-          const draft = await generateMajorRiskDraft(issue, controller.signal);
+          const draft = parseMajorRiskDraft(JSON.stringify(item), allowedByIssue.get(issue.issueId) || []);
+          // 与单条一致：空召回收敛为 non_major
+          if ((allowedByIssue.get(issue.issueId) || []).length === 0 && draft.verdict === 'major') {
+            draft.verdict = 'non_major';
+            draft.conclusion = `未从重大风险隐患清单召回到相关条目，无法认定实质吻合，已收敛为非重大风险。${draft.conclusion || ''}`.slice(0, 3000);
+          }
           results.push({ issueId: issue.issueId, draft, success: true });
-        } catch (err: any) {
-          if (controller.signal.aborted) break;
-          results.push({ issueId: issue.issueId, success: false, error: err?.message || '识别失败' });
+        } catch (e: any) {
+          results.push({ issueId: issue.issueId, success: false, error: e?.message || '结果解析失败' });
         }
       }
       const canceled = controller.signal.aborted;
@@ -3104,22 +3310,56 @@ export function registerAIHandlers(): void {
     riskLevelJudgeAborts.register(controller);
     const results: RiskLevelJudgeResult[] = [];
     try {
-      for (let i = 0; i < issues.length; i++) {
-        if (controller.signal.aborted) break;
-        const issue = issues[i];
-        sendProgress({
+      const cfgRows = await getDb().select().from(schema.aiConfigs).limit(1);
+      const cfg = cfgRows.length ? normalizeConfig(sanitize(cfgRows[0])) : null;
+      const privacyMode = cfg?.privacyMode === 1;
+      const extraWords = cfg?.sensitiveWords
+        ? String(cfg.sensitiveWords).split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
+        : [];
+      const clean = (v: string): string => (privacyMode ? desensitizeText(v || '', extraWords) : (v || ''));
+
+      // 每条召回候选并构造文本块；candidatesById 用于回填时校验 matchedId 白名单
+      const candidatesById = new Map<string, ReturnType<typeof searchGuidelineCandidates>>();
+      const blocks = issues.map(issue => {
+        const candidates = searchGuidelineCandidates(issue);
+        const iid = issue.issueId || '';
+        candidatesById.set(iid, candidates);
+        return `issueId：${iid}\n问题标题：${clean(issue.issueTitle || '')}\n安全域：${clean(issue.securityDomain || '')}\n` +
+          `控制点：${clean(issue.controlPoint || '')}\n控制项：${clean(issue.controlName || '')}\n测评对象：${clean(issue.assetName || '')}\n` +
+          `问题描述：${clean(issue.issueDescription || '')}\n整改建议：${clean(issue.rectificationSuggestion || '')}\n` +
+          `现有等级：${clean(issue.currentLevel || '')}\n高风险判定指引候选条目：\n${formatGuidelineCandidates(candidates)}`;
+      });
+
+      const batch = await runBatchAiGeneric({
+        blocks,
+        promptKey: 'batch_risk_level',
+        systemContent: '你是网络安全等级保护测评专家。严格依据每条问题的判定指引候选与事实定级，matchedId 原样取自候选、不得编造，issueId 原样对应，只输出 JSON。',
+        isValid: (item: any) => ['high', 'medium', 'low'].includes(String(item.level || '').toLowerCase()),
+        onProgress: (cur, total) => sendProgress({
           stage: 'analyzing',
-          message: `正在按判定指引定级 ${i + 1}/${issues.length}：${issue.issueTitle || ''}`,
-          percent: Math.round((i / issues.length) * 100),
-          current: i,
-          total: issues.length,
-        });
+          message: `正在按判定指引定级 第 ${cur}/${total} 批（每批最多5条）`,
+          percent: Math.round(((cur - 1) / total) * 100),
+          current: cur,
+          total,
+        }),
+        signal: controller.signal,
+        temperature: 0.2,
+      });
+
+      for (const issue of issues) {
+        if (controller.signal.aborted) break;
+        const iid = issue.issueId || '';
+        const item = batch.byId.get(iid);
+        if (!item) {
+          results.push({ issueId: iid, success: false, error: 'AI 未返回该条判定' });
+          continue;
+        }
         try {
-          const judgment = await generateRiskLevelJudgment(issue, controller.signal);
+          // 复用单条解析：matchedId 白名单、level 映射、reason 清洗全部一致
+          const judgment = parseRiskLevelJudgment(JSON.stringify(item), candidatesById.get(iid) || []);
           results.push({ issueId: issue.issueId || '', judgment, success: true });
-        } catch (err: any) {
-          if (controller.signal.aborted) break;
-          results.push({ issueId: issue.issueId || '', success: false, error: err?.message || '判定失败' });
+        } catch (e: any) {
+          results.push({ issueId: issue.issueId || '', success: false, error: e?.message || '判定结果解析失败' });
         }
       }
       const canceled = controller.signal.aborted;
@@ -3201,67 +3441,46 @@ export function registerAIHandlers(): void {
       let failCount = 0;
       batchIssueCancelRequested = false;
       batchIssueRunning = true;
-      // 批量取消控制器：把 signal 贯穿到每条 runWithFailover，用户取消时已发出那条也能立即中断。
+      // 批量取消控制器：signal 贯穿每批 runWithFailover，用户取消时正在跑的那批也能立即中断
       const controller = new AbortController();
       batchIssueAbortController = controller;
 
-      for (let i = 0; i < params.issues.length; i++) {
-        if (batchIssueCancelRequested) {
-          log.info(`[ai:batchAnalyzeIssues] 收到取消请求，在第 ${i}/${total} 条处中止`);
-          break;
-        }
+      const clean = (v: string): string => (privacyMode ? desensitizeText(v || '', extraWords) : (v || ''));
+      const blocks = (params.issues as Array<{ issueId: string; issueTitle: string; issueDescription: string; securityDomain: string; controlPoint: string; controlName: string }>).map((issue) =>
+        `issueId：${issue.issueId}\n问题标题：${clean(issue.issueTitle)}\n安全域：${clean(issue.securityDomain)}\n` +
+        `控制点：${clean(issue.controlPoint)}\n控制项：${clean(issue.controlName)}\n问题描述：${clean(issue.issueDescription)}`
+      );
 
-        const issue = params.issues[i];
-        sendProgress({
-          stage: 'analyzing',
-          message: `正在分析: ${issue.issueTitle}`,
-          percent: Math.round((i / total) * 100),
-          current: i + 1,
-          total,
-        });
-
-        try {
-          log.info(`[ai:batchAnalyzeIssues] [${i + 1}/${total}] 开始分析`);
-
-          const issueTitle = privacyMode ? desensitizeText(issue.issueTitle, extraWords) : issue.issueTitle;
-          const issueDescription = privacyMode ? desensitizeText(issue.issueDescription, extraWords) : issue.issueDescription;
-          const securityDomain = privacyMode ? desensitizeText(issue.securityDomain, extraWords) : issue.securityDomain;
-          const controlPoint = privacyMode ? desensitizeText(issue.controlPoint, extraWords) : issue.controlPoint;
-          const controlName = privacyMode ? desensitizeText(issue.controlName, extraWords) : issue.controlName;
-
-          const batchRectifyTemplate = await getPromptTemplate('rectify_suggestion');
-          const systemPrompt = renderPromptTemplate(batchRectifyTemplate, {
-            '问题标题': issueTitle,
-            '安全域': securityDomain,
-            '控制点': controlPoint,
-            '控制项': controlName,
-            '问题描述': issueDescription,
+      const batch = await runBatchAiGeneric({
+        blocks,
+        promptKey: 'batch_rectify_suggestion',
+        systemContent: '你是专业的等级保护测评师。为每条问题各写一段连贯的整改建议（含具体措施），issueId 原样对应，只输出 JSON。',
+        isValid: (item: any) => typeof item.suggestion === 'string' && !!item.suggestion.trim(),
+        onProgress: (cur, batches) => {
+          // 兼容全局取消标志
+          if (batchIssueCancelRequested && !controller.signal.aborted) controller.abort();
+          sendProgress({
+            stage: 'analyzing',
+            message: `正在分析第 ${cur}/${batches} 批（每批最多5条）`,
+            percent: Math.round(((cur - 1) / batches) * 100),
+            current: (cur - 1) * 5 + 1,
+            total,
           });
+        },
+        signal: controller.signal,
+        temperature,
+      });
 
-          // 使用云端模型列表做故障转移（失败自动切换下一模型）。
-          // 传入 controller.signal：用户取消时正在跑的这条也能立即 abort，而不是跑完。
-          const runResult = await runWithFailover(config, mode, {
-            build: (ep) => ({
-              body: JSON.stringify({
-                model: ep.model,
-                messages: [
-                  { role: 'system', content: '你是一名专业的等级保护测评师，擅长撰写连贯的安全整改建议描述。请以纯文本段落形式返回整改建议，不需要JSON格式。' },
-                  { role: 'user', content: systemPrompt },
-                ],
-                temperature,
-              }),
-              timeoutMs: 60000,
-            }),
-          }, controller.signal);
-          // 移除所有前导换行符和回车符
-          const content = runResult.content.replace(/^[\r\n]+/, '').trim();
+      for (const issue of params.issues) {
+        if (batchIssueCancelRequested || controller.signal.aborted) break;
+        const item = batch.byId.get(issue.issueId);
+        if (item) {
+          const content = String(item.suggestion).replace(/^[\r\n]+/, '').trim();
           results.push({ issueId: issue.issueId, suggestion: content, success: true });
           successCount++;
-          log.info(`[ai:batchAnalyzeIssues] [${i + 1}/${total}] 分析成功, 返回内容长度: ${content.length}`);
-        } catch (error: any) {
-          results.push({ issueId: issue.issueId, suggestion: '', success: false, error: error.message });
+        } else {
+          results.push({ issueId: issue.issueId, suggestion: '', success: false, error: 'AI 未返回该条结果' });
           failCount++;
-          log.error(`[ai:batchAnalyzeIssues] [${i + 1}/${total}] 分析失败: ${error.message}`);
         }
       }
 
@@ -3964,7 +4183,7 @@ export function registerAIHandlers(): void {
               }
             }
             const base64 = privacyMode ? await desensitizeImage(imgPath) : await encodeImageToBase64(imgPath);
-            if (base64) imageBlocks.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } });
+            if (base64) imageBlocks.push({ type: 'image_url', image_url: { url: `data:${imageMimeFromBase64(base64)};base64,${base64}` } });
           } catch (err: any) {
             failedFiles.push(`${path.basename(imgPath)}（图片处理失败: ${err.message}）`);
           }
@@ -4135,6 +4354,125 @@ export function registerAIHandlers(): void {
       return sanitize({
         success: false,
         error: { code: 'AI_IDENTIFY_ASSETS_ERROR', message: error.message || 'AI资产识别失败' },
+      });
+    }
+  });
+
+  // 拓扑图分区分域识别：多模态读图 → 按等保安全域输出多段描述（不触碰资产）
+  ipcMain.handle('ai:analyzeTopology', async (_e, rawParams: {
+    projectId?: string;
+    systemName?: string;
+    imagePaths?: string[];
+  }) => {
+    assertTrusted(_e);
+    const sendProgress = (data: { stage: string; message: string; percent: number }) => {
+      try { _e.sender.send('ai:topologyProgress', data); } catch (innerErr: any) {
+        log.warn('[ai:analyzeTopology] 发送进度失败:', innerErr.message);
+      }
+    };
+    try {
+      sendProgress({ stage: 'init', message: '正在准备识别...', percent: 5 });
+      const params = sanitize(rawParams);
+      const imagePathsInput: string[] = Array.isArray(params.imagePaths)
+        ? params.imagePaths.map((p: any) => String(p || '').trim()).filter(Boolean)
+        : [];
+      if (imagePathsInput.length === 0) throw new Error('请先上传拓扑图');
+      if (imagePathsInput.length > 20) throw new Error('拓扑图过多，请控制在 20 张以内');
+
+      const db = getDb();
+      const configs = await db.select().from(schema.aiConfigs).limit(1);
+      if (configs.length === 0) throw new Error('AI未配置');
+      const config = normalizeConfig(sanitize(configs[0]));
+      const mode = config.mode || 'cloud';
+      const privacyMode = config.privacyMode === 1;
+      const extraWords = config.sensitiveWords
+        ? config.sensitiveWords.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean)
+        : [];
+      const d = (t: string) => (privacyMode ? desensitizeText(String(t || ''), extraWords) : String(t || ''));
+
+      // 项目上下文（系统名称/定级/被测单位）
+      let systemContext = String(params.systemName || '');
+      if (params.projectId) {
+        try {
+          const projects = await db.select().from(schema.projects)
+            .where(eq(schema.projects.id, String(params.projectId))).limit(1);
+          if (projects.length > 0) {
+            const p = sanitize(projects[0]);
+            systemContext = [p.systemName || p.name, p.levelCombo || '', p.assessedUnit || ''].filter(Boolean).join(' / ');
+          }
+        } catch (e: any) {
+          log.warn('[ai:analyzeTopology] 项目信息获取失败:', e.message);
+        }
+      }
+
+      // 校验并编码图片（多模态，拓扑图通常较大，放宽单图上限）
+      let validated: string[] = [];
+      try {
+        validated = await validateScreenshotPaths(imagePathsInput);
+      } catch (e: any) {
+        throw new Error(`图片路径无效: ${e.message}`);
+      }
+      const userContent: any[] = [];
+      let totalKB = 0;
+      for (let i = 0; i < validated.length; i++) {
+        sendProgress({ stage: 'encoding', message: `正在读取拓扑图 ${i + 1}/${validated.length}...`, percent: 10 + Math.round((i / validated.length) * 25) });
+        try {
+          const base64 = privacyMode
+            ? await desensitizeImage(validated[i])
+            : await encodeImageToBase64(validated[i], 800);
+          if (base64) {
+            userContent.push({ type: 'image_url', image_url: { url: `data:${imageMimeFromBase64(base64)};base64,${base64}` } });
+            totalKB += base64.length / 1024;
+          }
+        } catch (err: any) {
+          log.warn('[ai:analyzeTopology] 图片读取失败:', path.basename(validated[i]), err.message);
+        }
+      }
+      if (userContent.length === 0) throw new Error('所有拓扑图都读取失败，请确认图片可访问');
+
+      const template = await getPromptTemplate('topology_analyze');
+      const prompt = renderPromptTemplate(template, { '系统信息': d(systemContext || '未指定') });
+      userContent.push({ type: 'text', text: prompt });
+      const messages = [
+        { role: 'system', content: '你是一名专业的等级保护测评师，请严格按要求的 JSON 格式返回。' },
+        { role: 'user', content: userContent },
+      ];
+
+      sendProgress({ stage: 'sending', message: '正在提交给AI识别分区分域...', percent: 45 });
+      const dynamicTimeout = calculateTimeout(1, validated.length, totalKB, privacyMode);
+      const runResult = await runWithFailover(config, mode, {
+        build: (ep) => ({
+          body: JSON.stringify({
+            model: ep.model,
+            messages,
+            temperature: config.temperature ?? 0.2,
+            max_tokens: 8000,
+          }),
+          timeoutMs: dynamicTimeout,
+        }),
+      });
+
+      sendProgress({ stage: 'parsing', message: '正在整理分区分域描述...', percent: 90 });
+      const { domains, overview, partial, rawCount } = parseDomainsJson(runResult.content);
+      log.info(`[ai:analyzeTopology] 识别完成: ${domains.length} 个安全域${overview ? ' + 总述' : ''}（AI 原始返回 ${rawCount} 个）${partial ? '（输出截断已救回）' : ''}`);
+      if (rawCount > domains.length) {
+        log.warn(`[ai:analyzeTopology] 有 ${rawCount - domains.length} 个域因缺字段被过滤，请检查 AI 返回内容`);
+      }
+      if (domains.length === 0) {
+        return sanitize({
+          success: false,
+          error: { code: 'AI_TOPOLOGY_NO_DOMAIN', message: '未能从图中识别出有效的分区分域信息，请确认图片清晰、含区域标注后重试' },
+        });
+      }
+
+      sendProgress({ stage: 'done', message: `识别完成，共 ${domains.length} 个安全域`, percent: 100 });
+      return sanitize({ success: true, data: { domains, overview, partial } });
+    } catch (error: any) {
+      log.error('[ai:analyzeTopology] 错误:', error.message);
+      sendProgress({ stage: 'error', message: error.message || '拓扑图识别失败', percent: 0 });
+      return sanitize({
+        success: false,
+        error: { code: 'AI_TOPOLOGY_ERROR', message: error.message || '拓扑图识别失败' },
       });
     }
   });

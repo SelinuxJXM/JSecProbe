@@ -801,20 +801,34 @@ function handleAiAnalyze(row: Issue) {
   issueAiAnalysisRef.value?.analyzeIssue(row);
 }
 
-function handleAiBatchCommand(command: string) {
-  // 智能切换分析范围：如果有选中行，则分析选中的；否则分析所有
-  const targetIssues = selectedRows.value.length > 0 ? selectedRows.value : issueList.value;
+/** 批量分析前加载当前筛选下全部问题（跨页），不改变表格当前页 */
+async function loadAllIssuesForBatch() {
+  if (!window.api) return [] as any[];
+  const res = await window.api.issue.list({
+    projectId: projectId.value,
+    keyword: filterForm.keyword || undefined,
+    riskLevel: filterForm.riskLevel || undefined,
+    status: filterForm.status || undefined,
+    securityDomain: filterForm.securityDomain ? getIssueDomainId(filterForm.securityDomain) : undefined,
+    sortProp: sortConfig.prop || undefined,
+    sortOrder: sortConfig.order || undefined,
+    page: 1,
+    pageSize: 10000,
+  });
+  return res.success && res.data ? (res.data as any).list : [] as any[];
+}
+
+async function handleAiBatchCommand(command: string) {
+  const hasSelection = selectedRows.value.length > 0;
+  const targetIssues: any[] = hasSelection ? selectedRows.value.slice() : await loadAllIssuesForBatch();
 
   if (targetIssues.length === 0) {
     ElMessage.warning('当前没有可分析的问题');
     return;
   }
 
-  // 未选中时 targetIssues 只含当前分页，不能说"全部"，否则用户以为整项目都处理了
-  const scopeText = selectedRows.value.length > 0 ? `选中的 ${selectedRows.value.length} 个` : '当前页全部';
-
-  // 批量操作耗时较长，先把范围显式告知用户，避免"点错范围却已经跑了一半"
-  ElMessage.info(`开始分析${scopeText}问题（共 ${targetIssues.length} 个）`);
+  const scopeText = hasSelection ? `选中的 ${targetIssues.length} 个` : `全部 ${targetIssues.length} 个（跨页，已分批）`;
+  ElMessage.info(`开始分析${scopeText}问题`);
 
   if (command === 'suggestion') {
     issueAiAnalysisRef.value?.batchAnalyzeIssues(targetIssues);

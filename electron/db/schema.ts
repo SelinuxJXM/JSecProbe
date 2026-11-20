@@ -81,6 +81,10 @@ export const projects = sqliteTable('projects', {
   startDate: text('start_date'),
   endDate: text('end_date'),
   description: text('description'),
+  /** JSON: Array<{name,path,size}>，系统拓扑图（可多张），attachment:save 受管相对路径 */
+  topologyAttachments: text('topology_attachments'),
+  /** AI 按等保安全域分段生成的拓扑描述，纯文本，段落间换行分隔 */
+  topologyDescription: text('topology_description'),
   assetCount: integer('asset_count').notNull().default(0),
   complianceRate: real('compliance_rate'),
   progress: integer('progress').notNull().default(0),

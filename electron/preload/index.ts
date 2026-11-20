@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
-import type { AiChatStreamChunk, User, ApiBridge, RiskLevelJudgment, RiskLevelJudgeResult } from '../../shared/types';
+import type { AiChatStreamChunk, User, ApiBridge, RiskLevelJudgment, RiskLevelJudgeResult, IpcResponse } from '../../shared/types';
 
 const ipc = <T = any>(channel: string) => (...args: any[]): Promise<T> => ipcRenderer.invoke(channel, ...args);
 
@@ -76,6 +76,7 @@ const aiService = {
   analyzeIssue: ipc<{ content: string }>('ai:analyzeIssue'),
   cancelIssue: ipc<{ canceled: boolean }>('ai:cancelIssue'),
   analyzeIssueDescription: ipc<{ content: string }>('ai:analyzeIssueDescription'),
+  batchAnalyzeIssueDescriptions: ipc<{ results: Array<{ issueId: string; content: string; success: boolean; error?: string }>; canceled?: boolean }>('ai:batchAnalyzeIssueDescriptions'),
   cancelIssueDescription: ipc<{ canceled: boolean }>('ai:cancelIssueDescription'),
   batchAnalyzeIssues: ipc<{ results: Array<{ issueId: string; suggestion: string; success: boolean; error?: string }>; canceled?: boolean }>('ai:batchAnalyzeIssues'),
   cancelBatchIssueAnalysis: ipc<{ canceled: boolean }>('ai:cancelBatchIssueAnalysis'),
@@ -143,6 +144,17 @@ const aiService = {
     const handler = (_e: IpcRendererEvent, data: any) => callback(data);
     ipcRenderer.on('ai:assetIdentifyProgress', handler);
     return () => ipcRenderer.removeListener('ai:assetIdentifyProgress', handler);
+  },
+  analyzeTopology: ipc<{ domains: Array<{ name: string; description: string }>; overview?: string; partial?: boolean }>('ai:analyzeTopology'),
+  onTopologyProgress: (callback: (data: { stage: string; message: string; percent: number }) => void) => {
+    const handler = (_e: IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on('ai:topologyProgress', handler);
+    return () => ipcRenderer.removeListener('ai:topologyProgress', handler);
+  },
+  onBatchIssueDescProgress: (callback: (data: { stage: string; message: string; percent: number; current: number; total: number }) => void) => {
+    const handler = (_e: IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on('ai:batchIssueDescProgress', handler);
+    return () => ipcRenderer.removeListener('ai:batchIssueDescProgress', handler);
   },
   onBatchIssueProgress: (callback: (data: { stage: string; message: string; percent: number; current: number; total: number }) => void) => {
     const handler = (_e: IpcRendererEvent, data: any) => callback(data);
@@ -219,6 +231,7 @@ const api = {
     getTrend: ipc<any>('project:getTrend'),
     create: ipc<any>('project:create'),
     update: ipc<any>('project:update'),
+    updateTopology: ipc<any>('project:updateTopology'),
     remove: ipc<void>('project:remove'),
     export: ipc<{ path: string }>('project:export'),
     exportAll: ipc<{ path: string }>('project:exportAll'),
@@ -416,7 +429,8 @@ const api = {
     extractText: ipc<Array<{ name: string; content: string; error?: string }>>('document:extractText'),
   },
   attachment: {
-    save: ipc<{ path: string; name: string; size: number; type: 'image' | 'document' }>('attachment:save'),
+    save: ipc<IpcResponse<{ path: string; name: string; size: number; type: 'image' | 'document' }>>('attachment:save'),
+    delete: ipc<IpcResponse<boolean>>('attachment:delete'),
   },
   image: {
     saveScreenshot: ipc<{ filePath: string; fileName: string }>('image:saveScreenshot'),

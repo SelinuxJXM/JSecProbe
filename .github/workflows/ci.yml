@@ -1,0 +1,43 @@
+name: CI
+
+# 每次 PR / push 到主分支都跑一遍类型检查、单元测试与一致性校验。
+# 目的：类型检查（含 electron 主进程）防的是"并行编辑同时返回成功、其中一个实际没落盘"；
+# 三条关键链路（备份加解密 / 自动保存 / 内置标准 seed）另有一组单测兜底，
+# 它们的共同失败特征是不报错但丢数据/丢标准，只有断言能拦住。
+# 单测只依赖 vitest + happy-dom，是纯逻辑测试，不需要原生模块与 Electron 运行时。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # --ignore-scripts：跳过 electron 下载与 better-sqlite3/sharp 原生编译，
+      # 类型检查只需要类型声明，这样 CI 快且不会卡在原生工具链上
+      - name: 安装依赖
+        run: npm ci --ignore-scripts
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 单元测试
+        run: npm test
+
+      - name: 版本号一致性校验
+        run: npm run check:version
+
+      - name: 数据库 schema 漂移校验
+        run: npm run check:schema

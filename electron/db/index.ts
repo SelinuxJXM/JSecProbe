@@ -679,6 +679,15 @@ function ensureProjectGroupTables(sqlite: Database.Database): void {
       sqlite.exec('ALTER TABLE projects ADD COLUMN group_id TEXT');
       log.info('已为 projects 添加 group_id 列');
     }
+    // 系统拓扑图（迁移 0011 的启动兜底）：旧库缺列时补建，保证升级/新装都能用
+    if (!projectCols.some(c => c.name === 'topology_attachments')) {
+      sqlite.exec('ALTER TABLE projects ADD COLUMN topology_attachments TEXT');
+      log.info('已为 projects 添加 topology_attachments 列');
+    }
+    if (!projectCols.some(c => c.name === 'topology_description')) {
+      sqlite.exec('ALTER TABLE projects ADD COLUMN topology_description TEXT');
+      log.info('已为 projects 添加 topology_description 列');
+    }
 
     sqlite.exec(`
       CREATE INDEX IF NOT EXISTS project_group_status_idx ON project_groups(status);

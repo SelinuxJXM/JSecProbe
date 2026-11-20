@@ -12,9 +12,16 @@
  * @returns 成功救回的对象数组；一个都救不回时返回 null。
  */
 export function rescueAssetsArray(content: string): any[] | null {
+  return rescueArrayByKey(content, 'assets');
+}
+
+/**
+ * 按指定 key 从可能被截断的 JSON 中救回数组里所有结构完整的对象。
+ * 用于 topology_analyze 的 domains 等同类数组结构。
+ */
+export function rescueArrayByKey(content: string, key: string): any[] | null {
   const text = String(content || '');
-  // 定位 assets 数组的左括号
-  const keyMatch = /"assets"\s*:\s*\[/.exec(text);
+  const keyMatch = new RegExp(`"${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\\s*:\\s*\\[`).exec(text);
   if (!keyMatch) return null;
   let i = keyMatch.index + keyMatch[0].length;
   const out: any[] = [];
@@ -54,7 +61,10 @@ export function rescueAssetsArray(content: string): any[] | null {
       if (obj && typeof obj === 'object') out.push(obj);
       i = j;
     } catch {
-      break; // 非法对象，停止
+      // 括号平衡但内容非法（如尾逗号/单引号）：跳过这一个，继续救回后面的完整对象。
+      // 必须先推进 i=j（j>i，不会死循环），否则会在同一个 `{` 上无限重试。
+      i = j;
+      continue;
     }
   }
   return out.length ? out : null;
@@ -88,4 +98,49 @@ export function parseAssetsJson(rawContent: string): { assets: any[]; partial: b
   const rescued = rescueAssetsArray(text);
   if (rescued) return { assets: rescued, partial: true, error };
   return { assets: [], partial: false, error };
+}
+
+/**
+ * 解析拓扑分区分域识别结果：{domains:[{name,description}]}。
+ * 与资产解析同样的容错策略：整体解析 → 剥围栏 → 大括号提取 → 逐对象救回。
+ * 额外做字段清洗：只保留有 name/description 的段，去空白与长度上限。
+ */
+export function parseDomainsJson(rawContent: string): { domains: Array<{ name: string; description: string }>; overview: string; partial: boolean; rawCount: number } {
+  let text = String(rawContent || '').trim();
+  text = text.replace(/^\s*```(?:json|text)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+  let raw: any[] = [];
+  let overview = '';
+  let partial = false;
+
+  try {
+    const parsed = JSON.parse(text);
+    raw = Array.isArray(parsed?.domains) ? parsed.domains : [];
+    overview = typeof parsed?.overview === 'string' ? parsed.overview.trim() : '';
+  } catch {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        const parsed = JSON.parse(text.slice(start, end + 1));
+        raw = Array.isArray(parsed?.domains) ? parsed.domains : [];
+        overview = typeof parsed?.overview === 'string' ? parsed.overview.trim() : '';
+      } catch {
+        raw = [];
+      }
+    }
+    if (!raw.length) {
+      const rescued = rescueArrayByKey(text, 'domains');
+      if (rescued) { raw = rescued; partial = true; }
+    }
+  }
+
+  const domains: Array<{ name: string; description: string }> = [];
+  for (const d of raw) {
+    if (!d || typeof d !== 'object') continue;
+    const name = String(d.name || '').trim().slice(0, 40);
+    const description = String(d.description || '').trim().slice(0, 4000);
+    if (!name || !description) continue;
+    domains.push({ name, description });
+  }
+  return { domains, overview, partial, rawCount: raw.length };
 }
