@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import log from 'electron-log';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
-import { getCommandTimeout, parseExtraConfig } from './db.util';
+import { getCommandTimeout, parseExtraConfig, assertSafeShellCommand } from './db.util';
 import { normalizePolicy, verifyHostKey } from './known-hosts';
 import { CommandTimeoutError, type IConnector, type ExecResult } from './connector';
 
@@ -88,6 +88,8 @@ export class SshConnector implements IConnector {
   }
 
   async execute(cmd: string): Promise<ExecResult> {
+    // 破坏性命令护栏：测评采集应为只读，禁止把 rm -rf / shutdown 等发到目标机执行
+    assertSafeShellCommand(cmd);
     if (!this.client) throw new Error('SSH 连接未建立');
     return new Promise((resolve, reject) => {
       const start = Date.now();
@@ -96,15 +98,13 @@ export class SshConnector implements IConnector {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
+        // 只关闭超时的这条 exec 通道。ssh2 的通道相互独立，关掉当前 stream 不会
+        // 影响后续命令；此前调用 this.client.end() 销毁整条 SSH 连接，导致本任务
+        // 后续所有命令都因"连接未建立"失败——单条超时的破坏被放大到整个任务。
         try {
           streamRef?.close();
         } catch {
           // 忽略关闭异常
-        }
-        try {
-          this.client?.end();
-        } catch {
-          // 忽略连接关闭异常
         }
         reject(new CommandTimeoutError('SSH 命令执行超时'));
       }, this.commandTimeoutMs);

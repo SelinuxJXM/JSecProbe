@@ -258,7 +258,11 @@ function parseLatestYml(yml: string): { version: string; sha512: string; size: n
 async function checkR2ForUpdates(): Promise<{ version: string; sha512: string; size: number; releaseDate?: string; releaseNotes?: string } | null> {
   try {
     log.info('[更新-R2] 正在检查 Cloudflare R2 更新源...');
-    const response = await net.fetch(`${R2_CONFIG.baseUrl}/latest.yml`, { method: 'GET' });
+    // 自定义域名（data.semove.ccwu.cc）的 CDN 边缘会忽略 R2 对象的 no-cache 头，
+    // 发新版后客户端可能长时间读到旧 latest.yml（v2.5.5 实测：源对象已是 2.5.5，
+    // 客户端却读到 2.5.2 而误判"无新版本"）。加时间戳参数强制穿透缓存。
+    const ymlUrl = `${R2_CONFIG.baseUrl}/latest.yml?t=${Date.now()}`;
+    const response = await net.fetch(ymlUrl, { method: 'GET' });
     if (!response.ok) {
       log.warn(`[更新-R2] 获取 latest.yml 失败: HTTP ${response.status}`);
       return null;

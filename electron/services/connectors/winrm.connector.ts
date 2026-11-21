@@ -12,7 +12,7 @@ import log from 'electron-log';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
 import { CommandTimeoutError, type IConnector, type ExecResult } from './connector';
-import { parseExtraConfig, getCommandTimeout } from './db.util';
+import { parseExtraConfig, getCommandTimeout, assertSafeShellCommand } from './db.util';
 
 type WinRmAuthMethod = 'basic' | 'ntlm';
 
@@ -93,12 +93,16 @@ export class WinRmConnector implements IConnector {
   }
 
   async execute(cmd: string): Promise<ExecResult> {
+    assertSafeShellCommand(cmd);
     if (!this.conn) throw new Error('WinRM 连接未建立');
     const start = Date.now();
     try {
       const { stdout, stderr, exitCode } = await this.execWinRmWithFallback(cmd);
       return { stdout, stderr, exitCode, durationMs: Date.now() - start };
     } catch (err) {
+      // 超时必须保持类型，让任务层把结果标记为 'timeout' 而非普通 'error'，
+      // 否则前端无法区分「命令太慢」和「命令本身出错」，排障方向会被误导。
+      if (err instanceof CommandTimeoutError) throw err;
       return {
         stdout: '',
         stderr: err instanceof Error ? err.message : String(err),

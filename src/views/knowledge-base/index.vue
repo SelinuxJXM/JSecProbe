@@ -1653,9 +1653,20 @@ async function loadGuideFiles() {
     if (res.success && res.data) {
       guideFileList.value = res.data.filter(f => f.isFile && /\.(xlsx|xls|docx|doc|pdf)$/i.test(f.name));
       selectedFiles.value = guideFileList.value.map(f => f.path);
+      if (guideFileList.value.length === 0) {
+        ElMessage.warning('该目录未找到可导入的文件（支持 xlsx/xls/docx/doc/pdf）');
+      }
+    } else {
+      // 之前只 try/catch 不判 success：后端 wrap 把失败转成 {success:false} 而非抛异常，
+      // 导致目录被拒时界面无任何提示、文件列表永远为空，用户以为功能坏了。
+      guideFileList.value = [];
+      selectedFiles.value = [];
+      ElMessage.error(res.error?.message || '读取目录失败，请确认目录可访问');
     }
-  } catch {
-    ElMessage.error('读取目录失败');
+  } catch (e: any) {
+    guideFileList.value = [];
+    selectedFiles.value = [];
+    ElMessage.error(e?.message || '读取目录失败');
   }
 }
 
@@ -1672,12 +1683,14 @@ async function handleBatchImportGuide() {
   
   const files = guideFileList.value.filter(f => selectedFiles.value.includes(f.path));
   let successCount = 0;
-  let failCount = 0;
+  const failures: string[] = [];
 
   for (const file of files) {
     try {
       const title = file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
-      const res = await window.api.knowledge.importSingleDocument({
+      // 改走 uploadDocument：它会把文件复制到受管目录并存相对路径，避免原文件移动后成孤儿；
+      // importSingleDocument 只存原始绝对路径，是同一功能的劣化版。
+      const res = await window.api.knowledge.uploadDocument({
         categoryId: importGuideForm.categoryId,
         title: title,
         type: importGuideForm.type,
@@ -1689,14 +1702,18 @@ async function handleBatchImportGuide() {
       if (res.success) {
         successCount++;
       } else {
-        failCount++;
+        failures.push(`${file.name}：${res.error?.message || '未知错误'}`);
       }
-    } catch {
-      failCount++;
+    } catch (e: any) {
+      failures.push(`${file.name}：${e?.message || '异常'}`);
     }
   }
 
-  ElMessage.success(`导入完成：成功 ${successCount} 个，失败 ${failCount} 个`);
+  if (failures.length > 0) {
+    ElMessage.warning(`导入完成：成功 ${successCount} 个，失败 ${failures.length} 个。${failures.slice(0, 3).join('；')}`);
+  } else {
+    ElMessage.success(`导入完成：成功 ${successCount} 个`);
+  }
   showImportGuideDialog.value = false;
   loadCategories();
   loadDocuments();

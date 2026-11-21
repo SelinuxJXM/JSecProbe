@@ -186,6 +186,40 @@ const SQL_WRITE_MARKERS = [
   'COPY ',
 ];
 
+/**
+ * Shell 命令安全护栏（SSH / WinRM 通道）。
+ *
+ * SQL / Redis 通道已有只读白名单，但 shell 通道此前可把知识库里任意命令发到目标机
+ * 以管理员权限执行——测评账户常是高权限，一旦知识库被污染或有人手输破坏性命令，
+ * 后果不可逆。这里只拦"最明确的破坏性模式"，不追求完整白名单（核查命令形态太多，
+ * 白名单会误伤正常核查）；误伤风险由"只列明确破坏动词 + 立即用现有命令库回归"控制。
+ */
+const DANGEROUS_SHELL_PATTERNS: Array<{ re: RegExp; label: string }> = [
+  { re: /\brm\s+-[a-z]*[rf][a-z]*\s+/i, label: '递归强制删除(rm -rf/-fr)' },
+  { re: /\brm\s+-rf\s+[\/\\]/i, label: '根目录删除' },
+  { re: /\bdd\s+if=/i, label: 'dd 设备写入' },
+  { re: /\bmkfs(\.|\s|$)/i, label: '格式化文件系统' },
+  { re: /\b(shutdown|reboot|halt|poweroff)\b/i, label: '关机/重启' },
+  { re: /\binit\s+[06]\b/i, label: '切换运行级别(关机/重启)' },
+  { re: /\bchmod\s+(-r\s+)?777\b/i, label: '全局可写权限' },
+  { re: /\bchown\s+-R\b/i, label: '递归改属主' },
+  { re: /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:/, label: 'fork 炸弹' },
+  { re: /\b(curl|wget)\b[^|]*\|\s*(ba)?sh\b/i, label: '下载并直接执行' },
+  { re: /\bdel\s+\/[fqs]/i, label: 'Windows 强制删除' },
+  { re: /\bformat\s+[a-z]:/i, label: 'Windows 格式化磁盘' },
+  { re: /\breg\s+(add|delete)\b/i, label: 'Windows 注册表写入' },
+  { re: /\b(net\s+user\s+\S+\s+\S+|useradd|userdel)\b/i, label: '创建/删除系统账户' },
+];
+
+export function assertSafeShellCommand(cmd: string): void {
+  const text = String(cmd || '');
+  for (const { re, label } of DANGEROUS_SHELL_PATTERNS) {
+    if (re.test(text)) {
+      throw new Error(`已拦截高危命令（${label}）：${text.slice(0, 120)}`);
+    }
+  }
+}
+
 export function assertReadonlySql(sql: string): void {
   const trimmed = sql.replace(/^\s+/, '');
   const upper = trimmed.toUpperCase();

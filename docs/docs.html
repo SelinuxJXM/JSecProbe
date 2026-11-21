@@ -541,7 +541,7 @@ body {
   <aside class="sidebar" id="sidebar" aria-label="目录导航">
     <div class="sidebar-header">
       <div class="sidebar-title"><a href="index.html">📄 产品白皮书</a></div>
-      <div class="sidebar-subtitle">JSecProbe V2.5.5</div>
+      <div class="sidebar-subtitle">JSecProbe V2.5.6</div>
     </div>
     <nav aria-label="目录">
       <div class="toc">
@@ -679,7 +679,7 @@ body {
   <main class="content" id="main-content">
     <article class="article">
       <h1>JSecProbe 等级保护现场测评系统</h1>
-      <p class="subtitle">产品白皮书 · 当前版本 V2.5.5 · 技术标准 GB/T 22239-2019</p>
+      <p class="subtitle">产品白皮书 · 当前版本 V2.5.6 · 技术标准 GB/T 22239-2019</p>
 
       <h2 id="intro">一、产品概述</h2>
 
@@ -1422,6 +1422,18 @@ body {
             </td>
           </tr>
           <tr>
+            <td>白皮书 V1.20</td><td>V2.5.6</td>
+            <td>
+              <ul style="margin:0 0 0 18px;padding:0;">
+                <li>修复知识库「导入指导书」选目录被静默拒绝、无提示、导入不落文件的问题，改为复制到受管目录</li>
+                <li>自动采集：SSH 超时不再拖垮整条连接与后续命令；SSH/WinRM 新增破坏性命令护栏；超时类型正确保留</li>
+                <li>核查命令库修正 2 条（华为端口安全、Tomcat 版本查看）</li>
+                <li>修复更新检查 Cloudflare R2 兜底源因 CDN 缓存读到旧版本的问题</li>
+                <li>附录 D 新增「白皮书变更记录」V1.20 条目</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
             <td>白皮书 V1.19</td><td>V2.5.5</td>
             <td>
               <ul style="margin:0 0 0 18px;padding:0;">
@@ -1669,7 +1681,7 @@ body {
 
       <hr>
       <p style="text-align:center;color:var(--gray-500);font-size:14px;padding:20px 0;">
-        <em>本文档最后更新：2026 年 11 月（V1.19，对应 V2.5.5）</em><br>
+        <em>本文档最后更新：2026 年 11 月（V1.20，对应 V2.5.6）</em><br>
         <strong>JSecProbe - 让等保测评更高效、更规范、更智能</strong>
       </p>
     </article>

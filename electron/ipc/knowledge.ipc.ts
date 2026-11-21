@@ -8,7 +8,7 @@ import { eq, and, like, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { getAppDataPath } from '../main/paths';
 import { wrap } from '../utils/ipc-wrapper';
-import { toRelativePath, validateDataPath, validateReadablePath } from '../utils/path-resolver';
+import { toRelativePath, validateDataPath, validateReadablePath, validateFsPath, authorizeUserFiles } from '../utils/path-resolver';
 import { readExcelSheets, readExcelAsObjects } from '../utils/excel-reader';
 
 const MAX_EXCEL_SIZE = 50 * 1024 * 1024;
@@ -805,15 +805,16 @@ export function registerKnowledgeHandlers(): void {
       return { id };
     }));
 
-  // 列出目录文件
+  // 列出目录文件（导入指导书用）
   ipcMain.handle('knowledge:listDirectoryFiles', wrap(async (_event, dirPath: string) => {
-      // 先校验路径，防止列举应用数据目录之外的任意目录
-      const resolvedPath = await validateDataPath(dirPath);
+      // 目录来自用户的文件夹选择对话框：用 validateFsPath 允许桌面/移动盘等非保护目录
+      // （此前误用 validateDataPath，只放行 appData 内，导致用户选的目录几乎必被拒绝）。
+      const resolvedPath = await validateFsPath(dirPath);
       if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isDirectory()) {
         throw new Error('目录不存在');
       }
       const items = fs.readdirSync(resolvedPath);
-      return items.map(name => {
+      const files = items.map(name => {
         const fullPath = path.join(resolvedPath, name);
         const stat = fs.statSync(fullPath);
         return {
@@ -823,6 +824,10 @@ export function registerKnowledgeHandlers(): void {
           isFile: stat.isFile(),
         };
       });
+      // 用户选了目录即视作授权读取其中的文件：登记后 importSingleDocument 的
+      // validateReadablePath 才会放行（与 checkpoint:pickFile 的授权链路一致）。
+      authorizeUserFiles(files.filter(f => f.isFile).map(f => f.path));
+      return files;
     }));
 
   // 读取 Excel 文件

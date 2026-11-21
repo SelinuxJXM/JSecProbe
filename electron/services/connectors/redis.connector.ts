@@ -2,7 +2,7 @@ import type Redis from 'ioredis';
 import type { ConnectionProfile } from '../../../shared/types';
 import { decryptSecret } from '../credential.util';
 import { logger as log } from '../../utils/logger';
-import type { IConnector, ExecResult } from './connector';
+import { CommandTimeoutError, type IConnector, type ExecResult } from './connector';
 import {
   parseExtraConfig,
   getCommandTimeout,
@@ -102,6 +102,7 @@ export class RedisConnector implements IConnector {
       }
       return { stdout: outputs.join('\n'), stderr: '', exitCode: 0, durationMs: Date.now() - start };
     } catch (err) {
+      if (err instanceof CommandTimeoutError) throw err;
       return {
         stdout: '',
         stderr: err instanceof Error ? err.message : String(err),
