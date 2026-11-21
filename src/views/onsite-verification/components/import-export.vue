@@ -530,15 +530,16 @@ async function handleExportCommand(command: string) {
 .import-export-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .toolbar-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 6px 12px;
-  font-size: 13px;
+  gap: 4px;
+  padding: 5px 9px;
+  font-size: 12px;
+  white-space: nowrap;
   border: 1px solid var(--color-border-base);
   background: var(--color-bg-card);
   border-radius: var(--radius-base);

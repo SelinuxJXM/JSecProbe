@@ -19,6 +19,14 @@ import { normalizeExternalUrl } from '../utils/external-url';
 
 logger.setProductionMode(app.isPackaged);
 
+// dev 版使用独立 userData：单实例锁与窗口状态都基于 userData，若与已安装版共用，
+// 两个版本会互相把对方判为"另一个实例"而无法共存。业务数据与配置走 getDefaultBasePath()
+// （dev 下为项目目录 JSecProbeData），不受此路径影响，因此这里只隔离 Electron 自身的 userData。
+if (!app.isPackaged && process.env.JSECPROBE_DEV_FILE === '1') {
+  const realUserData = app.getPath('userData');
+  app.setPath('userData', join(realUserData, 'jsecprobe-dev'));
+}
+
 // dev 态强制 Chromium 直连：宿主/系统注入的 HTTP_PROXY 会被 Chromium 读取，
 // 即使 NO_PROXY 含 127.0.0.1 也可能把本地 Vite 请求错误地交给代理，导致 loadURL
 // 挂起、渲染进程停在空白页（fetch 5173 超时但 Node/curl 正常）。AI 走独立 session

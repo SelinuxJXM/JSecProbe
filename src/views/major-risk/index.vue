@@ -24,11 +24,11 @@
         <div class="page-header-desc">依据《重大风险隐患清单》与现场测评记录，按相关性、严重性、高发性三要素逐条判定</div>
       </div>
       <div class="page-header-actions">
-        <el-button :icon="Collection" @click="openCatalog">清单管理</el-button>
-        <el-button type="primary" data-guide="major-risk-batch" :icon="MagicStick" :loading="batchStarting" @click="handleBatchAnalyze">
+        <el-button class="action-btn action-secondary" :icon="Collection" @click="openCatalog">清单管理</el-button>
+        <el-button class="action-btn action-primary" type="primary" data-guide="major-risk-batch" :icon="MagicStick" :loading="batchStarting" @click="handleBatchAnalyze">
           批量AI识别
         </el-button>
-        <el-button type="success" :icon="Download" :loading="exporting" @click="handleExport">导出</el-button>
+        <el-button class="action-btn action-secondary" :icon="Download" :loading="exporting" @click="handleExport">导出</el-button>
       </div>
     </div>
 
@@ -52,24 +52,38 @@
 
     <div class="table-section">
       <div class="table-toolbar">
-        <el-form :inline="true" class="filter-form">
-          <el-form-item>
-            <el-input v-model="filterForm.keyword" placeholder="搜索问题描述 / 命中清单" clearable :prefix-icon="Search" style="width: 260px" />
-          </el-form-item>
-          <el-form-item>
-            <el-select v-model="filterForm.verdict" placeholder="判定结论" clearable style="width: 160px">
-              <el-option label="属于重大隐患" value="major" />
-              <el-option label="不属于" value="non_major" />
-              <el-option label="待判定" value="pending" />
-            </el-select>
-          </el-form-item>
-        </el-form>
-        <div class="toolbar-tip">问题描述来自「风险分析」页，问题在这里与其共用同一份数据</div>
+        <div class="toolbar-left">
+          <el-form :inline="true" class="filter-form">
+            <el-form-item>
+              <el-input v-model="filterForm.keyword" placeholder="搜索问题描述 / 命中清单" clearable :prefix-icon="Search" style="width: 260px" />
+            </el-form-item>
+            <el-form-item>
+              <el-select v-model="filterForm.verdict" placeholder="判定结论" clearable style="width: 160px">
+                <el-option label="属于重大隐患" value="major" />
+                <el-option label="不属于" value="non_major" />
+                <el-option label="待判定" value="pending" />
+              </el-select>
+            </el-form-item>
+          </el-form>
+          <div class="toolbar-tip">问题描述来自「风险分析」页，问题在这里与其共用同一份数据</div>
+        </div>
+        <div class="toolbar-right">
+          <el-pagination
+            v-model:current-page="pagination.page"
+            v-model:page-size="pagination.pageSize"
+            :total="filteredRows.length"
+            :page-sizes="[10, 20, 50, 100]"
+            layout="prev, pager, next, total"
+            background
+            @size-change="onPageSizeChange"
+            @current-change="onPageChange"
+          />
+        </div>
       </div>
 
-      <el-table :data="filteredRows" v-loading="loading" border stripe>
+      <el-table :data="pagedRows" v-loading="loading" border stripe>
         <el-table-column label="序号" width="60" align="center">
-          <template #default="{ $index }">{{ $index + 1 }}</template>
+          <template #default="{ $index }">{{ (pagination.page - 1) * pagination.pageSize + $index + 1 }}</template>
         </el-table-column>
         <el-table-column prop="issueDescription" label="问题描述" min-width="220" show-overflow-tooltip />
         <el-table-column prop="assetName" label="测评对象" width="130" show-overflow-tooltip />
@@ -218,7 +232,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue';
+import { ref, reactive, computed, watch, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
@@ -243,6 +257,8 @@ const saving = ref(false);
 const exporting = ref(false);
 const batchStarting = ref(false);
 const rows = ref<MajorRiskRow[]>([]);
+// 分页：与风险分析 / 整改建议页保持一致（默认每页 10 条）
+const pagination = reactive({ page: 1, pageSize: 10 });
 const summary = ref<MajorRiskSummary>({ total: 0, analyzed: 0, pending: 0, major: 0, nonMajor: 0, catalogCount: 0 });
 const filterForm = reactive({ keyword: '', verdict: '' });
 const aiRef = ref<InstanceType<typeof MajorRiskAi> | null>(null);
@@ -255,6 +271,20 @@ const filteredRows = computed(() => {
     return true;
   });
 });
+// 前端分页切片：数据一次加载，按当前页/每页条数截取（与另两页的每页 10 条口径一致）
+const pagedRows = computed(() => {
+  const start = (pagination.page - 1) * pagination.pageSize;
+  return filteredRows.value.slice(start, start + pagination.pageSize);
+});
+// 筛选条件变化回到第一页，避免停在第 N 页却因结果变少而显示空白
+watch(() => [filterForm.keyword, filterForm.verdict], () => { pagination.page = 1; });
+// 删除/清空导致当前页无数据时回退一页，避免空页
+watch(() => filteredRows.value.length, (len) => {
+  const maxPage = Math.max(1, Math.ceil(len / pagination.pageSize));
+  if (pagination.page > maxPage) pagination.page = maxPage;
+});
+function onPageChange(page: number) { pagination.page = page; }
+function onPageSizeChange(size: number) { pagination.pageSize = size; pagination.page = 1; }
 
 function riskLabel(level: string): string { return level === 'high' ? '高' : level === 'medium' ? '中' : '低'; }
 function riskTagType(level: string): 'danger' | 'warning' | 'info' { return level === 'high' ? 'danger' : level === 'medium' ? 'warning' : 'info'; }
@@ -566,21 +596,115 @@ onMounted(async () => {
 
 <style scoped lang="scss">
 .page-container { padding: 20px; }
-.project-context-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 16px; flex-wrap: wrap; }
-.breadcrumb { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--color-text-secondary); }
-.back-btn { cursor: pointer; &:hover { color: var(--color-primary); } }
-.customer-name { color: var(--color-text-primary); font-weight: 500; }
-.current-page { color: var(--color-text-primary); font-weight: 600; }
-.phase-indicators { display: flex; gap: 6px; flex-wrap: wrap; }
-.phase-pill { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 16px; background: var(--color-bg-tag); color: var(--color-text-secondary); font-size: 13px; cursor: pointer; transition: all .2s; &:hover { background: var(--color-bg-hover); }
-  &.active { background: var(--color-primary); color: #fff; }
-  .pill-num { width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: rgba(255,255,255,.2); font-size: 11px; }
-  &:not(.active) .pill-num { background: var(--color-border-light); color: var(--color-text-secondary); }
+// 顶部上下文栏：与风险分析页 / 整改建议页一致——面包屑一行、阶段按钮一行（上下堆叠），
+// 而不是把两者挤在同一行左右分布。
+.project-context-bar {
+  background: var(--color-bg-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 16px 24px;
+  margin-bottom: 10px;
+
+  .breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--color-text-tertiary);
+    margin-bottom: 12px;
+
+    .back-btn { cursor: pointer; &:hover { color: var(--color-primary); } }
+    .customer-name { color: var(--color-text-secondary); }
+    .current-page { color: var(--color-text-primary); font-weight: 500; }
+  }
+}
+// 阶段导航胶囊：与风险分析页 / 整改建议页保持一致（padding、底色、序号尺寸统一）
+.phase-indicators {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+
+  .phase-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: var(--radius-full);
+    background: var(--color-bg-page);
+    color: var(--color-text-tertiary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+
+    &.active {
+      background: var(--color-primary);
+      color: #fff;
+
+      .pill-num {
+        background: rgba(255, 255, 255, 0.25);
+        color: #fff;
+      }
+    }
+
+    .pill-num {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: var(--color-border-default);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--color-text-secondary);
+    }
+  }
 }
 .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 16px; }
 .page-header-title { font-size: 20px; font-weight: 600; color: var(--color-text-primary); }
 .page-header-desc { font-size: 13px; color: var(--color-text-secondary); margin-top: 4px; }
-.page-header-actions { display: flex; gap: 8px; }
+.page-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  // 三个操作按钮统一尺寸与圆角，形成「一个主操作 + 两个次要操作」的协调层次
+  .action-btn {
+    height: 34px;
+    padding: 0 15px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    margin: 0;
+
+    :deep(.el-icon) { margin-right: 5px; font-size: 15px; }
+  }
+
+  // 主操作：品牌蓝 + 细微阴影，视觉重心
+  .action-primary {
+    background: var(--color-primary, #1B5FD9);
+    border-color: var(--color-primary, #1B5FD9);
+    box-shadow: 0 2px 6px rgba(27, 95, 217, 0.22);
+
+    &:hover, &:focus {
+      background: var(--color-primary-hover, #1550B8);
+      border-color: var(--color-primary-hover, #1550B8);
+    }
+  }
+
+  // 次要操作：中性描边，hover 淡蓝高亮，避免绿/白/蓝三色块并排的杂乱感
+  .action-secondary {
+    background: var(--color-bg-card);
+    border: 1px solid var(--color-border-default, #E5E7EB);
+    color: var(--color-text-regular, #4B5563);
+
+    &:hover, &:focus {
+      background: var(--color-primary-light, #EFF6FF);
+      border-color: var(--color-primary, #1B5FD9);
+      color: var(--color-primary, #1B5FD9);
+    }
+  }
+}
 .stat-cards-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 16px; }
 .stat-card { display: flex; align-items: center; gap: 12px; padding: 16px; background: var(--color-bg-card); border: 1px solid var(--color-border-light); border-radius: 8px; }
 .stat-icon { width: 42px; height: 42px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; }
@@ -593,6 +717,7 @@ onMounted(async () => {
 .stat-value { font-size: 24px; font-weight: 700; color: var(--color-text-primary); }
 .table-section { background: var(--color-bg-card); border: 1px solid var(--color-border-light); border-radius: 8px; padding: 16px; }
 .table-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 12px; flex-wrap: wrap; }
+.toolbar-left { display: flex; flex-direction: column; gap: 4px; }
 .filter-form { display: flex; gap: 8px; flex-wrap: wrap; }
 .toolbar-tip { font-size: 12px; color: var(--color-text-tertiary); }
 .hit-none { color: var(--color-text-placeholder); }

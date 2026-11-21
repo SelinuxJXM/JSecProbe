@@ -1544,11 +1544,11 @@ onUpdated(() => {
   .phase-step {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 4px 14px;
+    gap: 4px;
+    padding: 3px 8px;
     background: var(--color-border-light, #F0F0F3);
     color: var(--color-text-secondary, #4B5563);
-    font-size: 12px;
+    font-size: 11px;
     cursor: pointer;
     transition: all 0.15s;
 
@@ -1584,8 +1584,8 @@ onUpdated(() => {
     }
 
     .step-num {
-      width: 20px;
-      height: 20px;
+      width: 18px;
+      height: 18px;
       border-radius: var(--radius-full);
       background: var(--color-border-default, #D1D5DB);
       display: flex;
@@ -1608,20 +1608,21 @@ onUpdated(() => {
   }
 }
 
-// 顶部工具栏
+// 顶部工具栏：压缩间距与字号，让 5 步流程 + 7 项统计 + 右侧操作在常见窗口宽度下一行放下，不被挤压
 .top-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   height: 40px;
-  padding: 0 24px;
+  padding: 0 16px;
   background: var(--color-bg-card);
   border-bottom: 1px solid var(--color-border-default, #E5E7EB);
 
   .toolbar-left, .toolbar-right {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 6px;
+    flex-shrink: 0;
   }
 
   .save-status-indicator {
@@ -1670,29 +1671,31 @@ onUpdated(() => {
   }
 
   .toolbar-center {
-    flex: 1;
+    flex: 0 1 auto;
     display: flex;
     justify-content: center;
+    min-width: 0;
   }
 
   .progress-stats {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 6px;
 
     .stat-item {
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 2px;
+      gap: 1px;
 
       .stat-label {
-        font-size: 11px;
+        font-size: 10px;
         color: var(--color-text-tertiary, #9CA3AF);
+        white-space: nowrap;
       }
 
       .stat-value {
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 600;
         color: var(--color-text-primary, #111827);
 
@@ -1732,9 +1735,9 @@ onUpdated(() => {
   .toolbar-btn {
     display: flex;
     align-items: center;
-    gap: 5px;
-    height: 36px;
-    padding: 0 14px;
+    gap: 4px;
+    height: 32px;
+    padding: 0 10px;
     border: 1px solid var(--color-border-default, #E5E7EB);
     border-radius: var(--radius-base);
     background: var(--color-bg-card);
